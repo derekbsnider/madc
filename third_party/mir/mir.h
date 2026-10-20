@@ -427,6 +427,7 @@ typedef struct MIR_func {
   char vararg_p;                  /* flag of variable number of arguments */
   char expr_p;                    /* flag of that the func can be used as a linker expression */
   char jret_p;                    /* flag of jcall/jret func, set up after MIR_func_finish */
+  char noinline_p;                /* flag of a func never inlined: MIR_set_func_noinline */
   VARR (MIR_var_t) * vars;        /* args and locals but temps */
   VARR (MIR_var_t) * global_vars; /* can be NULL */
   void *machine_code;             /* address of generated machine code or NULL */
@@ -779,6 +780,9 @@ extern void MIR_set_func_unwind_base (MIR_context_t ctx, MIR_item_t func_item, M
                                       uint32_t align);
 extern void MIR_set_func_unwind_personality (MIR_context_t ctx, MIR_item_t func_item,
                                              MIR_item_t personality);
+/* A func marked noinline (gcc's __attribute__((noinline))) keeps its own frame:
+   no MIR_CALL or MIR_INLINE of it is inlined into a caller. */
+extern void MIR_set_func_noinline (MIR_context_t ctx, MIR_item_t func_item);
 extern MIR_insn_t MIR_new_ret_insn (MIR_context_t ctx, size_t nops, ...);
 extern MIR_insn_t MIR_copy_insn (MIR_context_t ctx, MIR_insn_t insn);
 

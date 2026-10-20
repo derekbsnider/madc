@@ -1671,7 +1671,7 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->nargs = (uint32_t) nargs;
   func->last_temp_num = 0;
   func->vararg_p = vararg_p != 0;
-  func->expr_p = func->jret_p = FALSE;
+  func->expr_p = func->jret_p = func->noinline_p = FALSE;
   func->n_inlines = 0;
   func->machine_code = func->call_addr = NULL;
   func->code_len = 0;
@@ -2853,6 +2853,12 @@ void MIR_set_func_unwind_personality (MIR_context_t ctx, MIR_item_t func_item,
     MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
                               "MIR_set_func_unwind_personality: wrong param");
   func_item->u.func->unwind_personality = personality;
+}
+
+void MIR_set_func_noinline (MIR_context_t ctx, MIR_item_t func_item) {
+  if (func_item == NULL || func_item->item_type != MIR_func_item)
+    MIR_get_error_func (ctx) (MIR_wrong_param_value_error, "MIR_set_func_noinline: wrong param");
+  func_item->u.func->noinline_p = TRUE;
 }
 
 static MIR_insn_t new_insn1 (MIR_context_t ctx, MIR_insn_code_t code) {
@@ -4823,8 +4829,10 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
        link time -- never bake its body into a caller (gcc parity; LINKONCE
        copies are ODR-identical and stay inlineable) */
     /* a callee with unwind regions keeps its own frame: its regions are offsets
-       from ITS frame base, which an inlined body would not have */
-    if (called_func_item->binding == MIR_ITEM_BIND_WEAK || called_func->first_lref != NULL
+       from ITS frame base, which an inlined body would not have; so does a
+       noinline one (gcc and clang honour the attribute at every -O level) */
+    if (called_func_item->binding == MIR_ITEM_BIND_WEAK || called_func->noinline_p
+        || called_func->first_lref != NULL
         || called_func->vararg_p || called_func->jret_p || called_func->unwind_regions != NULL
         || called_func_insns_num > (func_insn->code != MIR_CALL ? MIR_MAX_INSNS_FOR_INLINE
                                                                 : MIR_MAX_INSNS_FOR_CALL_INLINE)

@@ -33513,6 +33513,11 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		append(ret_type, node2(N_ATTR, id("optimize", tf), attr_args, tf));
 	}
 
+	// __attribute__((noinline)) rides the FUNC_DEF specs the same way: c2mir
+	// marks the MIR func (MIR_set_func_noinline) and MIR's inliner refuses it.
+	if (fd->noinline)
+		append(ret_type, node2(N_ATTR, id("noinline", tf), list(), tf));
+
 	// C++ vague linkage → linkonce [ELF-completion S4]: a template
 	// instantiation or in-class/deferred body is emitted by every TU that
 	// uses it. The attr makes c2mir bind the MIR item LINKONCE, captured

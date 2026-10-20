@@ -6495,6 +6495,7 @@ struct decl_spec {
      copy, inlineable); both capture as STB_WEAK so identical per-TU copies
      merge instead of duplicate-strong colliding */
   unsigned int weak_p : 1, linkonce_p : 1;
+  unsigned int noinline_p : 1; /* __attribute__((noinline)): the MIR func is never inlined */
   int align;                                  // negative value means undefined
   node_t align_node;                          //  strictest valid N_ALIGNAS node
   node_code_t linkage;  // N_IGNORE - none, N_STATIC - internal, N_EXTERN - external
@@ -8196,7 +8197,7 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
   res->typedef_p = res->extern_p = res->static_p = FALSE;
   res->auto_p = res->register_p = res->thread_local_p = FALSE;
   res->inline_p = res->no_return_p = FALSE;
-  res->weak_p = res->linkonce_p = FALSE;
+  res->weak_p = res->linkonce_p = res->noinline_p = FALSE;
   res->align = -1;
   res->align_node = NULL;
   res->linkage = N_IGNORE;
@@ -8529,13 +8530,15 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
     }
     case N_ATTR: {
       /* vector_size/ext_vector_type are applied after the loop
-         (apply_vector_attr_list); weak/linkonce are consumed here */
+         (apply_vector_attr_list); weak/linkonce/noinline are consumed here */
       node_t aname = NL_HEAD (n->u.ops);
       if (aname != NULL && aname->code == N_ID) {
         if (attr_name_eq_p (aname->u.s.s, "weak"))
           res->weak_p = TRUE;
         else if (attr_name_eq_p (aname->u.s.s, "linkonce"))
           res->linkonce_p = TRUE;
+        else if (attr_name_eq_p (aname->u.s.s, "noinline"))
+          res->noinline_p = TRUE;
         else if (attr_name_eq_p (aname->u.s.s, "ret_addr"))
           ret_addr_p = TRUE;
       }
@@ -20507,6 +20510,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       MIR_item_set_binding (ctx, curr_func, MIR_ITEM_BIND_WEAK);
     else if (func_decl->decl_spec.linkonce_p)
       MIR_item_set_binding (ctx, curr_func, MIR_ITEM_BIND_LINKONCE);
+    if (func_decl->decl_spec.noinline_p) MIR_set_func_noinline (ctx, curr_func);
     curr_no_strict_aliasing_p = func_decl->no_strict_aliasing_p;
     DLIST_INIT (MIR_insn_t, slow_code_part);
     set_unwind_region (c2m_ctx, 0);

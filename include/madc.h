@@ -86,7 +86,8 @@ enum class GnuAttributeKind : uint8_t {
     Optimize,
     UsingIfExists,
     Weak,
-    Cleanup
+    Cleanup,
+    NoInline
 };
 
 GnuAttributeKind madc_gnu_attribute_kind(const madc::dis::istring &name);
@@ -778,6 +779,11 @@ public:
     // replaces it (gcc/clang). The CIR builder forwards it as an N_ATTR in the
     // FUNC_DEF specs; c2mir binds the MIR item MIR_ITEM_BIND_WEAK.
     bool weak_binding;
+    // __attribute__((noinline)) on any declaration of this function: never
+    // inlined, at any optimization level (gcc/clang). The CIR builder forwards
+    // it as an N_ATTR in the FUNC_DEF specs; c2mir marks the MIR func
+    // (MIR_set_func_noinline) and MIR's inliner refuses it.
+    bool noinline = false;
     bool has_large_struct_retbuf; // __retbuf was injected for struct return > 16 bytes
     // True when DECLARED with no body (prototype ended in ';' / ',' not '{').
     // For a C++ class method whose class carries canonical C++ spelling, this
@@ -10216,6 +10222,11 @@ public:
     // Set by consume_gnu_attributes on optimize("-fno-strict-aliasing") in any
     // position; consumed (and cleared) by the function-declaration parse.
     bool pending_no_strict_aliasing;
+    // Set by consume_gnu_attributes on `noinline` in any position; consumed
+    // (and cleared) by the function-declaration parse, and reset with the
+    // weak flag at each declaration's head (an object's never reaches a
+    // function).
+    bool pending_noinline = false;
     // Set by consume_gnu_attributes on cleanup(f): the function f names, for
     // the declaration whose attribute groups are being read; taken (and
     // cleared) by parse_declaration_body for its declarators, and dropped by

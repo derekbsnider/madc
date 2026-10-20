@@ -1444,7 +1444,8 @@ GnuAttributeKind madc_gnu_attribute_kind(const madc::dis::istring &name)
 	{ "optimize", GnuAttributeKind::Optimize },
 	{ "using_if_exists", GnuAttributeKind::UsingIfExists },
 	{ "weak", GnuAttributeKind::Weak },
-	{ "cleanup", GnuAttributeKind::Cleanup }
+	{ "cleanup", GnuAttributeKind::Cleanup },
+	{ "noinline", GnuAttributeKind::NoInline }
     };
     for ( size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i )
 	if ( madc_gnu_attribute_word_is(name, entries[i].name) )
@@ -4120,6 +4121,7 @@ void Program::_tokenizer_init()
     dialect_built.clear();
     dialect_builds = 0;
     pending_no_strict_aliasing = false;
+    pending_noinline = false;
     pending_weak_binding = false;
     pending_specifier_weak = false;
     while ( !_pack_stack.empty() )
@@ -11795,6 +11797,7 @@ int64_t Program::evaluateHasQuery(const madc::dis::istring &op, const std::strin
 	{
 	    case GnuAttributeKind::UsingIfExists:	// tests/testusingifexists
 	    case GnuAttributeKind::Cleanup:		// tests/testcleanupattr
+	    case GnuAttributeKind::NoInline:		// tests/testnoinline
 		return 1;
 	    default:
 		return 0;
