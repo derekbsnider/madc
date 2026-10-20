@@ -1,6 +1,7 @@
 // Unit tests for MIR's unwind regions (docs/plans/2026-10-19-table-driven-
-// unwinding.md): the per-call regions MIR_gen records and the frame base a
-// stack walk computes from them (MIR_unwind_info_t). A test that runs the
+// unwinding.md): the per-call regions MIR_gen records, the frame base a
+// stack walk computes from them (MIR_unwind_info_t), and the regions c2mir
+// opens for cleanup variables. A test that runs the
 // generated code checks the recorded numbers against the REAL frames: a host
 // callback walks the stack with the host unwinder -- through the CFI MIR_gen
 // registered -- matches each frame's return address against a function's
@@ -19,6 +20,7 @@
 extern "C" {
 #include "mir.h"
 #include "mir-gen.h"
+#include "c2mir.h"
 }
 
 // The targets whose generated frames are registered with the host unwinder
@@ -405,6 +407,194 @@ TEST_CASE("the inliner: a region's callee stays a call; an inlined body takes th
 	CHECK(nth_call(cc, 0) != nullptr);
 	CHECK(!has_alloca(cc));
 	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+}
+
+}
+
+// c2mir: with c2mir_options.unwind_regions_p, an automatic
+// __attribute__((cleanup)) variable is an unwind region from the end of its
+// declaration (or its __builtin_cleanup_arm) to the end of its scope, and its
+// own cleanup call runs in the region it nests in.
+
+struct C2mirSource {
+	const char *text;
+	size_t pos;
+};
+
+static int c2mir_source_getc(void *data)
+{
+	C2mirSource *s = (C2mirSource *)data;
+	return s->text[s->pos] == '\0' ? EOF : (unsigned char)s->text[s->pos++];
+}
+
+// Compile C text with or without unwind regions; the module it made.
+static MIR_module_t compile_c(MIR_context_t ctx, const char *text, bool regions)
+{
+	struct c2mir_options opts;
+	memset(&opts, 0, sizeof(opts));
+	opts.message_file = stderr;
+	opts.unwind_regions_p = regions;
+	C2mirSource src = {text, 0};
+	if (!c2mir_compile(ctx, &opts, c2mir_source_getc, &src, "unwind.c", nullptr))
+		return nullptr;
+	return DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+}
+
+// The region of FUNC's Nth call (0-based) to CALLEE, or -1 when there is none.
+static int64_t call_region(MIR_context_t ctx, MIR_item_t func, const char *callee, int n)
+{
+	for (MIR_insn_t in = DLIST_HEAD(MIR_insn_t, func->u.func->insns);
+	     in != nullptr; in = DLIST_NEXT(MIR_insn_t, in)) {
+		if (!MIR_call_code_p(in->code) || in->ops[1].mode != MIR_OP_REF)
+			continue;
+		const char *name = MIR_item_name(ctx, in->ops[1].u.ref);
+		if (name != nullptr && strcmp(name, callee) == 0 && n-- == 0)
+			return in->unwind_region;
+	}
+	return -1;
+}
+
+static MIR_unwind_region_t region_of(MIR_item_t func, uint32_t region)
+{
+	return VARR_GET(MIR_unwind_region_t, func->u.func->unwind_regions, region - 1);
+}
+
+static const char *c2mir_unwind_text =
+	"struct S { long v; };\n"
+	"long unwind_cb_fp (long p);\n"
+	"static void s_done (struct S *p) { p->v = 0; }\n"
+	"static void s_make (struct S *p, long v) { p->v = v; }\n"
+	"static void x_done (long *p) { *p = 0; }\n"
+	"long nested (long a) {\n"
+	"  long r = unwind_cb_fp (0);\n"
+	"  {\n"
+	"    struct S outer __attribute__ ((cleanup (s_done))) = {a};\n"
+	"    {\n"
+	"      struct S inner __attribute__ ((cleanup (s_done))) = {a + 1};\n"
+	"      r += unwind_cb_fp ((long) &inner.v);\n"
+	"    }\n"
+	"    r += unwind_cb_fp (0);\n"
+	"  }\n"
+	"  return r + unwind_cb_fp (0);\n"
+	"}\n"
+	"long armed (long a) {\n"
+	"  struct S s __attribute__ ((cleanup (s_done)));\n"
+	"  s_make (&s, a);\n"
+	"  __builtin_cleanup_arm (&s);\n"
+	"  return unwind_cb_fp ((long) &s.v);\n"
+	"}\n"
+	"long scalar (long a) {\n"
+	"  long x __attribute__ ((cleanup (x_done))) = a;\n"
+	"  return unwind_cb_fp ((long) &x);\n"
+	"}\n";
+
+TEST_SUITE("c2mir unwind regions") {
+
+TEST_CASE("nested cleanup variables: regions, their parents, and the calls in each")
+{
+	MIR_context_t ctx = gen_context();
+	c2mir_init(ctx);
+	MIR_module_t mod = compile_c(ctx, c2mir_unwind_text, true);
+	REQUIRE(mod != nullptr);
+	MIR_item_t f = find_item(ctx, mod, "nested");
+	REQUIRE(f != nullptr);
+	REQUIRE(f->u.func->unwind_regions != nullptr);
+	REQUIRE(VARR_LENGTH(MIR_unwind_region_t, f->u.func->unwind_regions) == 2);
+	MIR_unwind_region_t outer = region_of(f, 1), inner = region_of(f, 2);
+	CHECK(outer.parent == 0);
+	CHECK(inner.parent == 1);
+	CHECK(strcmp(MIR_item_name(ctx, outer.cleanup), "s_done") == 0);
+	CHECK(outer.offset != inner.offset);
+	// before the block, inside the inner block, after it, after the outer
+	CHECK(call_region(ctx, f, "unwind_cb_fp", 0) == 0);
+	CHECK(call_region(ctx, f, "unwind_cb_fp", 1) == 2);
+	CHECK(call_region(ctx, f, "unwind_cb_fp", 2) == 1);
+	CHECK(call_region(ctx, f, "unwind_cb_fp", 3) == 0);
+	// each variable's own cleanup call runs in the region it nests in
+	CHECK(call_region(ctx, f, "s_done", 0) == 1);	// inner's
+	CHECK(call_region(ctx, f, "s_done", 1) == 0);	// outer's
+	MIR_load_module(ctx, mod);
+	MIR_link(ctx, MIR_set_gen_interface, unwind_import_resolver);
+	int64_t (*fn)(int64_t) = (int64_t (*)(int64_t))MIR_gen(ctx, f);
+	REQUIRE(fn != nullptr);
+	REQUIRE(f->u.func->unwind.base_p);
+	// the walk's view: inner's region at the call, and the frame base +
+	// inner's offset is the variable the call passed, holding its initializer
+	walk_funcs = {f};
+	found.clear();
+	walked_arg = nullptr;
+	CHECK(fn(41) == 28);
+	REQUIRE(found.size() == 1);
+	CHECK(found[0].region == 2);
+	CHECK((void *)found[0].var == walked_arg);
+	CHECK(found[0].val == 42);
+	walk_funcs.clear();
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+}
+
+TEST_CASE("__builtin_cleanup_arm: the region starts after the construction")
+{
+	MIR_context_t ctx = MIR_init();
+	c2mir_init(ctx);
+	MIR_module_t mod = compile_c(ctx, c2mir_unwind_text, true);
+	REQUIRE(mod != nullptr);
+	MIR_item_t f = find_item(ctx, mod, "armed");
+	REQUIRE(f != nullptr);
+	REQUIRE(f->u.func->unwind_regions != nullptr);
+	REQUIRE(VARR_LENGTH(MIR_unwind_region_t, f->u.func->unwind_regions) == 1);
+	CHECK(call_region(ctx, f, "s_make", 0) == 0);	// not constructed yet
+	CHECK(call_region(ctx, f, "unwind_cb_fp", 0) == 1);
+	CHECK(call_region(ctx, f, "s_done", 0) == 0);	// the return's cleanup
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+}
+
+TEST_CASE("a scalar cleanup variable lives in the frame, at its region's offset")
+{
+	MIR_context_t ctx = gen_context();
+	c2mir_init(ctx);
+	MIR_module_t mod = compile_c(ctx, c2mir_unwind_text, true);
+	REQUIRE(mod != nullptr);
+	MIR_item_t f = find_item(ctx, mod, "scalar");
+	REQUIRE(f != nullptr);
+	REQUIRE(f->u.func->unwind_regions != nullptr);
+	CHECK(call_region(ctx, f, "unwind_cb_fp", 0) == 1);
+	MIR_load_module(ctx, mod);
+	MIR_link(ctx, MIR_set_gen_interface, unwind_import_resolver);
+	int64_t (*fn)(int64_t) = (int64_t (*)(int64_t))MIR_gen(ctx, f);
+	REQUIRE(fn != nullptr);
+	REQUIRE(f->u.func->unwind.base_p);
+	walk_funcs = {f};
+	found.clear();
+	walked_arg = nullptr;
+	CHECK(fn(41) == 7);
+	REQUIRE(found.size() == 1);
+	CHECK(found[0].region == 1);
+	CHECK((void *)found[0].var == walked_arg);
+	CHECK(found[0].val == 41);
+	walk_funcs.clear();
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+}
+
+TEST_CASE("without the option: no regions, the arm is a no-op")
+{
+	MIR_context_t ctx = MIR_init();
+	c2mir_init(ctx);
+	MIR_module_t mod = compile_c(ctx, c2mir_unwind_text, false);
+	REQUIRE(mod != nullptr);
+	for (const char *name : {"nested", "armed", "scalar"}) {
+		MIR_item_t f = find_item(ctx, mod, name);
+		REQUIRE(f != nullptr);
+		CHECK(f->u.func->unwind_regions == nullptr);
+		CHECK(f->u.func->unwind_base_reg == 0);
+	}
+	CHECK(call_region(ctx, find_item(ctx, mod, "armed"), "unwind_cb_fp", 0) == 0);
+	c2mir_finish(ctx);
 	MIR_finish(ctx);
 }
 

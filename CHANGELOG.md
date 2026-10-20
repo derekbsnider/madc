@@ -7,6 +7,14 @@ Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-de
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
 
+### c2mir opens an unwind region per automatic cleanup variable
+
+- With `c2mir_options.unwind_regions_p` (default 0), an automatic `__attribute__((cleanup))` variable is an unwind region from the end of its declaration to the end of its scope. `__builtin_cleanup_arm (&var)` starts the region at that point instead; the constructor before it stays outside the region.
+- The variable's own cleanup call runs in the parent region. A scalar cleanup variable lives in the frame block at its region's offset, not in a register.
+- Each function starts and ends in region 0. The option is off by default, so madc output does not change yet.
+- Not yet covered: a for-init cleanup variable runs no cleanup on the loop's normal exit. Next commit.
+- Unit tests: `tests/unit/test_mir_unwind.cpp` (c2mir suite, 4 cases).
+
 ### MIR records unwind regions and call sites for generated frames
 
 - `MIR_insn` carries an `unwind_region` number (0 = none). `MIR_new_unwind_region` declares a region in a function under a parent region, and `MIR_set_unwind_region` stamps it onto the instructions created after it. `MIR_set_func_unwind_base` names the register that holds the frame base. Binary and text module I/O carry these fields.

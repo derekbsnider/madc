@@ -3769,6 +3769,7 @@ static macro_call_t try_param_macro_call (c2m_ctx_t c2m_ctx, macro_t m, token_t 
 #define JCALL "__builtin_jcall"
 #define JRET "__builtin_jret"
 #define PROP_SET "__builtin_prop_set"
+#define CLEANUP_ARM "__builtin_cleanup_arm"
 #define PROP_EQ "__builtin_prop_eq"
 #define PROP_NE "__builtin_prop_ne"
 
@@ -3915,7 +3916,7 @@ static void processing (c2m_ctx_t c2m_ctx, int ignore_directive_p) {
                        || strcmp (t->repr, SHUFFLE_VECTOR) == 0
                        || strcmp (t->repr, JCALL) == 0 || strcmp (t->repr, JRET) == 0
                        || strcmp (t->repr, PROP_SET) == 0 || strcmp (t->repr, PROP_EQ) == 0
-                       || strcmp (t->repr, PROP_NE) == 0);
+                       || strcmp (t->repr, PROP_NE) == 0 || strcmp (t->repr, CLEANUP_ARM) == 0);
             }
           }
           m->ignore_p = TRUE;
@@ -6546,6 +6547,11 @@ struct decl {
   node_t containing_unnamed_anon_struct_union_member;
   /* Resolved N_ID of __attribute__((cleanup(fn))) on this decl, else NULL. */
   node_t cleanup_fn;
+  /* Its unwind region (c2mir_options.unwind_regions_p), 0 until it is live, and
+     the region it nests in.  cleanup_arm_p: a __builtin_cleanup_arm (&var)
+     makes it live, not the end of the declaration. */
+  uint32_t unwind_region, unwind_parent;
+  unsigned cleanup_arm_p : 1;
   union {
     const char *asm_str; /* register name for global reg used and defined only if asm_p */
     MIR_item_t item;     /* MIR_item for some declarations */
@@ -8049,7 +8055,28 @@ static node_t build_cleanup_stmt (c2m_ctx_t c2m_ctx, node_t decl_node, node_t co
   call = new_pos_node2 (c2m_ctx, N_CALL, POS (var_id), fn_ref, args);
   stmt = new_pos_node2 (c2m_ctx, N_EXPR, POS (var_id), new_node (c2m_ctx, N_LIST), call);
   check (c2m_ctx, stmt, context);
+  /* Mark it as DECL_NODE's cleanup (an expression statement has no other
+     attribute): gen runs it in the region the variable nests in. */
+  stmt->attr = decl_node;
   return stmt;
+}
+
+/* The automatic cleanup variable a checked __builtin_cleanup_arm argument
+   (`&var`) names, or NULL when it names none. */
+static decl_t cleanup_arm_decl (c2m_ctx_t c2m_ctx, node_t arg) {
+  check_ctx_t check_ctx = c2m_ctx->check_ctx;
+  node_t id;
+  struct expr *e;
+  decl_t decl;
+
+  if (arg == NULL || arg->code != N_ADDR || (id = NL_HEAD (arg->u.ops)) == NULL
+      || id->code != N_ID || (e = id->attr) == NULL || e->u.lvalue_node == NULL)
+    return NULL;
+  decl = e->u.lvalue_node->attr;
+  if (decl == NULL || decl->cleanup_fn == NULL || decl->scope == top_scope
+      || decl->decl_spec.static_p || decl->decl_spec.thread_local_p)
+    return NULL;
+  return decl;
 }
 
 /* Fall-through scope exit: append each scope-local cleanup call (reverse decl
@@ -9789,6 +9816,8 @@ static void init_decl (c2m_ctx_t c2m_ctx, decl_t decl) {
   decl->scope = curr_scope;
   decl->containing_unnamed_anon_struct_union_member = curr_unnamed_anon_struct_union_member;
   decl->cleanup_fn = NULL;
+  decl->unwind_region = decl->unwind_parent = 0;
+  decl->cleanup_arm_p = FALSE;
   decl->u.item = NULL;
   decl->c2m_ctx = c2m_ctx;
 }
@@ -10474,13 +10503,15 @@ static mir_size_t process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
      setjmp and longjmp keeps its last value only in memory (C11 7.13.2.1p3) -- a register
      is restored to its setjmp-time contents.  Nor is an object whose alignment specifier
      raises its type's (`_Alignas (16) char c;`): only a frame slot is placed on that
-     boundary, the generator's slot for a register's address is not. */
+     boundary, the generator's slot for a register's address is not.  Nor is a cleanup
+     variable that is an unwind region: a stack walk finds it at its frame offset. */
   for (i = j = 0; i < VARR_LENGTH (decl_t, func_decls_for_allocation); i++) {
     decl = VARR_GET (decl_t, func_decls_for_allocation, i);
     type = decl->decl_spec.type;
     ns = decl->scope->attr;
     if (scalar_type_p (type) && !int128_type_p (type) && !type->type_qual.volatile_p
-        && decl->decl_spec.align <= (int) var_align (c2m_ctx, type)) {
+        && decl->decl_spec.align <= (int) var_align (c2m_ctx, type)
+        && (decl->cleanup_fn == NULL || !c2m_options->unwind_regions_p)) {
       decl->reg_p = TRUE;
       continue;
     }
@@ -11480,7 +11511,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     int abort_p = FALSE, memcmp_p = FALSE, copysignf_p = FALSE, nan_p = FALSE;
     int convertvector_p = FALSE, shuffle_p = FALSE, shufflevector_p = FALSE;
     int jcall_p = FALSE, jret_p = FALSE, prop_set_p = FALSE, prop_eq_p = FALSE, prop_ne_p = FALSE;
-    int vectorelements_p = FALSE;
+    int vectorelements_p = FALSE, cleanup_arm_p = FALSE;
     mir_size_t vectorelements_count = 0;
 
     op1 = NL_HEAD (r->u.ops);
@@ -11503,6 +11534,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       prop_set_p = strcmp (op1->u.s.s, PROP_SET) == 0;
       prop_eq_p = strcmp (op1->u.s.s, PROP_EQ) == 0;
       prop_ne_p = strcmp (op1->u.s.s, PROP_NE) == 0;
+      cleanup_arm_p = strcmp (op1->u.s.s, CLEANUP_ARM) == 0;
     }
     if (op1->code == N_ID && find_def (c2m_ctx, S_REGULAR, op1, curr_scope, NULL) == NULL) {
       va_arg_p = str_eq_p (op1->u.s.s, BUILTIN_VA_ARG);
@@ -11532,7 +11564,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     builtin_call_p = alloca_p || va_arg_p || va_start_p || add_overflow_p || sub_overflow_p
                      || mul_overflow_p || expect_p || abort_p || memcmp_p || copysignf_p || nan_p
                      || convertvector_p || shuffle_p || shufflevector_p || vectorelements_p
-                     || jcall_p || jret_p || prop_set_p || prop_eq_p || prop_ne_p;
+                     || jcall_p || jret_p || prop_set_p || prop_eq_p || prop_ne_p
+                     || cleanup_arm_p;
     if (!builtin_call_p || jcall_p) VARR_PUSH (node_t, call_nodes, r);
     arg_list = NL_NEXT (op1);
     if (builtin_call_p) {
@@ -11574,7 +11607,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
               || (jret_p && NL_LENGTH (arg_list->u.ops) != 1)
               || (va_arg_p && NL_LENGTH (arg_list->u.ops) != 2)
               || (prop_set_p && NL_LENGTH (arg_list->u.ops) != 2)
-              || ((prop_eq_p || prop_ne_p) && NL_LENGTH (arg_list->u.ops) != 2))) {
+              || ((prop_eq_p || prop_ne_p) && NL_LENGTH (arg_list->u.ops) != 2)
+              || (cleanup_arm_p && NL_LENGTH (arg_list->u.ops) != 1))) {
         error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", op1->u.s.s);
       } else {
         /* first argument type ??? */
@@ -11775,6 +11809,14 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
             error (c2m_ctx, POS (arg),
                    "property value in 2nd arg of %s call should be an integer constant",
                    op1->u.s.s);
+        } else if (cleanup_arm_p) {
+          decl_t armed = cleanup_arm_decl (c2m_ctx, NL_HEAD (arg_list->u.ops));
+
+          if (armed == NULL)
+            error (c2m_ctx, POS (r), "%s needs the address of an automatic cleanup variable",
+                   CLEANUP_ARM);
+          else
+            armed->cleanup_arm_p = TRUE;
         }
       }
     } else {
@@ -12759,6 +12801,13 @@ struct gen_ctx {
   VARR (node_t) * node_stack;
   VARR (MIR_alias_t) * union_alias_done; /* union classes whose member conflicts are registered */
   int curr_no_strict_aliasing_p; /* current func has optimize("-fno-strict-aliasing") */
+  /* Unwind regions (c2mir_options.unwind_regions_p): the region live at the
+     code being generated -- lexical, like the scopes the cleanup variables
+     live in -- and the current function's frame base register. */
+  uint32_t curr_unwind_region;
+  MIR_reg_t unwind_base_reg;    /* 0 = the function has no frame block */
+  uint32_t unwind_base_align;   /* the frame block's realignment, 0 = none */
+  int unwind_base_declared_p;   /* MIR_set_func_unwind_base done for this function */
 };
 
 #define zero_op gen_ctx->zero_op
@@ -18422,6 +18471,48 @@ int c2mir_get_native_object (MIR_context_t ctx, void **buf, size_t *size) {
   return MIR_gen_object_emit (ctx, buf, size);
 }
 
+/* Unwind regions (c2mir_options.unwind_regions_p): the region live at the
+   insns generated from here on -- lexical, as the cleanup variables' scopes. */
+static void set_unwind_region (c2m_ctx_t c2m_ctx, uint32_t region) {
+  c2m_ctx->gen_ctx->curr_unwind_region = region;
+  MIR_set_unwind_region (c2m_ctx->ctx, region);
+}
+
+/* The MIR item of DECL's cleanup function, or NULL. */
+static MIR_item_t cleanup_fn_item (c2m_ctx_t c2m_ctx, decl_t decl) {
+  node_t def = find_def (c2m_ctx, S_REGULAR, decl->cleanup_fn, decl->scope, NULL);
+  decl_t fn_decl;
+
+  if (def == NULL || (fn_decl = def->attr) == NULL) return NULL;
+  return fn_decl->u.item;
+}
+
+/* DECL's cleanup becomes live here (the end of its declaration, or its
+   __builtin_cleanup_arm): a region nested in the current one, so a stack walk
+   runs the cleanup when an exception passes through this frame from here
+   until the variable's scope ends -- gcc's -fexceptions cleanup. */
+static void start_cleanup_region (c2m_ctx_t c2m_ctx, decl_t decl) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  check_ctx_t check_ctx = c2m_ctx->check_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_item_t cleanup;
+
+  if (!c2m_options->unwind_regions_p || decl == NULL || decl->cleanup_fn == NULL
+      || decl->unwind_region != 0 || decl->reg_p || decl->scope == top_scope
+      || decl->decl_spec.static_p || decl->decl_spec.thread_local_p
+      || gen_ctx->unwind_base_reg == 0 || (cleanup = cleanup_fn_item (c2m_ctx, decl)) == NULL)
+    return;
+  if (!gen_ctx->unwind_base_declared_p) {
+    MIR_set_func_unwind_base (ctx, curr_func, gen_ctx->unwind_base_reg,
+                              gen_ctx->unwind_base_align);
+    gen_ctx->unwind_base_declared_p = TRUE;
+  }
+  decl->unwind_parent = gen_ctx->curr_unwind_region;
+  decl->unwind_region = MIR_new_unwind_region (ctx, curr_func, decl->unwind_parent,
+                                               (int64_t) decl->offset, cleanup);
+  set_unwind_region (c2m_ctx, decl->unwind_region);
+}
+
 static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_t false_label,
                  int val_p, op_t *desirable_dest, int *expect_res) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
@@ -19608,6 +19699,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     int prop_set_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_SET) == 0;
     int prop_eq_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_EQ) == 0;
     int prop_ne_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_NE) == 0;
+    int cleanup_arm_p = call_expr->builtin_call_p && strcmp (func->u.s.s, CLEANUP_ARM) == 0;
     int builtin_call_p = alloca_p || va_arg_p || va_start_p, inline_p = FALSE;
     node_t block = NL_EL (curr_func_def->u.ops, 3);
     struct node_scope *ns = block->attr;
@@ -19853,6 +19945,12 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       op1 = gen (c2m_ctx, NL_HEAD (args->u.ops), NULL, NULL, FALSE, NULL, NULL);
       op2 = val_gen (c2m_ctx, NL_EL (args->u.ops, 1));
       emit2 (c2m_ctx, MIR_PRSET, op1.mir_op, op2.mir_op);
+      true_label = false_label = NULL;
+      val_p = FALSE;
+      break;
+    }
+    if (cleanup_arm_p) { /* no code: the variable's cleanup region starts here */
+      start_cleanup_region (c2m_ctx, cleanup_arm_decl (c2m_ctx, NL_HEAD (args->u.ops)));
       true_label = false_label = NULL;
       val_p = FALSE;
       break;
@@ -20288,6 +20386,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                            local_p);
           VARR_TRUNC (init_el_t, init_els, init_start);
         }
+        /* an automatic cleanup variable is live from the end of its declaration,
+           or from its __builtin_cleanup_arm when a later statement constructs it */
+        if (!decl->cleanup_arm_p) start_cleanup_region (c2m_ctx, decl);
         if (decl->scope == top_scope || decl->decl_spec.static_p)
           set_static_item_align (c2m_ctx, decl);
         if (decl->u.item != NULL && decl->scope == top_scope && !decl->decl_spec.static_p) {
@@ -20345,6 +20446,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       MIR_item_set_binding (ctx, curr_func, MIR_ITEM_BIND_LINKONCE);
     curr_no_strict_aliasing_p = func_decl->no_strict_aliasing_p;
     DLIST_INIT (MIR_insn_t, slow_code_part);
+    set_unwind_region (c2m_ctx, 0);
+    gen_ctx->unwind_base_reg = 0;
+    gen_ctx->unwind_base_align = 0;
+    gen_ctx->unwind_base_declared_p = FALSE;
     if (ns->stack_var_p /* we can have empty struct only with size 0 and still need a frame: */
         || ns->size > 0) {
       /* madc fork: a frame holding an object aligned beyond MAX_ALIGNMENT is
@@ -20353,6 +20458,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       mir_size_t over = ns->frame_align > MAX_ALIGNMENT ? ns->frame_align - 1 : 0;
 
       fp_reg = MIR_new_func_reg (ctx, curr_func->u.func, MIR_T_I64, FP_NAME);
+      /* the frame block is the base of the function's unwind regions */
+      gen_ctx->unwind_base_reg = fp_reg;
+      gen_ctx->unwind_base_align = over != 0 ? (uint32_t) ns->frame_align : 0;
       MIR_append_insn (ctx, curr_func,
                        MIR_new_insn (ctx, MIR_ALLOCA, MIR_new_reg_op (ctx, fp_reg),
                                      MIR_new_int_op (ctx, ns->size + over)));
@@ -20448,6 +20556,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       DLIST_REMOVE (MIR_insn_t, slow_code_part, insn);
       DLIST_APPEND (MIR_insn_t, curr_func->u.func->insns, insn);
     }
+    set_unwind_region (c2m_ctx, 0);
     MIR_finish_func (ctx);
     if (c2m_options->debug_info_p) c2m_dbg_snapshot_func (c2m_ctx, r, decl_type, stmt);
     if (func_decl->decl_spec.linkage == N_EXTERN)
@@ -20495,10 +20604,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     }
     break;
   }
-  case N_BLOCK:
+  case N_BLOCK: {
+    /* the cleanup regions its declarations open end with the block */
+    uint32_t saved_region = gen_ctx->curr_unwind_region;
+
     emit_label (c2m_ctx, r);
     gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, FALSE, NULL, NULL);
+    if (gen_ctx->curr_unwind_region != saved_region) set_unwind_region (c2m_ctx, saved_region);
     break;
+  }
   case N_MODULE: gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL); break;  // ???
   case N_IF: {
     node_t expr = NL_EL (r->u.ops, 1);
@@ -20746,6 +20860,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     node_t stmt = NL_NEXT (iter);
     MIR_label_t stmt_label = MIR_new_label (ctx);
     MIR_label_t saved_continue_label = continue_label, saved_break_label = break_label;
+    /* the cleanup regions the for-init declarations open end with the for */
+    uint32_t saved_region = gen_ctx->curr_unwind_region;
 
     assert (false_label == NULL && true_label == NULL);
     continue_label = MIR_new_label (ctx);
@@ -20763,6 +20879,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     } else {
       top_gen (c2m_ctx, cond, stmt_label, break_label, NULL);
     }
+    if (gen_ctx->curr_unwind_region != saved_region) set_unwind_region (c2m_ctx, saved_region);
     emit_label_insn_opt (c2m_ctx, break_label);
     continue_label = saved_continue_label;
     break_label = saved_break_label;
@@ -20893,9 +21010,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   }
   case N_EXPR: {
     node_t e = NL_EL (r->u.ops, 1);
+    /* a variable's cleanup call (build_cleanup_stmt) runs in the region the
+       variable nests in: an exception out of it does not run it again */
+    decl_t cleanup_decl = r->attr == NULL ? NULL : ((node_t) r->attr)->attr;
+    uint32_t saved_region = gen_ctx->curr_unwind_region;
 
     assert (false_label == NULL && true_label == NULL);
     emit_label (c2m_ctx, r);
+    if (cleanup_decl != NULL && cleanup_decl->unwind_region != 0)
+      set_unwind_region (c2m_ctx, cleanup_decl->unwind_parent);
     if (e == stmtexpr_last_expr)
       /* Value-producing last expression of a statement expression: evaluate in
          value context so post ++/-- materialize their result, and capture the
@@ -20904,6 +21027,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       top_gen_last_op = stmtexpr_last_val = gen (c2m_ctx, e, NULL, NULL, TRUE, NULL, NULL);
     else
       top_gen (c2m_ctx, e, NULL, NULL, NULL);
+    if (gen_ctx->curr_unwind_region != saved_region && cleanup_decl != NULL)
+      set_unwind_region (c2m_ctx, saved_region);
     break;
   }
   case N_ASM_STMT: {

@@ -33,6 +33,12 @@ struct c2mir_options {
   struct c2mir_macro_command *macro_commands;
   const char **include_dirs;
   int external_tree_p;  /* non-zero: caller owns AST nodes, c2mir won't free them */
+  int unwind_regions_p; /* -fexceptions: an automatic __attribute__((cleanup)) variable is an
+                           unwind region (MIR_new_unwind_region), so a stack walk runs its
+                           cleanup when an exception passes through the frame, as gcc and
+                           clang do with -fexceptions.  It becomes live after its
+                           declaration's initializer, or at __builtin_cleanup_arm (&var) for
+                           an object a later statement constructs. */
 };
 
 void c2mir_init (MIR_context_t ctx);
