@@ -1532,7 +1532,9 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     emit_info (obj->debug, &dw_info, &g, text_lo, text_size,
                obj->debug->n_files ? obj->debug->files[0] : "");
     emit_line (obj->debug, &dw_line, &g);
-    emit_frame (obj->debug, &dw_frame, &g);
+    /* the image's frames are its .eh_frame's when it has one (gcc/clang -g:
+       .eh_frame, no .debug_frame) */
+    if (obj->ehframe.len == 0) emit_frame (obj->debug, &dw_frame, &g);
   }
   /* Section order below: null, the alloc sections, .symtab, .strtab, one
      .rela.* per kind that has relocations (kind order), then the debug
@@ -2288,7 +2290,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     emit_info (obj->debug, &dw_info, &g, text_lo, dbg_text_size,
                obj->debug->n_files ? obj->debug->files[0] : "");
     emit_line (obj->debug, &dw_line, &g);
-    emit_frame (obj->debug, &dw_frame, &g);
+    if (obj->ehframe.len == 0) emit_frame (obj->debug, &dw_frame, &g); /* as in the .o */
   }
 
   /* ---- .symtab / .strtab (debug view: resolved link-time vaddrs) */

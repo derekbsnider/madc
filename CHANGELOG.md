@@ -1,6 +1,10 @@
 # Changelog
 
 ## [Unreleased]
+### A `-g` image describes its frames in `.eh_frame` alone
+
+A `-g` object or executable carries `.debug_abbrev`, `.debug_info` and `.debug_line` and, when it has `.eh_frame`, no `.debug_frame` (the gcc/clang `-g` shape). An image without `.eh_frame` still gets `.debug_frame`. `scripts/check-debuginfo-gdb.sh` (in `make gates`) drives gdb over a `-g` executable: it stops at a breakpoint in a leaf function with its arguments, backtraces through the callers to `main`, and reads locals in each frame.
+
 ### MIR emits unwind records for generated code in ELF images
 
 Object files, merged objects, in-process loads and executables carry `.eh_frame` (one FDE per generated function) and `.gcc_except_table` (the region tables). Executables also carry `.eh_frame_hdr` and `PT_GNU_EH_FRAME`. A forced unwind walks through generated frames in AOT images. Region tables are not yet emitted in AOT images: madc does not set c2mir's unwind options.

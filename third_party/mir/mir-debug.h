@@ -96,8 +96,8 @@ extern void MIR_debug_add_param_type (MIR_debug_t d, MIR_debug_type_t fn, MIR_de
 /* --- Functions and their variables --------------------------------------
    addr/size/line_map/cfi come straight from a generated MIR_func (machine_code,
    code_len, line_map / line_map_len, cfi / cfi_len -- its frame's call frame
-   instructions, written to .debug_frame).  Variables are attached to the most
-   recently added function.  */
+   instructions, written to .debug_frame unless the artifact has .eh_frame).
+   Variables are attached to the most recently added function.  */
 extern void MIR_debug_add_func (MIR_debug_t d, const char *name, const void *addr, size_t size,
                                 const MIR_line_map_t *line_map, size_t line_map_len,
                                 const uint8_t *cfi, size_t cfi_len);
@@ -279,7 +279,8 @@ extern int MIR_object_add_init (MIR_object_t obj, const char *name);
 
 /* Attach a debug builder (AOT R5): MIR_object_emit and
    MIR_object_emit_executable will generate .debug_abbrev/.debug_info/
-   .debug_line (and .debug_frame on x86-64) from it into the artifact.
+   .debug_line from it into the artifact (and .debug_frame only when the
+   object has no .eh_frame: gcc/clang -g describe frames in .eh_frame alone).
    Function addresses in the builder must be .text SECTION OFFSETS (cast to
    the addr pointer; offset 0 is valid), typically taken from
    MIR_object_find_symbol.  The .o carries R_X86_64_64 relocations against
