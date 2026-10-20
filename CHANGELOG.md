@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### The expression parser's identifier arm compares interned names
+
+- `Program::parseExpr_identifierArm` reads the identifier's name once (`contextual_identifier_name`, the token's interned name) and uses it for every lookup and spelling test in the arm.
+- The arm's keyword tests (`operator`, `sizeof`, `_Generic`, `typeid`, `va_arg`, `this`, `await`, and the other spellings the arm recognises) are identity compares against interned literals. The spelling predicates in `src/parser.cpp` (`is_decltype_identifier`, `is_alignof_identifier`, `is_nullptr_identifier`, `is_bool_literal_identifier`, `is_named_cpp_cast`, and the others) compare the same way.
+- Recognised spellings and parse results are unchanged. Generated code is unchanged: the `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change.
+
 ### The operand class test asks the class candidate first
 
 - `Program::operand_object_class` (parser) and `CirBuilder::operand_object_class` (cir) compute the class candidate before the array test; `array_operand_type` runs only when a candidate exists. Their answers are unchanged.

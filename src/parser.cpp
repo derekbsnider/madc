@@ -2942,7 +2942,7 @@ static int64_t literal_token_sizeof(TokenStr *ts)
 
 static bool is_decltype_identifier(const madc::dis::istring &name)
 {
-    return name == "decltype";
+    return name == MADC_ISTRING_LITERAL("decltype");
 }
 
 // The ONE owner of the alignof operator's spellings: C++ `alignof`, C11
@@ -2950,7 +2950,8 @@ static bool is_decltype_identifier(const madc::dis::istring &name)
 // alignof" question asks it (gated by scripts/check-one-alignof-spelling.sh).
 bool is_alignof_identifier(const madc::dis::istring &name)
 {
-    static const char *const spellings[] = {
+    // Interned once: each test is an identity compare.
+    static const madc::dis::istring spellings[] = {
 	"alignof", "_Alignof", "__alignof__", "__alignof"
     };
     for ( size_t i = 0; i < sizeof(spellings) / sizeof(spellings[0]); ++i )
@@ -2962,7 +2963,7 @@ bool is_alignof_identifier(const madc::dis::istring &name)
 // `sizeof` or an alignof spelling: an operator over a type-id or expression.
 static bool is_type_query_identifier(const madc::dis::istring &name)
 {
-    return name == "sizeof" || is_alignof_identifier(name);
+    return name == MADC_ISTRING_LITERAL("sizeof") || is_alignof_identifier(name);
 }
 
 // An operator whose parenthesized operand is UNEVALUATED — decltype
@@ -2972,27 +2973,28 @@ static bool is_type_query_identifier(const madc::dis::istring &name)
 static bool has_unevaluated_operand(const madc::dis::istring &name)
 {
     return is_decltype_identifier(name) || is_type_query_identifier(name)
-	|| name == "noexcept";
+	|| name == MADC_ISTRING_LITERAL("noexcept");
 }
 
 static bool is_static_assert_identifier(const madc::dis::istring &name)
 {
-    return name == "_Static_assert" || name == "static_assert";
+    return name == MADC_ISTRING_LITERAL("_Static_assert")
+	|| name == MADC_ISTRING_LITERAL("static_assert");
 }
 
 static bool is_nullptr_identifier(const madc::dis::istring &name)
 {
-    return name == "nullptr";
+    return name == MADC_ISTRING_LITERAL("nullptr");
 }
 
 static bool is_bool_literal_identifier(const madc::dis::istring &name, bool &value)
 {
-    if ( name == "true" )
+    if ( name == MADC_ISTRING_LITERAL("true") )
     {
 	value = true;
 	return true;
     }
-    if ( name == "false" )
+    if ( name == MADC_ISTRING_LITERAL("false") )
     {
 	value = false;
 	return true;
@@ -3179,12 +3181,14 @@ TokenBase *Program::skip_expression_whitespace()
 
 static bool is_realpart_identifier(const madc::dis::istring &name)
 {
-    return name == "__real" || name == "__real__";
+    return name == MADC_ISTRING_LITERAL("__real")
+	|| name == MADC_ISTRING_LITERAL("__real__");
 }
 
 static bool is_imagpart_identifier(const madc::dis::istring &name)
 {
-    return name == "__imag" || name == "__imag__";
+    return name == MADC_ISTRING_LITERAL("__imag")
+	|| name == MADC_ISTRING_LITERAL("__imag__");
 }
 
 static TokenBase *make_complex_component_token(TokenBase *expr, bool imag_part)
@@ -33537,9 +33541,9 @@ void Program::delimStepStream(TokenBase *t, DelimDepth &d,
 
 static bool is_named_cpp_cast(const madc::dis::istring &name)
 {
-    return name == "static_cast"
-	|| name == "reinterpret_cast"
-	|| name == "const_cast";
+    return name == MADC_ISTRING_LITERAL("static_cast")
+	|| name == MADC_ISTRING_LITERAL("reinterpret_cast")
+	|| name == MADC_ISTRING_LITERAL("const_cast");
 }
 
 // A named cast's spelling as the conversions it may perform — read once,
@@ -41823,14 +41827,23 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
     // Declared before any `goto ns_resolved` so the jumps don't skip an init.
     DataDefCLASS *qstatic_owner = NULL;
     madc::dis::istring qstatic_member;
-		madc::dis::istring contextual_name = contextual_identifier_name(tb);
-		TokenIdent contextual_ident(contextual_name);
+		// The arm's NAME, read once: an identifier's is the pool's memo
+		// (spelling_name), so every lookup and compare below takes it
+		// without re-interning the text; the spelling tests are identity
+		// compares against interned literals. A contextual keyword gets an
+		// identifier stand-in, built only for it.
+		const madc::dis::istring ident_name = contextual_identifier_name(tb);
+		std::unique_ptr<TokenIdent> contextual_ident;
 		TokenIdent *ident_tb = tb->type() == TokenType::ttIdentifier
-		    ? (TokenIdent *)tb
-		    : &contextual_ident;
+		    ? (TokenIdent *)tb : NULL;
+		if ( !ident_tb )
+		{
+		    contextual_ident.reset(new TokenIdent(ident_name));
+		    ident_tb = contextual_ident.get();
+		}
 		bool expression_head = exStack.empty() && opStack.empty();
 		bool parsed_operator_name = false;
-		madc::dis::istring member_lookup_name = ident_tb->spelling();
+		madc::dis::istring member_lookup_name = ident_name;
 		// An `operator` head names an operator-function-id when the
 		// unqualified lookup can land on the enclosing class, OR in
 		// member-access position (`__p.operator->()`, [expr.ref]/2 —
@@ -41843,7 +41856,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// be remembered HERE for the dot/arrow arms' entry tests.
 		bool operator_id_after_dot = false;
 		bool operator_id_after_arrow = false;
-		if ( ident_tb->spelling_is("operator")
+		if ( ident_name == MADC_ISTRING_LITERAL("operator")
 		  && ((code && code->method && code->method->owner_class)
 		   || (presents_as_cpp() && isMemberAccessPosition())) )
 		{
@@ -41854,15 +41867,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    member_lookup_name = parseOperatorId(tb);
 		    parsed_operator_name = true;
 		}
-		if ( ident_tb->spelling_is("__FUNCTION__") || ident_tb->spelling_is("__func__")
-		  || ident_tb->spelling_is("__PRETTY_FUNCTION__") )
+		if ( ident_name == MADC_ISTRING_LITERAL("__FUNCTION__") || ident_name == MADC_ISTRING_LITERAL("__func__")
+		  || ident_name == MADC_ISTRING_LITERAL("__PRETTY_FUNCTION__") )
 		{
 		    var = addLiteral(cur_func_name);
 		    exStack.push(new TokenVar(*var));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		bool bool_value = false;
-		if ( is_bool_literal_identifier(ident_tb->spelling(), bool_value) )
+		if ( is_bool_literal_identifier(ident_name, bool_value) )
 		{
 		    TokenInt *ti = new TokenInt(bool_value ? 1 : 0);
 		    ti->setDataType(&ddBOOL);
@@ -41880,8 +41893,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// order-free here — both operands are pure predicates.)
 		TokenID tid_follow = TokenID::tkBase;
 		if ( peekToken() && peekToken()->id() == TokenID::tkLT
-		  && (find_template(ident_tb->spelling())
-		   || find_template_alias(ident_tb->spelling()))
+		  && (find_template(ident_name)
+		   || find_template_alias(ident_name))
 		  && template_id_is_type_expression_context(*this, &tid_follow) )
 		{
 		    // `Tmpl<args>::member` read: a COMPLETENESS demand (the member
@@ -41897,7 +41910,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( tid_follow == TokenID::tkNS )
 			allow_variadic_real_inst = true;
 		    TokenDataType *inst =
-			    instantiate_template_id(ident_tb->spelling(), ident_tb);
+			    instantiate_template_id(ident_name, ident_tb);
 		    allow_variadic_real_inst = saved_vri;
 		    if ( inst )
 		    {
@@ -41906,12 +41919,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		}
 		bool ordinary_call_name =
-		    find_variable_for_contextual_type_name(ident_tb->spelling()) != NULL;
+		    find_variable_for_contextual_type_name(ident_name) != NULL;
 		if ( !ordinary_call_name
 		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk
 		  && is_dynamic_symbol_fallback_enabled()
-		  && is_dynamic_symbol_allowed(ident_tb->spelling())
-		  && madcdl_sym_default(ident_tb->spelling()) )
+		  && is_dynamic_symbol_allowed(ident_name)
+		  && madcdl_sym_default(ident_name.c_str()) )
 		    ordinary_call_name = true;
 		// A name in MEMBER-ACCESS position is a member, never a type
 		// ([basic.lookup.classref]/1: the class's scope is searched
@@ -42000,23 +42013,23 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		}
-		if ( is_realpart_identifier(ident_tb->spelling())
-		  || is_imagpart_identifier(ident_tb->spelling()) )
+		if ( is_realpart_identifier(ident_name)
+		  || is_imagpart_identifier(ident_name) )
 		{
-		    bool want_imag = is_imagpart_identifier(ident_tb->spelling());
+		    bool want_imag = is_imagpart_identifier(ident_name);
 		    exStack.push(parse_complex_component_operand(want_imag, tb));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// type-trait builtins (__is_class, __is_base_of, …) — fold to a
 		// bool constant at parse time (monomorphized args are concrete).
-		if ( is_type_trait_builtin(ident_tb->spelling()) )
+		if ( is_type_trait_builtin(ident_name) )
 		{
-		    exStack.push(evaluate_type_trait(tb, ident_tb->spelling()));
+		    exStack.push(evaluate_type_trait(tb, ident_name));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// noexcept(expr) ([expr.unary.noexcept]) — folds to a bool
 		// constant at parse time, like sizeof/alignof below.
-		if ( ident_tb->spelling_is("noexcept") )
+		if ( ident_name == MADC_ISTRING_LITERAL("noexcept") )
 		{
 		    TokenInt *ti = new TokenInt(
 			(int64_t)evaluate_noexcept_operator(tb));
@@ -42028,14 +42041,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// sizeof / alignof — resolve to integer constant at parse time.
-		if ( is_type_query_identifier(ident_tb->spelling()) )
+		if ( is_type_query_identifier(ident_name) )
 		{
 		    TokenBase *deferred = NULL;
-		    if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(tb, ident_tb->spelling()) )
+		    if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(tb, ident_name) )
 			exStack.push(vla_tb);
 		    else
 		    {
-			size_t query_value = evaluate_type_query(tb, ident_tb->spelling(), &deferred);
+			size_t query_value = evaluate_type_query(tb, ident_name, &deferred);
 			if ( deferred )
 			{
 			    exStack.push(deferred);
@@ -42052,18 +42065,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		}
 		// _Generic — C11 generic selection, resolved at parse time
 		// (Tier-1 lowering: the selected association IS the result).
-		if ( ident_tb->spelling_is("_Generic") )
+		if ( ident_name == MADC_ISTRING_LITERAL("_Generic") )
 		{
 		    exStack.push(parse_generic_selection(tb));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-		if ( is_named_cpp_cast(ident_tb->spelling()) )
+		if ( is_named_cpp_cast(ident_name) )
 		{
-		    exStack.push(parse_named_cpp_cast(tb, ident_tb->spelling()));
+		    exStack.push(parse_named_cpp_cast(tb, ident_name));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// dynamic_cast < TYPE * > ( EXPR )   (S5c)
-		if ( ident_tb->spelling_is("dynamic_cast") )
+		if ( ident_name == MADC_ISTRING_LITERAL("dynamic_cast") )
 		{
 		    skip_expression_whitespace();
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
@@ -42111,7 +42124,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// typeid ( EXPR | TYPE )   (S5d)
-		if ( ident_tb->spelling_is("typeid") )
+		if ( ident_name == MADC_ISTRING_LITERAL("typeid") )
 		{
 		    skip_expression_whitespace();
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
@@ -42164,7 +42177,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(ttd);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-		if ( is_nullptr_identifier(ident_tb->spelling()) )
+		if ( is_nullptr_identifier(ident_name) )
 		{
 		    TokenNullptr *tnp = new TokenNullptr();
 		    tnp->file = tb->file;
@@ -42179,7 +42192,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(parse_vector_builtin(tb, vector_kind));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-		if ( ident_tb->spelling_is("__builtin_types_compatible_p") )
+		if ( ident_name == MADC_ISTRING_LITERAL("__builtin_types_compatible_p") )
 		{
 		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after __builtin_types_compatible_p" << flush;
@@ -42220,7 +42233,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// class) made every classify-gated branch lie (gcc-torture
 		// 20040709-* left long doubles unset because the real-class
 		// branch never fired).
-		if ( ident_tb->spelling_is("__builtin_classify_type") )
+		if ( ident_name == MADC_ISTRING_LITERAL("__builtin_classify_type") )
 		{
 		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after __builtin_classify_type" << flush;
@@ -42260,7 +42273,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// this arm); TokenBase::is_constant() is the existing owner of "is
 		// this token a literal" — already true for char / int / real /
 		// string tokens and false for everything else.
-		if ( ident_tb->spelling_is("__builtin_constant_p") )
+		if ( ident_name == MADC_ISTRING_LITERAL("__builtin_constant_p") )
 		{
 		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after __builtin_constant_p" << flush;
@@ -42314,7 +42327,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// va_arg(ap, type) — compiler intrinsic for reading variadic args
-		if ( ident_tb->spelling_is("va_arg") )
+		if ( ident_name == MADC_ISTRING_LITERAL("va_arg") )
 		{
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after va_arg" << flush;
@@ -43050,7 +43063,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference type '" << base->name
 			    << "' is not a structure or union (member '"
-			    << ident_tb->spelling() << "')" << flush;
+			    << ident_name << "')" << flush;
 		    }
 
 		    // member_lookup_name, not the raw spelling: an
@@ -43265,7 +43278,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// namespace resolution: identifier :: member
 		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		{
-		    madc::dis::istring ns_name = ident_tb->spelling();
+		    madc::dis::istring ns_name = ident_name;
 		    // One classify policy — classify_qualifier_before_scope
 		    // (this arm previously checked class BEFORE namespace while
 		    // its two siblings checked namespace first; the shared
@@ -43549,7 +43562,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// EXISTING pointer-member-access path, and `this` as a value (e.g.
 		// `return this;`) be the pointer itself. Outside a method it stays
 		// unresolved -> the usual "undeclared identifier" error.
-	if ( !var && ident_tb->spelling_is("this")
+	if ( !var && ident_name == MADC_ISTRING_LITERAL("this")
 	     && code )
 	    var = code->findVariableLocal(strpool, "__this");
 		// class method: resolve unqualified member name through __this
@@ -43651,7 +43664,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    Throw(tb) << "use of undeclared member '" << member_lookup_name << '\'' << flush;
 		// lazy-load check: symbol registered by #include but not yet created
 		if ( !var )
-		    var = lazy_resolve(ident_tb->spelling());
+		    var = lazy_resolve(ident_name);
 		if ( !var )
 		{
 		    TokenBase *ctx_value = resolve_expression_context_identifier(ident_tb);
@@ -43678,7 +43691,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{
-		    madc::dis::istring fname = ident_tb->spelling();
+		    madc::dis::istring fname = ident_name;
 		    // dlsym fallback: resolve known libc/system functions early.
 		    // If that fails, C89 still permits an implicit `int f()`
 		    // declaration for calls to functions defined later in the file.
@@ -43787,11 +43800,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // handling. Guarded on a known template name so a stray `x < y`
 		    // on an undeclared `x` still reports the undeclared identifier.
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
-		      && (find_template(ident_tb->spelling())
-		       || find_template_alias(ident_tb->spelling())) )
+		      && (find_template(ident_name)
+		       || find_template_alias(ident_name)) )
 		    {
 			if ( TokenDataType *inst =
-				instantiate_template_id(ident_tb->spelling(), ident_tb) )
+				instantiate_template_id(ident_name, ident_tb) )
 			{
 			    tb = inst;
 			    return ExprStep::Redo;
@@ -43812,7 +43825,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // the same shape as the template-id branch above.
 		    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		    {
-			flat_datatype_map_iter dmi = datatype_map.find(ident_tb->spelling());
+			flat_datatype_map_iter dmi = datatype_map.find(ident_name);
 			if ( dmi != datatype_map.end() )
 			{
 			    TokenDataType *use =
@@ -43830,7 +43843,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // `typename _Alloc_traits::is_always_equal{}`). Resolve
 		    // the qualified type and Redo through the dataType arm,
 		    // which owns functional construction.
-		    if ( ident_tb->spelling_is("typename") && peekToken() )
+		    if ( ident_name == MADC_ISTRING_LITERAL("typename") && peekToken() )
 		    {
 			if ( TokenDataType *tdt = resolve_typename_type_token(
 				nextToken(), true, ident_tb) )
@@ -43877,12 +43890,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			{
 			    if ( !*si )
 				continue;
-			    Variable *mvar = (*si)->findMethod(ident_tb->spelling());
+			    Variable *mvar = (*si)->findMethod(ident_name);
 			    if ( mvar && (mvar->flags & vfSTATIC) )
 			    {
 				var = mvar;
 				qstatic_owner = *si;
-				qstatic_member = ident_tb->spelling();
+				qstatic_member = ident_name;
 				goto ns_resolved;
 			    }
 			}
@@ -43893,10 +43906,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 		    {
 			VarTemplateDef *vti =
-			    var_template_map.find(ident_tb->spelling());
+			    var_template_map.find(ident_name);
 			if ( vti == var_template_map.end() && !current_namespace().empty() )
 			    vti = var_template_map.find(
-				current_namespace() + "::" + ident_tb->spelling());
+				current_namespace() + "::" + ident_name);
 			if ( vti != var_template_map.end() && !vti->init.empty() )
 			{
 			    std::vector<DataDef *> targs = capture_call_template_args();
@@ -43923,14 +43936,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // layer extracts the receive target (parseExprStmt) and
 		    // the CIR builder refuses any other position loud.
 		    if ( go_statement_enabled()
-		      && ident_tb->spelling_is("await") )
+		      && ident_name == MADC_ISTRING_LITERAL("await") )
 		    {
 			exStack.push(make_await_token(ident_tb, NULL));
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
-		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_tb->spelling() << endl);
+		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_name << endl);
 		    { debug_deref_fail(*this, 14255, ident_tb, NULL);
-		    Throw(tb) << "use of undeclared identifier '" << ident_tb->spelling() << '\'' << flush;
+		    Throw(tb) << "use of undeclared identifier '" << ident_name << '\'' << flush;
 		    }
 		}
 		ns_resolved:
@@ -44075,7 +44088,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    TokenCallFunc *tc = new TokenCallFunc(*call_var);
 		    tc->auto_scope_context = public_scope_rebind
 			|| (is_runtime_eval_scope_ctx_helper_name(call_var->name)
-			 && is_runtime_eval_scope_public_name(ident_tb->spelling()));
+			 && is_runtime_eval_scope_public_name(ident_name));
 		    tc->explicit_template_args = call_explicit_targs;
 		    tb = nextToken();
 		    tc->line = tb->line;
