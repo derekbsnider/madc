@@ -13,6 +13,7 @@
 #include <map>
 #include <unordered_map>
 #include <set>
+#include <unordered_set>
 #include <stack>
 #include <list>
 #include <queue>
@@ -35633,15 +35634,24 @@ int CirBuilder::pack_gate_drop(node_t tree, const std::vector<int> &bad_items)
 // the spec list). Ids over-approximate — a variable sharing a typedef's
 // name keeps that typedef alive — which errs toward emitting, never toward
 // a missing definition.
-static void cir_harvest_type_refs(node_t n, std::set<madc::dis::istring> &tags,
-				  std::set<madc::dis::istring> &ids,
+// The names are the nodes' own strings: c2mir interns every CIR string
+// (c2mir_uniq_str — CirBuilder::id and the pack restore), so one spelling is
+// one pointer and the sets key on it, never re-interning or comparing bytes.
+// The filter only asks membership, so order is no part of the answer.
+typedef std::unordered_set<const char *> cir_name_set;	// referenced names
+typedef std::vector<const char *> cir_name_list;	// one node's names
+static inline void cir_name_add(cir_name_set &s, const char *p) { s.insert(p); }
+static inline void cir_name_add(cir_name_list &v, const char *p) { v.push_back(p); }
+
+template <class Names>
+static void cir_harvest_type_refs(node_t n, Names &tags, Names &ids,
 				  bool *has_typedef = NULL)
 {
 	if (!n)
 		return;
 	if (n->code == N_ID) {
 		if (n->u.s.s)
-			ids.insert(n->u.s.s);
+			cir_name_add(ids, n->u.s.s);
 		return;
 	}
 	if (n->code == N_TYPEDEF && has_typedef)
@@ -35649,7 +35659,7 @@ static void cir_harvest_type_refs(node_t n, std::set<madc::dis::istring> &tags,
 	if (n->code == N_STRUCT || n->code == N_UNION) {
 		node_t idn = c2mir_node_first_op(n);
 		if (idn && idn->code == N_ID && idn->u.s.s)
-			tags.insert(idn->u.s.s);
+			cir_name_add(tags, idn->u.s.s);
 	}
 	if (n->code > N_ID)
 		for (node_t op = c2mir_node_first_op(n); op;
@@ -35664,7 +35674,7 @@ static void cir_harvest_type_refs(node_t n, std::set<madc::dis::istring> &tags,
 // declaration names. Everything else here is file scope: a struct body opens
 // no scope in C. The caller walks no function body (its tags are block-scope).
 static void cir_parameter_scope_tags(node_t n, bool in_params,
-				     std::set<madc::dis::istring> &declared,
+				     cir_name_set &declared,
 				     std::vector<std::pair<madc::dis::istring, c2mir_node_code_t> > &first_in_params)
 {
 	if (!n || n->code <= N_ID)
@@ -35690,7 +35700,7 @@ static void cir_parameter_scope_tags(node_t n, bool in_params,
 // the tag's use, so each such tag is declared at the head of the module.
 void CirBuilder::declare_parameter_scope_tags(node_t &top_list)
 {
-	std::set<madc::dis::istring> declared;
+	cir_name_set declared;
 	std::vector<std::pair<madc::dis::istring, c2mir_node_code_t> > first_in_params;
 	for (node_t n = c2mir_node_first_op(top_list); n; n = c2mir_node_next_op(n)) {
 		if (n->code != N_FUNC_DEF) {
@@ -38253,16 +38263,21 @@ node_t CirBuilder::translate_module(Program *prog)
 			for (size_t s = 0; s < m_ctor_groups[g].second.size(); ++s)
 				group_stmts.insert(m_ctor_groups[g].second[s]);
 
+		// A name as the module's strings hold it (the sets key on the
+		// pointer; see cir_harvest_type_refs).
+		auto module_name = [&](const char *s) -> const char * {
+			return c2mir_uniq_str(c2m, s, strlen(s) + 1);
+		};
 		struct CondNd {
 			node_t n;
 			bool is_type;
-			madc::dis::istring key;
-			std::set<madc::dis::istring> tags, ids;
+			const char *key;	// a module string
+			cir_name_list tags, ids;
 			bool is_typedef;
 		};
 		std::vector<CondNd> pend;
 		std::map<node_t, size_t> pend_idx;
-		std::set<madc::dis::istring> ref_tags, ref_ids;
+		cir_name_set ref_tags, ref_ids;
 		for (node_t ch = c2mir_node_first_op(top_list); ch;
 		     ch = c2mir_node_next_op(ch)) {
 			std::map<node_t, CondEmit>::iterator mi =
@@ -38283,7 +38298,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			CondNd c;
 			c.n = ch;
 			c.is_type = mi->second.is_type;
-			c.key = mi->second.key;
+			c.key = module_name(mi->second.key.c_str());
 			c.is_typedef = false;
 			cir_harvest_type_refs(ch, c.tags, c.ids, &c.is_typedef);
 			// A typedef-bearing TYPE node admits by its DECLARED
@@ -38293,7 +38308,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			// self-admit it.
 			if (c.is_type && c.is_typedef) {
 				const char *dn = cir_declared_id(ch);
-				c.key = dn ? dn : "";
+				c.key = dn ? dn : module_name("");
 			}
 			pend_idx[ch] = pend.size();
 			pend.push_back(c);
@@ -38304,7 +38319,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		struct CondGrp {
 			size_t grp;
 			size_t owner;			// index into pend
-			std::set<madc::dis::istring> tags, ids;
+			cir_name_list tags, ids;
 		};
 		std::vector<CondGrp> gpend;
 		for (size_t g = 0; g < m_ctor_groups.size(); ++g) {
@@ -38345,14 +38360,12 @@ node_t CirBuilder::translate_module(Program *prog)
 				if (!c.is_type)
 					keep = ref_ids.count(c.key) != 0;
 				else {
-					for (std::set<madc::dis::istring>::iterator t =
-						 c.tags.begin();
-					     t != c.tags.end(); ++t)
-						if (ref_tags.count(*t)) {
+					for (size_t t = 0; t < c.tags.size(); ++t)
+						if (ref_tags.count(c.tags[t])) {
 							keep = true;
 							break;
 						}
-					if (!keep && c.is_typedef && !c.key.empty())
+					if (!keep && c.is_typedef && *c.key)
 						keep = ref_ids.count(c.key) != 0;
 				}
 				if (!keep)

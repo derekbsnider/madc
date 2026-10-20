@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### The CIR referenced-name filter keys its sets on interned string pointers
+
+- The referenced-surface filter in `CirBuilder::translate_module` keeps its name sets as `std::unordered_set<const char *>`, keyed on the c2mir-interned string each node already holds, in place of a byte-ordered `std::set<istring>`. `cir_harvest_type_refs` adds the node's own string and no longer constructs an `istring` per identifier.
+- The admission fixpoint and the order of its removals are unchanged. The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 20.6M (-1.2%) for `act_wiz.c` and 160.0M (-1.1%) for `sqlite3.c`.
+
 ### The hottest dynamic_casts in the parser and cir builder use the kind accessors
 
 - Token downcasts at the size-hint walker, the call and subscript helpers, the declaration builders and the brace unwrapper read the TokenBase kind accessors (`as_var_tok`, `as_member_tok`, `as_struct_lit_tok`, `as_assign_tok` and the others). A NULL operand is tested first where the cast accepted NULL.
