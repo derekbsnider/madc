@@ -3,15 +3,15 @@
 # recorded	2026-10-20 (the commit is the ledger row parse-cost)
 cxx_stl.live	2456464984
 cxx_stl.forest	1345902844
-c_headers.live	203371286
+c_headers.live	203305668
 c_headers.forest	37638504
-sqlite3.forest	15435993120
-dialect.live	19433213
-dialect.forest	19420218
+sqlite3.forest	14830583185
+dialect.live	19408639
+dialect.forest	19395701
 dialect_all.live	16331084
 dialect_all.forest	16317907
-dialect_cxx.live	492989959
-dialect_cxx.forest	237113694
+dialect_cxx.live	492732607
+dialect_cxx.forest	237014279
 dialect_one.live	12189440
 dialect_one.forest	12183350
 rung_c8.forest	126354931
