@@ -30,6 +30,49 @@ and `--std=gnu++17` for `.cpp`, against `gcc -std=gnu17` / `g++ -std=gnu++17`.
 
 ## Silent wrong answers
 
+### B214. A global `using std::abs;` does not add std's overloads to `::abs`
+
+```cpp
+#include <stdlib.h>
+#include <stdio.h>
+int main()
+{
+	printf("%g\n", (double)abs(-2.5));
+	return 0;
+}
+```
+
+- Found 2026-10-20 during the include_next found-dir fix (the libstdc++
+  `<stdlib.h>` wrapper's `using std::abs;`).
+- g++ 13 and clang++ 18 (`-std=gnu++17`) print `2.5`; madc prints `2`, packed
+  and live (`--no-forest-bind`) alike. `std::abs(-2.5)` through `<cstdlib>`
+  prints `2.5`.
+- Layer: name lookup of a namespace-scope using-declaration whose name is
+  already declared there (glibc's `extern int abs(int)`): the imported overload
+  set does not join the existing one. Parser/lookup — its own session.
+
+### B212. A stringized macro loses a GNU attribute madc does not model
+
+```c
+#include <stdio.h>
+#define M1 __attribute__ ((__malloc__))
+#define S2(...) #__VA_ARGS__
+#define S(...) S2(__VA_ARGS__)
+int main(void)
+{
+	printf("[%s]\n", S(M1));
+	return 0;
+}
+```
+
+- Found 2026-10-20 during K2b (glibc's `__attr_dealloc_fclose`).
+- gcc 13 and clang 18 (`-std=gnu17`) print `[__attribute__ ((__malloc__))]`;
+  madc prints `[]`.
+- Layer: the lexer drops an unsupported attribute (`madc_gnu_attribute_kind`
+  → Unsupported) as it lexes, argument pre-expansion included, so `#` sees no
+  tokens. The spelling must survive to stringizing; the drop belongs after
+  phase 4. Core lexer — its own session.
+
 ### B205. A throw passing through a function with no try of its own skips its objects' destructors
 
 ```cpp
@@ -865,6 +908,25 @@ int main(void)
 - The C++ twin is a wrong answer section K owns: `#define NDEBUG` before
   `<cassert>` keeps `assert` live in a bound C++ compile (g++ prints `ok`,
   madc aborts in `assert(0)`); `MADC_FOREST_ENV_CHECK=1` gives `ok`.
+
+### B213. `__has_builtin` outside `#if` is refused
+
+```c
+#include <stdio.h>
+int main(void)
+{
+	printf("%d\n", __has_builtin(__builtin_fclose));
+	return 0;
+}
+```
+
+- Found 2026-10-20 during K2b (glibc's `<wchar.h>` tests
+  `__has_builtin (__builtin_fclose)`).
+- gcc 13 and clang 18 (`-std=gnu17`) print `0`; madc refuses: `use of
+  undeclared identifier '__builtin_fclose'`.
+- Layer: `__has_builtin` is answered only by the `#if` evaluator; in an
+  ordinary expression it reaches the parser as a call whose argument is an
+  undeclared name.
 
 ### B203. A qualified member call (`p->B::f()`, `r.B::f()`) is refused
 
