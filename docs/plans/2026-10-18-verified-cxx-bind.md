@@ -407,6 +407,26 @@ K2b measured 2026-10-20 (packed `madc-release`, knob on): the 9 → 0 declines;
 the suite 2137 / 2139, and the 2 (`testnoreturn_c11`, `testthrow_through_frame`,
 B205's gates not yet landed) fail with the knob off too. Knob-only failures: 0.
 
+### K1b — measured (2026-10-20, after K2b)
+
+Census, knob on, packed release: every suite test's verbose trace, counting
+roots that declined and whether a bind came first.
+- Over 87cb582f6 + K2b: 53 of 1996 tests decline, 48 after a bind, all pass.
+  50 are one root: libstdc++'s `<stdlib.h>` wrapper, frozen only through
+  `<bits/std_abs.h>`'s `#include_next`, which madc resolved from the top of the
+  search list (gcc resumes after the includer's found dir). Fixed in
+  fdbf8c551 (`tests/testincludenextsubdir_c`). `stdlib.h` became a pack root
+  (list v11) so a C++ `<stdlib.h>` binds its real content.
+- After it: 3 of 1997 decline, all after a bind, all pass:
+  - two `assert.h` `#ifdef NDEBUG` (C++ `testsysheaderreinclude`, C
+    `testsysheaderreinclude4_c`): real differences. The live closure is
+    `assert.h` alone, disjoint from the bound units' names.
+  - one C `bits/byteswap.h` (`testbswap_glibc_inline`): `<byteswap.h>`
+    tail-matches the frozen `bits/byteswap.h` (KG
+    `forest_tail_match_subdir_unit`); its `#error` arm declines, and the live
+    parse reads the real `<byteswap.h>`. C keeps per-root declines.
+- Overlapping declines after a bind in the suite: 0.
+
 ### K2 — the deps are exact (a decline means the content really differs)
 
 - Freeze (format v68): record each conditional's OUTCOME.
