@@ -71,6 +71,12 @@ struct lib {
 typedef struct lib lib_t;
 
 #if defined(__unix__)
+/* gcc's default link set closes with its runtime library (-lgcc --as-needed
+   -lgcc_s): a program run here that calls __register_frame or _Unwind_* --
+   MIR itself, bootstrapped, since mir-gen.c registers the frames it
+   generates -- resolves it there, as the gcc-built program does.  The bare
+   soname lets the target's own loader search its library path. */
+#define LIBGCC_S_LIB {"libgcc_s.so.1", NULL}
 #if defined(__linux__) && !defined(__GLIBC__)
 /* A non-glibc Linux libc, e.g. musl on Alpine: libc, libm, libpthread, and
    libdl all live in one shared object, installed as the dynamic loader
@@ -91,13 +97,13 @@ typedef struct lib lib_t;
 #error cannot recognize the non-glibc linux target
 #endif
 static lib_t std_libs[]
-  = {{"/lib/ld-musl-" MUSL_LIB_ARCH ".so.1", NULL}, {"/usr/lib/libc.so", NULL}};
+  = {{"/lib/ld-musl-" MUSL_LIB_ARCH ".so.1", NULL}, {"/usr/lib/libc.so", NULL}, LIBGCC_S_LIB};
 static const char *std_lib_dirs[] = {"/lib", "/usr/lib"};
 #elif UINTPTR_MAX == 0xffffffff
 static lib_t std_libs[]
   = {{"/lib/libc.so", NULL},         {"/lib/libm.so", NULL},          {"/lib/libc.so.6", NULL},
      {"/lib32/libc.so.6", NULL},     {"/lib/libm.so.6", NULL},        {"/lib32/libm.so.6", NULL},
-     {"/lib/libpthread.so.0", NULL}, {"/lib32/libpthread.so.0", NULL}};
+     {"/lib/libpthread.so.0", NULL}, {"/lib32/libpthread.so.0", NULL}, LIBGCC_S_LIB};
 static const char *std_lib_dirs[] = {"/lib", "/lib32"};
 #elif UINTPTR_MAX == 0xffffffffffffffff
 #if defined(__x86_64__)
@@ -109,14 +115,16 @@ static lib_t std_libs[] = {{"/lib64/libc.so", NULL},
                            {"/lib/x86_64-linux-gnu/libm.so.6", NULL},
                            {"/usr/lib64/libpthread.so.0", NULL},
                            {"/lib/x86_64-linux-gnu/libpthread.so.0", NULL},
-                           {"/usr/lib/libc.so", NULL}};
+                           {"/usr/lib/libc.so", NULL},
+                           LIBGCC_S_LIB};
 static const char *std_lib_dirs[] = {"/lib64", "/lib/x86_64-linux-gnu"};
 #elif (__aarch64__)
 static lib_t std_libs[]
   = {{"/lib64/libc.so", NULL},         {"/lib64/libm.so", NULL},
      {"/lib64/libc.so.6", NULL},       {"/lib/aarch64-linux-gnu/libc.so.6", NULL},
      {"/lib64/libm.so.6", NULL},       {"/lib/aarch64-linux-gnu/libm.so.6", NULL},
-     {"/lib64/libpthread.so.0", NULL}, {"/lib/aarch64-linux-gnu/libpthread.so.0", NULL}};
+     {"/lib64/libpthread.so.0", NULL}, {"/lib/aarch64-linux-gnu/libpthread.so.0", NULL},
+     LIBGCC_S_LIB};
 static const char *std_lib_dirs[] = {"/lib64", "/lib/aarch64-linux-gnu"};
 #elif (__PPC64__)
 static lib_t std_libs[] = {
@@ -134,6 +142,7 @@ static lib_t std_libs[] = {
   {"/lib/powerpc64-linux-gnu/libm.so.6", NULL},
   {"/lib/powerpc64-linux-gnu/libpthread.so.0", NULL},
 #endif
+  LIBGCC_S_LIB,
 };
 static const char *std_lib_dirs[] = {
   "/lib64",
@@ -148,14 +157,16 @@ static lib_t std_libs[]
   = {{"/lib64/libc.so", NULL},         {"/lib64/libm.so", NULL},
      {"/lib64/libc.so.6", NULL},       {"/lib/s390x-linux-gnu/libc.so.6", NULL},
      {"/lib64/libm.so.6", NULL},       {"/lib/s390x-linux-gnu/libm.so.6", NULL},
-     {"/lib64/libpthread.so.0", NULL}, {"/lib/s390x-linux-gnu/libpthread.so.0", NULL}};
+     {"/lib64/libpthread.so.0", NULL}, {"/lib/s390x-linux-gnu/libpthread.so.0", NULL},
+     LIBGCC_S_LIB};
 static const char *std_lib_dirs[] = {"/lib64", "/lib/s390x-linux-gnu"};
 #elif (__riscv)
 static lib_t std_libs[]
   = {{"/lib64/libc.so", NULL},         {"/lib64/libm.so", NULL},
      {"/lib64/libc.so.6", NULL},       {"/lib/riscv64-linux-gnu/libc.so.6", NULL},
      {"/lib64/libm.so.6", NULL},       {"/lib/riscv64-linux-gnu/libm.so.6", NULL},
-     {"/lib64/libpthread.so.0", NULL}, {"/lib/riscv64-linux-gnu/libpthread.so.0", NULL}};
+     {"/lib64/libpthread.so.0", NULL}, {"/lib/riscv64-linux-gnu/libpthread.so.0", NULL},
+     LIBGCC_S_LIB};
 static const char *std_lib_dirs[] = {"/lib64", "/lib/riscv64-linux-gnu"};
 #else
 #error cannot recognize 32- or 64-bit target
