@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### A class-typed if condition declaration is constructed before the condition reads it
+
+- `if (T q = e)` with a class type now runs q's initialization (copy construction, a prvalue, a braced list) before the condition, and destroys q when the if statement ends. The declaration was lowered to storage only, so the initializer was dropped: a copy read garbage, a zero-valued source took the then-branch, and a class with a destructor was destroyed unconstructed.
+- `CirBuilder::translate_if_core` lowers a class or array condition declaration through `header_declarator_stmts`, the same lowering a for-init declarator uses. Scalar condition declarations are unchanged.
+- `tests/testifcondclassdecl.mad` prints the same lines as g++ and clang++ under `--std=c++17`.
+
 ### The builtin type-spelling table and the runtime-eval helper names are interned lookups
 
 - `Program::resolve_builtin_type_spelling` reads the spelling through one interned table (`builtin_spelling_rows`) and a switch on its row kind, in place of a ladder of about 60 byte compares. Each spelling resolves to the same DataDef as before.

@@ -1,0 +1,43 @@
+// A class-typed if condition declaration ([stmt.select]/1, [stmt.pre]:
+// `if (T q = e)`) runs q's initialization — copy construction, a prvalue, a
+// braced list — before the contextual conversion to bool, and destroys q
+// when the if statement ends. Oracle: g++ -std=c++17 and clang++ -std=c++17
+// print exactly the lines in the .expect (numbered, so the order is checked).
+#include <stdio.h>
+
+static int seq = 0;
+
+struct S { int v; explicit operator bool() const { return v != 0; } };
+struct T { int v; operator bool() const { return v != 0; } };
+template <class X> struct B { X v; explicit operator bool() const { return v != 0; } };
+
+struct D {
+	int v;
+	D(int x) : v(x) { printf("%d D(%d)\n", ++seq, v); }
+	D(const D &o) : v(o.v + 10) { printf("%d Dcopy(%d)\n", ++seq, v); }
+	~D() { printf("%d ~D(%d)\n", ++seq, v); }
+	explicit operator bool() const { return v != 0; }
+};
+
+S make_s(int n) { S s = { n }; return s; }
+
+int main()
+{
+	S s = { 4 };
+	T t = { 5 };
+	B<int> b = { 6 };
+	if (S q = s) printf("S-copy: %d\n", q.v);
+	if (T q = t) printf("T-copy: %d\n", q.v);
+	if (B<int> q = b) printf("B-copy: %d\n", q.v);
+	if (S q = make_s(7)) printf("S-prvalue: %d\n", q.v);
+	if (S q = {8}) printf("S-list: %d\n", q.v);
+	S z = { 0 };
+	if (S q = z) printf("S-zero: wrong\n"); else printf("S-zero: else %d\n", q.v);
+	{
+		D d(1);
+		if (D q = d) printf("%d if-D: %d\n", ++seq, q.v);
+		printf("%d after-if\n", ++seq);
+	}
+	printf("%d done\n", ++seq);
+	return 0;
+}

@@ -2994,6 +2994,16 @@ public:
 	// storage declaration).
 	void class_decl_construction(class TokenDecl *sdcl, DataDefCLASS *cdcl,
 				     node_t items);
+	// A statement-header declarator (a for-init clause, an if condition's
+	// declaration) whose lowering is more than one declaration: a class
+	// object (storage + construction + cleanup) or an array object
+	// (storage + element construction).
+	bool is_object_declarator(class TokenDecl *td);
+	// The statements that declare ONE statement-header declarator, appended
+	// to `items`: class_decl_stmts for a class object, the storage + element
+	// construction for an array object, else the scalar SPEC_DECL with its
+	// initializer folded in.
+	void header_declarator_stmts(class TokenDecl *td, node_t items);
 	// A block-scope STATIC object is initialized once, the first time
 	// control passes its declaration ([stmt.dcl]/4): `init_items` (its
 	// construction) run inside gcc's guard protocol (-fthreadsafe-statics,

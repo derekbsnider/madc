@@ -28635,6 +28635,28 @@ static bool stmt_contains_label(TokenBase *tb)
 	return false;
 }
 
+bool CirBuilder::is_object_declarator(TokenDecl *td)
+{
+	return as_class_instance(td->var.type) || is_array_object(td->var.type);
+}
+
+void CirBuilder::header_declarator_stmts(TokenDecl *td, node_t items)
+{
+	if (DataDefCLASS *cdc = as_class_instance(td->var.type)) {
+		class_decl_stmts(td, cdc, items);
+		return;
+	}
+	if (is_array_object(td->var.type)) {
+		append(items, var_decl(&td->var, td));
+		append(items, array_decl_ctor_call(td));	// allowed-exception: header-declarator scope local
+		return;
+	}
+	// Scalar declarator: var_decl folds td->initialize into the SPEC_DECL
+	// initializer (RHS-unwrapped), so no separate assignment — one would
+	// re-run a side-effecting initializer.
+	append(items, var_decl(&td->var, td));
+}
+
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
 	// C++17 init-statement: `if (init; cond) S else E` lowers to
@@ -28658,6 +28680,16 @@ node_t CirBuilder::translate_if(TokenIF *ti)
 node_t CirBuilder::translate_if_core(TokenIF *ti)
 {
 	if (ti->condition_decl) {
+		// [stmt.select]/1, [stmt.pre]: the condition's object is declared
+		// AND initialized before the condition reads it, and destroyed when
+		// the if statement ends. A class object's lowering is storage +
+		// construction + cleanup (header_declarator_stmts, as a for-init
+		// declarator's) — the bare declaration left it unconstructed.
+		TokenDecl *ctd = dynamic_cast<TokenDecl *>(ti->condition_decl);
+		node_t items = list();
+		bool object_decl = ctd && is_object_declarator(ctd);
+		if (object_decl)
+			header_declarator_stmts(ctd, items);
 		node_t cond = translate_cond(ti->condition);
 		// Temps materialized by the CONDITION (m_pending_stmts) must be
 		// declared before the IF — otherwise the then/else block's own
@@ -28667,9 +28699,10 @@ node_t CirBuilder::translate_if_core(TokenIF *ti)
 		node_t then_body = translate_branch_stmt(ti->statement);
 		node_t else_body = ti->elsestmt ? translate_branch_stmt(ti->elsestmt) : ignore();
 		node_t if_node = node4(N_IF, list(), cond, then_body, else_body, ti);
-		node_t items = list();
-		node_t decl = translate_stmt(ti->condition_decl);
-		if (decl) append(items, decl);
+		if (!object_decl) {
+			node_t decl = translate_stmt(ti->condition_decl);
+			if (decl) append(items, decl);
+		}
 		for (node_t p : cond_temps)
 			append(items, p);
 		append(items, if_node);
@@ -28762,33 +28795,16 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 			// construction + cleanup dtor).
 			class_init_items = list();
 			auto add_clause = [&](TokenBase *clause) {
-				TokenDecl *ctd = dynamic_cast<TokenDecl *>(clause);
-				if (!ctd) {
+				if (TokenDecl *ctd = dynamic_cast<TokenDecl *>(clause))
+					header_declarator_stmts(ctd, class_init_items);
+				else
 					append(class_init_items, translate_expr(clause));
-					return;
-				}
-				if (DataDefCLASS *cdc = as_class_instance(ctd->var.type)) {
-					class_decl_stmts(ctd, cdc, class_init_items);
-					return;
-				}
-				if (is_array_object(ctd->var.type)) {
-					append(class_init_items, var_decl(&ctd->var, ctd));
-					append(class_init_items,
-					       array_decl_ctor_call(ctd));	// allowed-exception: for-init scope local
-					return;
-				}
-				// Scalar declarator: var_decl folds ctd->initialize
-				// into the SPEC_DECL initializer (RHS-unwrapped), so
-				// no separate assignment — one would re-run a
-				// side-effecting initializer.
-				append(class_init_items, var_decl(&ctd->var, ctd));
 			};
 			add_clause(tf->initialize);
 			for (TokenBase *ex : tf->init_extras)
 				add_clause(ex);
 			init = ignore();
-		} else if (td && (as_class_instance(td->var.type)
-				  || is_array_object(td->var.type))) {
+		} else if (td && is_object_declarator(td)) {
 			// Class-shape single declarator (`for (map<K,V>::iterator it =
 			// m.begin(); ...)`, `for (Foo f(x); ...)`): the 1->N class-decl
 			// lowering (storage decl + injected construction) has no room in
@@ -28799,13 +28815,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 			// scoping, dtor at block exit, and sibling loops reusing the
 			// name cannot collide.
 			class_init_items = list();
-			if (DataDefCLASS *fdc = as_class_instance(td->var.type)) {
-				class_decl_stmts(td, fdc, class_init_items);
-			} else {
-				append(class_init_items, var_decl(&td->var, td));
-				append(class_init_items,
-				       array_decl_ctor_call(td));	// allowed-exception: for-init scope local
-			}
+			header_declarator_stmts(td, class_init_items);
 			init = ignore();
 		} else {
 			init = td ? var_decl(&td->var, td) : translate_expr(tf->initialize);

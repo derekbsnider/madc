@@ -1,0 +1,13 @@
+S-copy: 4
+T-copy: 5
+B-copy: 6
+S-prvalue: 7
+S-list: 8
+S-zero: else 0
+1 D(1)
+2 Dcopy(11)
+3 if-D: 11
+4 ~D(11)
+5 after-if
+6 ~D(1)
+7 done
