@@ -110,4 +110,59 @@ CLI AOT exit; free cir_node / c2mir data before `MIR_link` in object mode (peak 
 5. Re-profile; Phase D from that profile.
 
 **Thread-safety contract** (every item): caches are per-Program or per-object (the alias memo is per
-gen_ctx); no new process-wide mutable state except A10's read-only TLS-model change.
+gen_ctx); the only new process-wide state is A10's `madc_verbose_requested`, an atomic set-only flag (the
+TLS-model change was ruled out: §9). A7's tables are function-local statics, built once and read-only.
+
+## 9. Progress (2026-10-20)
+
+Phase A is complete. One commit per item, each with Tier 1 + Tier 2, the static gates, the unit tests, the
+bind gate, the parse-cost gate (re-recorded downward after each) and `perf_vs_c2m.sh --same-objects`:
+the `-c` objects of act_wiz.c and sqlite3.c stayed byte-identical through every item.
+
+| after | commit | act_wiz.c Ir vs c2m | sqlite3.c Ir vs c2m |
+|---|---|---:|---:|
+| start (G1) | | 1.333× | 1.271× |
+| A1 platform integer accessor | 887eebddb | 1.290× | 1.221× |
+| A2 class-candidate first | 72f9b291b | 1.270× | 1.197× |
+| A3 identifier name read once | 66024105d | 1.232× | 1.167× |
+| A4 kind accessors for hot casts | 74048cc2f | 1.217× | 1.156× |
+| A5 pointer-keyed name sets | 4ff9af7d1 | 1.202× | 1.143× |
+| A6 UFCS / using-directive gating | ef1e1c651 | 1.191× | 1.137× |
+| A7 interned spelling / eval tables | 596f9a8eb | 1.186× | 1.131× |
+| A8 ordinary-call lookup gating | 874d2563b | 1.177× | 1.123× |
+| A9 if-condition probe asks lookup | c07e9d5d0 | 1.170× | 1.103× |
+| A10 one DBG, process-wide pre-test | 5c203f89b | 1.160× | 1.097× |
+| A11 vector-backed token stacks | 3bacb056b | 1.153× | 1.092× |
+
+madc's own Ir: act_wiz.c 1,834.7M → 1,586.9M (−13.5%); sqlite3.c 15,436.0M → 13,264.1M (−14.1%). Wall
+stays ~1.30–1.34× c2m (peak RSS 629 vs 402 MB on sqlite3.c): investigated after B1 (§6).
+
+- **A9's synthetic pair** (2,000 `if (a < b)` vs `if (a <= b)`, no `>` in the file): 1,847.6M → 384.1M Ir;
+  `<` now costs what `<=` costs (within 0.4% in C, 1.0% in C++).
+- **A10 shape:** the TLS model `initial-exec` was ruled out — libmadc's TLS segment is 1,448 bytes and
+  glibc reserves 512 for libraries loaded later, so a `dlopen` host could fail to load it. DBG got one
+  definition (`include/datadef.h`) testing an atomic set-only flag first; 37 copies → 1, gated by
+  `scripts/check-one-dbg-macro.sh` (`Consolidated: dbg_macro`).
+- **A8 ruling:** the plan said "reuse the first lookup"; the pre-check and the arm's resolution are
+  different lookups, so the pre-check is asked only where its one reader can fire (`name (` / `name {`).
+- **Found on the way:** fixed `d97509826` — a class-typed `if (T q = e)` dropped its initializer (silent
+  garbage); filed B209 (`S q{s}` refused, [dcl.init.list]/3.2) and B210 (class-typed `while`/`switch`
+  condition declarations refused) for a focused parser session.
+
+### B1 design (recon 2026-10-20)
+
+- The freeze records a conditional that tests a macro UNDEFINED at freeze time as external
+  (`pack_note_recorded_consult`), and the bind walk re-evaluates it. Not covered: a `-D` overriding a
+  predefine (a defined macro with no recorded origin is "config-word-pinned"), and a `-D` that changes how
+  a plain identifier token in a header expands. In C++ the walk's verified mode is off, so a differing
+  condition follows the frozen arm. K2 alone cannot make the bind safe under an arbitrary `-D`.
+- GCC's documented PCH rule is the oracle: a macro defined before the precompiled header must be defined
+  as it was when the PCH was built, "or must not affect the precompiled header, which usually means that
+  they don't appear in the precompiled header at all".
+- **Shape:** the freeze writes `CIR_FOREST_SEG_IDENT_NAMES` (slot 29, format v71): every identifier spelled
+  in each unit's raw source (slot +9), with its units — the `ForestDeclNames` layout and reader, reused.
+  The bind's exact match accepts a consumer whose `-D` names are all absent from the profile's table
+  (one binary search each; the producer's own defines hash must be 0, as every shipped pack's is). A name
+  the headers spell keeps today's decline; a container without the segment keeps it too.
+- **Gate:** act_wiz.c with `-DREQUESTS -DSMAUG` lexes what the wrapper build lexes (97,851 tokens) and
+  binds; a `-D` of a name a header tests (`-DNDEBUG` with `<assert.h>`) still gives gcc's answer.
