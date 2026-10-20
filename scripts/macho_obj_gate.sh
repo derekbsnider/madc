@@ -31,6 +31,10 @@
 #      typed a __DATA_CONST input S_REGULAR, so dyld ran no initializer), and
 #      the object leaves ___dso_handle undefined (ld64 keeps an object's
 #      definition over the image's mach header, so dlclose ran no destructor)
+#   9  unwind tables: an FDE per function in the object's __eh_frame, no LSDA
+#      field against the section label (Apple ld misplaces it), ld64.lld and
+#      madc's image index every FDE in __unwind_info at its function, and the
+#      .o path reproduces madc's __eh_frame and __unwind_info byte for byte
 #
 # The cross madcs, ld64.lld-18 / llvm-*-18 and the macOS SDK are container
 # artifacts, so the gate SKIPS (rc 0) when any is missing and says which.
@@ -330,6 +334,50 @@ sys.exit(0 if any(want <= v < want + max(size, 1) for v in slots) else 1)
 	else
 		fail "[8] -c of a ctor TU failed: $(tail -1 "$P/ctor.log")"
 	fi
+
+	# --- leg 9: unwind tables. The object carries an FDE per function in
+	# __TEXT,__eh_frame; ld64.lld indexes them in DWARF mode; madc's own image
+	# carries __eh_frame and an __unwind_info whose every function row names
+	# the FDE covering it, and the .o path reproduces both byte for byte.
+	nfn=$(llvm-nm-18 -m "$P/rich.o" 2>/dev/null | grep "(__TEXT,__text)" | grep -vc " ltmp_")
+	nfde=$(llvm-objdump-18 --dwarf=frames "$P/rich.o" 2>/dev/null | grep -c " FDE ")
+	[ "$nfn" -ge 1 ] && [ "$nfde" = "$nfn" ] \
+		&& pass "[9] the object has an FDE per function ($nfde)" \
+		|| fail "[9] $nfde FDEs for $nfn functions in the object"
+	# an LSDA field names its table's own label: Apple ld misplaces one that
+	# names the section label plus an offset (lld does not, so only this
+	# shape check catches it here)
+	llvm-objdump-18 --macho -r "$P/rich.o" 2>/dev/null \
+		| sed -n '/(__TEXT,__eh_frame)/,/^Relocation information/p' \
+		| grep -q "UNSIGND.*ltmp_gcc_except_tab" \
+		&& fail "[9] an LSDA field targets ltmp_gcc_except_tab + offset, not its table's label" \
+		|| pass "[9] no LSDA field targets the section label"
+	unwind_check() { # $1 image: every __unwind_info row with an FDE names its own
+		{ llvm-objdump-18 --macho --unwind-info "$1"; echo "@@"
+		  llvm-objdump-18 --dwarf=frames "$1"; } 2>/dev/null | python3 -c '
+import sys, re
+info, frames = sys.stdin.read().split("@@", 1)
+rows = [(int(o, 16), int(e, 16)) for o, e in re.findall(
+    r"function offset=(0x[0-9a-f]+), encoding(?:\[\d+\])?=(0x[0-9a-f]+)", info)]
+fdes = {int(off, 16): int(lo, 16) for off, lo in re.findall(
+    r"^([0-9a-f]{8}) [0-9a-f]+ [0-9a-f]+ FDE cie=[0-9a-f]+ pc=([0-9a-f]+)\.\.", frames, re.M)}
+dwarf = [(o, e & 0xffffff) for o, e in rows if e & 0x0f000000 in (0x03000000, 0x04000000)]
+bad = [o for o, f in dwarf if (fdes.get(f, -1) - 0x100000000) != o]
+sys.exit(0 if dwarf and len(dwarf) == len(fdes) and not bad else 1)'
+	}
+	[ -f "$P/prog.ld" ] && unwind_check "$P/prog.ld" \
+		&& pass "[9] ld64.lld indexes every FDE in DWARF mode" \
+		|| fail "[9] ld64.lld's __unwind_info does not name the object's FDEs"
+	[ -f "$P/direct" ] && unwind_check "$P/direct" \
+		&& pass "[9] madc's image: every FDE indexed in __unwind_info at its function" \
+		|| fail "[9] madc's __unwind_info does not name its FDEs at their functions"
+	for s in __eh_frame __unwind_info; do
+		llvm-otool-18 -s __TEXT "$s" "$P/from_o" 2>/dev/null | tail -n +2 > "$P/u1"
+		llvm-otool-18 -s __TEXT "$s" "$P/direct" 2>/dev/null | tail -n +2 > "$P/u2"
+		[ -s "$P/u1" ] && cmp -s "$P/u1" "$P/u2" \
+			&& pass "[9] $s identical through the .o" \
+			|| fail "[9] $s differs between the .o path and the direct emit"
+	done
 done
 
 [ $rc -eq 0 ] && echo "macho_obj_gate: OK" || echo "macho_obj_gate: FAILURES"

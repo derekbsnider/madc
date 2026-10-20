@@ -900,12 +900,13 @@ TEST_CASE("a g++ frame between the throw and the try runs its destructor and res
 
 }
 
-// The AOT images (ELF): the same frames reach the platform unwinder through
-// the image's .eh_frame -- registered by the in-process loader, found through
-// PT_GNU_EH_FRAME in an executable -- each FDE pointing at its region table in
-// .gcc_except_table, whose cleanup pointers (like the CIE's personality, gcc's
-// DW.ref word) go through .mir.addrpool slots: encoding 0x9b.
-#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+// The AOT images: the same frames reach the platform unwinder through the
+// image's .eh_frame -- registered by the in-process loader (ELF), found through
+// PT_GNU_EH_FRAME in an ELF executable and through __unwind_info in a Mach-O
+// one -- each FDE pointing at its region table in .gcc_except_table, whose
+// cleanup pointers (like the CIE's personality, gcc's DW.ref word) go through
+// .mir.addrpool slots: encoding 0x9b.
+#if (defined(__linux__) || defined(__APPLE__)) && (defined(__x86_64__) || defined(__aarch64__))
 
 struct AotUnit {
 	const char *text;
@@ -965,6 +966,7 @@ static std::vector<uint8_t> emit_object(std::initializer_list<AotUnit> units)
 	return bytes;
 }
 
+#if defined(__linux__)
 // A second translation unit for the merge: its own frames with regions.
 static const char *rt_other_text =
 	"struct O { long v; };\n"
@@ -1014,6 +1016,7 @@ static int64_t run_caught_aot(bool regions, int64_t a, const char *func, bool me
 	MIR_object_loaded_unload(lo);
 	return r;
 }
+#endif
 
 // An executable's own personality and stop function (libc + libgcc_s only):
 // the personality counts the frames that name it and the ones whose table it
@@ -1052,19 +1055,23 @@ static const char *exe_program_text =
 	"}\n"
 	"int main (void) { mid (1); return 1; }\n";
 
-// UNITS as an ELF executable (libc, libgcc_s), run: its output.
-static std::string run_executable(std::initializer_list<AotUnit> units)
+// The executable's libraries: libc and libgcc_s on Linux; a Mach-O image
+// always links libSystem, which carries the unwinder.
+static MIR_object_exec_params exec_params()
 {
-	MIR_context_t ctx = aot_context(units);
-	static const char *const needed[] = {"libgcc_s.so.1", "libc.so.6"};
 	MIR_object_exec_params params;
 	memset(&params, 0, sizeof(params));
+#if defined(__linux__)
+	static const char *const needed[] = {"libgcc_s.so.1", "libc.so.6"};
 	params.needed = needed;
 	params.n_needed = 2;
-	void *buf = nullptr;
-	size_t size = 0;
-	REQUIRE(MIR_gen_object_emit_executable(ctx, &params, &buf, &size) == 0);
-	aot_finish(ctx);
+#endif
+	return params;
+}
+
+// The executable image BUF (SIZE bytes, freed here), run: its output.
+static std::string run_image(void *buf, size_t size)
+{
 	char path[] = "/tmp/madc_unwind_exe_XXXXXX";
 	int fd = mkstemp(path);
 	REQUIRE(fd >= 0);
@@ -1083,8 +1090,43 @@ static std::string run_executable(std::initializer_list<AotUnit> units)
 	return out;
 }
 
+// UNITS as an executable, run: its output.
+static std::string run_executable(std::initializer_list<AotUnit> units)
+{
+	MIR_context_t ctx = aot_context(units);
+	MIR_object_exec_params params = exec_params();
+	void *buf = nullptr;
+	size_t size = 0;
+	REQUIRE(MIR_gen_object_emit_executable(ctx, &params, &buf, &size) == 0);
+	aot_finish(ctx);
+	return run_image(buf, size);
+}
+
+// Each of UNITS as its own object, the objects read into one builder, which
+// emits the executable: every unwind record and field went through the
+// container's .o and its reader. Run: its output.
+static std::string run_merged_executable(std::initializer_list<AotUnit> units)
+{
+	std::vector<std::vector<uint8_t>> objects;
+	for (const AotUnit &u : units) objects.push_back(emit_object({u}));
+	MIR_object_t obj = MIR_object_create();
+	REQUIRE(obj != nullptr);
+	char err[256] = "";
+	for (const std::vector<uint8_t> &bytes : objects) {
+		INFO("MIR_object_read: " << err);
+		REQUIRE(MIR_object_read(obj, bytes.data(), bytes.size(), err, sizeof(err)) == 0);
+	}
+	MIR_object_exec_params params = exec_params();
+	void *buf = nullptr;
+	size_t size = 0;
+	REQUIRE(MIR_object_emit_executable(obj, &params, &buf, &size) == 0);
+	MIR_object_destroy(obj);
+	return run_image(buf, size);
+}
+
 TEST_SUITE("AOT unwind tables") {
 
+#if defined(__linux__)
 TEST_CASE("an object loaded in-process: its frames reach the unwinder, the personality runs their regions")
 {
 	CHECK(run_caught_aot(true, 10, "caught", false) == 12);
@@ -1113,12 +1155,22 @@ TEST_CASE("merged objects: the concatenated .eh_frame and region tables rebase")
 	CHECK(recorded[2] == 10);
 }
 
-TEST_CASE("an executable: the unwinder finds its frames through PT_GNU_EH_FRAME")
+#endif
+
+// ELF: PT_GNU_EH_FRAME; Mach-O: __unwind_info
+TEST_CASE("an executable: the unwinder finds its frames through the image's unwind index")
 {
 	// thrower and mid name the personality, and their tables are read with
 	// the image encoding; main has no regions
 	CHECK(run_executable({{exe_personality_text, nullptr},
 			      {exe_program_text, "aot_personality"}})
+	      == "2 2\n");
+}
+
+TEST_CASE("an executable from merged objects: the records survive the .o and its reader")
+{
+	CHECK(run_merged_executable({{exe_personality_text, nullptr},
+				     {exe_program_text, "aot_personality"}})
 	      == "2 2\n");
 }
 

@@ -277,7 +277,44 @@ saved and restored with the rest of the exception state at task switches.
      in-process and a merged one run the real personality (cleanups 112,
      11, 10, caught 12); an emitted executable's raise reaches a
      c2mir-compiled personality through `PT_GNU_EH_FRAME`.
-   - 6.2 Mach-O. 6.3 PE + the Windows runtime.
+   - 6.2 Mach-O (canon: clang 18 objects, ld64.lld 18 and Apple ld images,
+     recon 2026-10-20). The capture runs for Apple targets.
+     - `.o`: `__TEXT,__eh_frame` (S_COALESCED | no_toc | strip_static_syms |
+       live_support, align 8) and `__TEXT,__gcc_except_tab` (S_REGULAR).
+       Mach-O spells a pc-relative data field two ways, as clang does: in
+       `__eh_frame` a field through a `__mir_addrpool` slot holding symbol S
+       (the CIE's personality) is a GOT reference to S (X86_64_RELOC_GOT
+       with the +4 in the field; ARM64_RELOC_POINTER_TO_GOT), because ld64
+       reads a 0x9b personality only in that form; every other field (a
+       table's cleanup slots included: ld64 never reads an LSDA) is a
+       SUBTRACTOR (its own section's start label) + UNSIGNED (target) pair
+       with the addend in the field. An FDE's LSDA field targets its table's
+       own `lexc_<offset>` label with no addend, as clang's targets its
+       GCC_except_tableN: against the section label plus the table's offset
+       Apple ld 1115 writes the LSDA at the label MINUS the offset (measured
+       on arm64; lld handles both). The reader inverts all three: a GOT
+       reference becomes PC32 to the object's slot for S, a label is its
+       section's symbol at its offset.
+     - Measured on macOS 14 arm64 and x86_64 (Rosetta), with a c2mir probe:
+       madc's executable, an executable from merged madc objects, and Apple
+       ld over madc objects each unwind two region-bearing frames, the
+       personality reading both tables and calling each cleanup through its
+       slot.
+     - Executable: `__gcc_except_tab` and `__eh_frame` (no terminator) in
+       `__TEXT` after `__text`, the fields resolved at emit, plus
+       `__unwind_info` (version 1), which the macOS unwinder reads first:
+       regular second-level pages of {function offset, encoding}, each
+       function with an FDE in DWARF mode (x86_64 0x04000000 | FDE offset,
+       arm64 0x03000000 | FDE offset; the personality and LSDA come from the
+       FDE, so the LSDA index is empty), a function without one 0, and a
+       sentinel index entry at the end of `__text`. An FDE past the 24-bit
+       offset field is DWARF mode with offset 0 (the unwinder searches).
+     - JIT: unchanged (libunwind's `__register_frame` takes one FDE).
+     - Tests: the executable and merged-object cases of
+       tests/unit/test_mir_unwind.cpp run on macOS (x86_64, arm64); the
+       machogate legs check the `.o` and image structure with llvm-objdump and
+       ld64.lld on the container; Apple ld links a `.o` on the Macs.
+   - 6.3 PE + the Windows runtime.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,
    consumers converted, runtime cleanup stack deleted, REPL boundary.
    `tests/testthrow_through_frame` (11 cases, g++/clang oracle) is the gate,

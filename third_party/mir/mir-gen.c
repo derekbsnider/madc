@@ -10065,13 +10065,13 @@ int MIR_gen_cfi_cie (MIR_cfi_cie_t *cie) {
 /* Where generated functions' unwind records go: the host unwinder's
    registry when the target is the host (Windows describes frames with its
    own tables), and the object an AOT capture builds when its container
-   carries them (ELF; Mach-O and PE when their writers do). */
+   carries them (ELF and Mach-O; PE when its writer does). */
 #if defined(TARGET_CFI_CIE_INSNS) && !MIR_CROSS_P && !MIR_TARGET_WINDOWS_P
 #define GEN_CFI_REGISTER_P 1
 #else
 #define GEN_CFI_REGISTER_P 0
 #endif
-#if defined(TARGET_CFI_CIE_INSNS) && !MIR_TARGET_APPLE_P && !MIR_TARGET_WINDOWS_P
+#if defined(TARGET_CFI_CIE_INSNS) && !MIR_TARGET_WINDOWS_P
 #define GEN_EH_OBJECT_P 1
 #else
 #define GEN_EH_OBJECT_P 0

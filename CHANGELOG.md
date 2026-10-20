@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### Mach-O objects and executables carry unwind tables
+
+- A Mach-O `.o` carries `__TEXT,__eh_frame` and `__TEXT,__gcc_except_tab`, and the `.o` reader reads both back. Before, Apple targets were excluded from the EH object capture (`GEN_EH_OBJECT_P`), so a Mach-O object or executable had no unwind records.
+- A Mach-O executable carries `__gcc_except_tab` and `__eh_frame` in `__TEXT` after `__text`, plus a version-1 `__unwind_info`. Each function with an FDE has a DWARF-mode entry at its function; a function without one has encoding 0. The macOS unwinder reads `__unwind_info` first.
+- Measured on macOS 14: madc's executable, an executable linked from merged madc objects, and Apple ld over madc objects each unwind two region-bearing frames, with the personality reading both tables and calling each cleanup (`2 2 2`).
+- `scripts/macho_obj_gate.sh` leg 9 checks an FDE per function in the object, no LSDA field against the section label, and that ld64.lld's and madc's `__unwind_info` name each FDE at its function.
+- Windows is unchanged; its unwind tables are step 6.3.
+
 ### A program macro defined ahead of an include reaches the packed header that spells it
 
 - A `#define` or `#undef` the program makes before an `#include` is seen by the verified bind. A frozen unit that spells the macro's name in its ordinary tokens declines its root, and the root lexes from text, as gcc does for a precompiled header (a macro defined before the PCH must be as it was at PCH build, or must not affect it).
