@@ -6,6 +6,13 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
+Consolidated: MIR constant-shift normalizer — gate scripts/check-one-const-shift-normalizer.sh
+
+### MIR s390x emits the move a constant shift by 0 becomes
+
+- A shift by a constant 0 on s390x was dropped. The s390x emitter inserted a move ahead of the shift and then skipped past it, so the destination kept its old value. The rewrite now runs once, in `gen_normalize_const_shifts` (`third_party/mir/mir-gen.c`), from `target_split_insns` on ppc64 and s390x. Its emission-loop copy in `mir-gen-s390x.c` and its copy in `mir-gen-ppc64.c` are deleted.
+- Gate `scripts/check-one-const-shift-normalizer.sh` (in `make gates`) fails a target file that flips a shift's direction or clamps a count by hand.
+- Reducer `tests/testshift_by_zero.mad` (`--std=c11`): its output matches the `.expect` file, which gcc 13.3 and clang 18.1 print. The JIT, EXE and OBJ runs match on x86-64. s390x execution was not run.
 
 ### c2mir runs a for-init cleanup variable's cleanup when the loop condition ends the loop
 

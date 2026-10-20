@@ -1303,6 +1303,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-build-jobs.sh
 	@cd .. && bash scripts/check-one-pattern-index.sh
 	@cd .. && bash scripts/check-mir-targets-compile.sh
+	@cd .. && bash scripts/check-one-const-shift-normalizer.sh
 	@cd .. && bash scripts/check-one-trait-dispatch.sh
 	@cd .. && bash scripts/check-object-module-deps.sh
 	@cd .. && bash scripts/check-autoinclude-position.sh

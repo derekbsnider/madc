@@ -2352,41 +2352,7 @@ static int target_insn_ok_p (gen_ctx_t gen_ctx, MIR_insn_t insn) {
   return find_insn_pattern_replacement (gen_ctx, insn, TRUE) != NULL;
 }
 
-static void target_split_insns (gen_ctx_t gen_ctx) {
-  for (MIR_insn_t insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
-       insn = DLIST_NEXT (MIR_insn_t, insn)) {
-    MIR_insn_code_t code = insn->code;
-
-    if ((code != MIR_RSH && code != MIR_LSH && code != MIR_URSH && code != MIR_RSHS
-         && code != MIR_LSHS && code != MIR_URSHS)
-        || (insn->ops[2].mode != MIR_OP_INT && insn->ops[2].mode != MIR_OP_UINT))
-      continue;
-    if (insn->ops[2].u.i == 0) {
-      gen_mov (gen_ctx, insn, MIR_MOV, insn->ops[0], insn->ops[1]);
-      MIR_insn_t old_insn = insn;
-      insn = DLIST_PREV (MIR_insn_t, insn);
-      gen_delete_insn (gen_ctx, old_insn);
-    } else {
-      if (insn->ops[2].mode == MIR_OP_INT && insn->ops[2].u.i < 0) {
-        switch (code) {
-        case MIR_RSH: insn->code = MIR_LSH; break;
-        case MIR_URSH: insn->code = MIR_LSH; break;
-        case MIR_LSH: insn->code = MIR_RSH; break;
-        case MIR_RSHS: insn->code = MIR_LSHS; break;
-        case MIR_URSHS: insn->code = MIR_LSHS; break;
-        case MIR_LSHS: insn->code = MIR_RSHS; break;
-        default: gen_assert (FALSE); break;
-        }
-        insn->ops[2].u.i = -insn->ops[2].u.i;
-      }
-      if (code == MIR_RSH || code == MIR_LSH || code == MIR_URSH) {
-        if (insn->ops[2].u.i > 64) insn->ops[2].u.i = 64;
-      } else if (insn->ops[2].u.i > 32) {
-        insn->ops[2].u.i = 32;
-      }
-    }
-  }
-}
+static void target_split_insns (gen_ctx_t gen_ctx) { gen_normalize_const_shifts (gen_ctx); }
 
 static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   MIR_context_t ctx = gen_ctx->ctx;
