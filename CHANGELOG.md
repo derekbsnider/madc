@@ -1,6 +1,15 @@
 # Changelog
 
 ## [Unreleased]
+### The verified C++ bind is on for every consumer; an overlapping decline stops binding
+
+- The verified bind is on for every C++ and madc consumer. The `MADC_FOREST_ENV_CHECK` knob and `forest_bind_verified()` are deleted. `ForestWalk` always logs its writes (`forest_macro_undo`) and evaluates every recorded conditional. Before, a C++ consumer followed the frozen arm unless the knob was set.
+- A decline with nothing bound yet stops binding for the TU (`forest_system.bind_stopped`; K1a). A decline after a bind stops binding only when its live closure declares a name a bound unit declares (`forest_decline_overlaps_bound`; K1b). A namespace is excepted. A disjoint decline parses that root live, and later roots still bind. C keeps per-root declines.
+- `tests/testndebugcxxbind.mad` (`tests/testndebugcxxbind.flags`) defines `NDEBUG` after `<cstdio>` and includes `<cassert>`, then calls `assert(0)` and prints `puts("ok")`. Its `.expect` is `ok`, and g++ and clang++ with `-std=gnu++17` print `ok` and exit 0. The packed madc before this change aborted in `assert(0)`.
+- `scripts/forest_bind_gate.sh` has an `[overlap]` leg. An overlapping decline (`fbgate_ov_b.h`, sharing `fbg_ov_fn` with `fbgate_ov_a.h`) stops binding, and `fbgate_ov_c.h` parses live. A disjoint decline (`fbgate_ov_d.h`) keeps binding, and `fbgate_ov_c.h` binds. Both print `v=8`. The `[husk]` leg runs once, with no knob-off or knob-on pass.
+- K1b census: 3 of 1997 suite tests decline, all after a bind, and none overlap (`docs/plans/2026-10-18-verified-cxx-bind.md`).
+- Parse-cost, measured on `a45e16b16` and `7962392ce`, against the committed baseline: every row is at or below baseline. `rung_limits` -0.37%, `rung_stdio` -0.66%, `rung_type_traits` -2.16%, `rung_vector` -4.14%, `rung_c8` -6.09%, `cxx_stl.forest` -2.29%. The walk's own cost (`rung_limits` +226K Ir, `rung_stdio` +238K, `rung_c8` +1.3M) is paid by the B2 hash index and the hash sets that landed first.
+
 ### `#include_next` resumes after the search directory the includer was found in
 
 - `#include_next` searches the entries after the search directory the including header was found in (gcc's `file->dir`), not after the includer's own directory. A header found through a subdirectory spelling (`<sub/use.h>`, `<bits/std_abs.h>`) previously restarted the walk at the top of the search list (`include_next_search_list`, `src/lexer.cpp`).

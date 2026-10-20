@@ -82,7 +82,6 @@ echo "win_suite: staged $PRODUCT + tests at $WIN_SSH:$STAGE"
 MADC_WIN_STAGE="$STAGE" \
 MADC_WIN_SSH="$WIN_SSH" \
 MADC_WIN_TIMEOUT="$TIMEOUT" \
-MADC_FOREST_ENV_CHECK=0 \
 MADC_BIN=bin/madc.exe \
 MADC_WRAPPER="bash scripts/win_run.sh" \
 MADC_SKIP_EXT="${MADC_SKIP_EXT:-win64 win}" \

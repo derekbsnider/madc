@@ -7507,7 +7507,8 @@ public:
 	std::set<uint32_t> live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
 	// K1a (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ / madc TU's
 	// system content is all-bound or all-live — a decline with nothing bound
-	// yet stops every later bind, so the TU parses live from there.
+	// yet stops every later bind, so the TU parses live from there; K1b: so
+	// does a later decline whose live closure redeclares a bound name.
 	bool bind_stopped = false;
 	size_t restored_chain_size = 0;	// chain's size at the last restore
 	// The restore's per-record state, index-aligned with the forest's
@@ -7749,7 +7750,6 @@ public:
     bool need_protocol_macro_live();
     // The bind walk (K2), over one bound forest (ForestSide): its units, chain
     // and walk state are that forest's own.
-    bool forest_bind_verified();	// a difference the walk cannot reproduce declines (K3 deletes the knob)
     bool forest_walk_root(ForestSide &s, uint32_t root, bool reinclude);
     bool forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude);
     bool forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUnitItems &it,

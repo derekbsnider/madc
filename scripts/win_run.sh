@@ -62,7 +62,7 @@ if [ -n "${MADC_WIN_STAGE:-}" ]; then
 	# without it session_dir is empty and nothing advertises) and
 	# MADC_HISTORY_FILE (the suite's REPL history, run_tests.sh's). WSLENV
 	# names them; each is set in the remote env with its verbatim value.
-	fwd_names=(MADC_BIN MADC_FOREST_ENV_CHECK)
+	fwd_names=(MADC_BIN)
 	fwd_assigns=""
 	fwd_vars=$(compgen -v MADCIDE_ 2>/dev/null)
 	[ -n "${MADC_SESSION_DIR:-}" ] && fwd_vars="$fwd_vars MADC_SESSION_DIR"
@@ -73,8 +73,8 @@ if [ -n "${MADC_WIN_STAGE:-}" ]; then
 		fwd_assigns+="$one"
 	done
 	wslenv=$(IFS=:; echo "${fwd_names[*]}")
-	printf -v remote_cmd 'env -C %q WSLENV=%q MADC_BIN=bin/madc.exe MADC_FOREST_ENV_CHECK=%q' \
-		"$MADC_WIN_STAGE" "$wslenv" "${MADC_FOREST_ENV_CHECK:-0}"
+	printf -v remote_cmd 'env -C %q WSLENV=%q MADC_BIN=bin/madc.exe' \
+		"$MADC_WIN_STAGE" "$wslenv"
 	remote_cmd+="$fwd_assigns"
 	for arg in "${stage_cmd[@]}"; do
 		printf -v quoted_arg ' %q' "$arg"

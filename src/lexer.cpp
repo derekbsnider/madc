@@ -5756,10 +5756,9 @@ static void forest_unit_items(CirFrozenForest *f, uint32_t unit, ForestUnitItems
 // One root's walk.
 struct ForestWalk
 {
-    ForestWalk(Program::ForestSide &side, uint32_t r, bool v) : s(side), root(r), verified(v) {}
+    ForestWalk(Program::ForestSide &side, uint32_t r) : s(side), root(r) {}
     Program::ForestSide &s;
     const uint32_t root;
-    const bool verified;		// a difference declines (knob off: the frozen arm is followed)
     ForestMacroUndo undo;
     std::map<uint32_t, ForestUnitItems> items;	// read once per walk
     std::map<uint32_t, uint32_t> next_inclusion;	// per unit: the inclusion its next edge reads
@@ -5773,24 +5772,6 @@ struct ForestWalk
     std::vector<Deferred> deferred;
     std::set<std::pair<uint32_t, uint32_t> > ran;	// (unit, record): the arms run
 };
-
-// The verified-bind knob (task #57): MADC_FOREST_ENV_CHECK=1 makes a
-// difference the walk cannot reproduce decline the root for every consumer;
-// with it off a C++ consumer follows the frozen arm (the shipping behaviour
-// until K3 deletes the knob). A C compile is always verified: C programs set
-// feature-test macros ahead of their system includes as a matter of course
-// (sqlite3.c's NDEBUG and _GNU_SOURCE), and the pack's C layer has no knob-off
-// frontier to burn down.
-bool Program::forest_bind_verified()
-{
-    static int enabled = -1;
-    if ( enabled < 0 )
-    {
-	const char *e = ::getenv("MADC_FOREST_ENV_CHECK");
-	enabled = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
-    }
-    return enabled != 0 || is_c_mode();
-}
 
 // A condition text whose answer depends on WHERE it is read — the including
 // file's directory (a quoted __has_include) or its place in the search path
@@ -6039,8 +6020,8 @@ bool Program::forest_object_states_lex_alike(const std::string &frozen, const st
 }
 
 // One recorded conditional of the walk: re-evaluated here it takes the frozen
-// arm, or the walk reproduces the difference, or — verified — the root
-// declines (false). Advances the unit's cursors past what it handled.
+// arm, or the walk reproduces the difference, or the root declines (false).
+// Advances the unit's cursors past what it handled.
 bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUnitItems &it,
 				    uint32_t &i_c, uint32_t &i_ev, uint32_t &i_ed)
 {
@@ -6050,12 +6031,6 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
     ++i_c;
     const bool frozen = (c[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) != 0;
     const CondDirective kind = (CondDirective)c[CIR_COND_KIND];
-    // Knob off, only two differences act — a taken `#ifndef` arm the consumer
-    // skips (masked), and a captured skipped arm it takes (run); every other
-    // condition follows the frozen arm, so it is not evaluated.
-    if ( !w.verified && !(kind == CondDirective::Ifndef && frozen)
-      && !(!frozen && c[CIR_COND_ARM]) )
-	return true;
     const int now = forest_condition_now(f, it, c);
     if ( now == (frozen ? 1 : 0) )
 	return true;
@@ -6089,8 +6064,7 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 	    w.arm_tokens.insert(w.arm_tokens.end(), toks.begin(), toks.end());
 	    w.ran.insert(std::make_pair(unit, record));
 	    const char *state = c[CIR_COND_ARM_STATE] ? f->pool_str(c[CIR_COND_ARM_STATE]) : NULL;
-	    if ( !w.verified
-	      || forest_arm_state_matches(state, writes, w, unit, c[CIR_COND_REC_END]) )
+	    if ( forest_arm_state_matches(state, writes, w, unit, c[CIR_COND_REC_END]) )
 	    {
 		DBG(std::cout << "forest bind: unit " << (uname ? uname : "?")
 		    << " replays its skipped '#" << kind_spelling << " " << (text ? text : "?")
@@ -6101,8 +6075,6 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 	    why = "has an arm that leaves a macro unlike the freeze's";
 	}
     }
-    if ( !w.verified )
-	return true;	// knob off: the frozen arm is followed
     const char *rname = f->unit_name(w.root);
     DBG(std::cout << "forest bind: DECLINE root " << (rname ? rname : "?") << " — unit "
 	<< (uname ? uname : "?") << " '#" << kind_spelling << " " << (text ? text : "?")
@@ -6228,10 +6200,9 @@ static madc::dis::istring embedded_unit_include_key(const char *uname)
 bool Program::forest_walk_root(ForestSide &s, uint32_t root, bool reinclude)
 {
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
-    ForestWalk w(s, root, forest_bind_verified());
+    ForestWalk w(s, root);
     ForestMacroUndo *const outer = forest_macro_undo;
-    // Only a verified walk declines, so only it logs its writes.
-    forest_macro_undo = w.verified ? &w.undo : NULL;
+    forest_macro_undo = &w.undo;	// a decline restores every name the walk wrote
     bool ok;
     try
     {
@@ -7740,6 +7711,49 @@ bool Program::forest_unit_reinclude_skipped(ForestSide &s, uint32_t unit)
     return !gi->second.empty() && macro_name_defined(gi->second);
 }
 
+// K1b (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ root that declines
+// after a bind parses live beside the bound units. When its live closure — the
+// root and the units it reaches that are not bound — declares a name a bound
+// unit declares (a namespace excepted: every unit reopens std), bound and live
+// content meet on that name. The restart with binding off is deferred until a
+// real overlap needs it (KG Decision k1b_overlap_detector_defer_restart).
+static bool forest_decline_overlaps_bound(Program::ForestSide &s, uint32_t root)
+{
+    CirFrozenForest *f = s.forest;
+    const ForestDeclNames &dn = f->decl_names();
+    std::vector<uint32_t> todo(1, root), edges;
+    std::set<uint32_t> seen;
+    std::vector<cir_forest_decl_entry> decls;
+    while ( !todo.empty() )
+    {
+	const uint32_t u = todo.back();
+	todo.pop_back();
+	if ( !seen.insert(u).second || s.chain_set.count(u) )
+	    continue;
+	if ( f->unit_decl_index(u, decls) )
+	    for ( size_t i = 0; i < decls.size(); ++i )
+	    {
+		if ( decls[i].kind == Program::pdkNamespace )
+		    continue;
+		const char *nm = f->pool_str(decls[i].name_id);
+		uint32_t n = 0;
+		const uint32_t *units = nm && *nm ? dn.units_of(nm, n) : NULL;
+		for ( uint32_t k = 0; k < n; ++k )
+		    if ( s.chain_set.count(units[k]) )
+		    {
+			DBG(std::cout << "forest bind: unit " << (f->unit_name(u) ? f->unit_name(u) : "?")
+			    << " declares '" << nm << "', which bound unit "
+			    << (f->unit_name(units[k]) ? f->unit_name(units[k]) : "?")
+			    << " declares too" << std::endl);
+			return true;
+		    }
+	    }
+	if ( f->unit_edges(u, edges) )
+	    todo.insert(todo.end(), edges.begin(), edges.end());
+    }
+    return false;
+}
+
 // Bind the grove unit an #include names (false: it live-parses instead) — the
 // ONE bind entry: the include sites and the posix-provider sites alike. A
 // root already bound is included again only as gcc would read it again
@@ -7763,12 +7777,15 @@ bool Program::forest_bind_include_root(uint32_t unit)
 	return true;	// bound already, and a live re-include would skip it too
     if ( !forest_walk_root(forest_system, unit, reinclude) )
     {
-	if ( !is_c_mode() && forest_system.chain.empty() )
+	// K1a: nothing bound yet; K1b: the decline's live closure meets a
+	// bound unit on a declared name.
+	const bool first = forest_system.chain.empty();
+	if ( !is_c_mode() && (first || forest_decline_overlaps_bound(forest_system, unit)) )
 	{
 	    forest_system.bind_stopped = true;
-	    DBG(std::cout << "forest bind: binding stopped for this TU — its"
-		" first bind declined (" << (forest_system.forest->unit_name(unit)
-		? forest_system.forest->unit_name(unit) : "?")
+	    DBG(std::cout << "forest bind: binding stopped for this TU — "
+		<< (first ? "its first bind declined (" : "a decline after a bind overlaps it (")
+		<< (forest_system.forest->unit_name(unit) ? forest_system.forest->unit_name(unit) : "?")
 		<< "); every later include parses live" << std::endl);
 	}
 	return false;

@@ -26,11 +26,8 @@ ulimit -t 300 2>/dev/null
 
 BIN=bin/madc
 # This gate is the verified bind's keeper (K2's positional walk re-evaluates
-# each recorded conditional, docs/plans/2026-10-18-verified-cxx-bind.md); the
-# check ships default-OFF for C++ until the knob-on packed-suite burndown
-# reaches 0 (K1b, K3). Running the whole battery WITH it on keeps it from
-# rotting.
-export MADC_FOREST_ENV_CHECK=1
+# each recorded conditional, docs/plans/2026-10-18-verified-cxx-bind.md); every
+# consumer binds verified since K3.
 if [ ! -x "$BIN" ]; then
     echo "forest_bind_gate: missing $BIN"
     exit 1
@@ -1489,15 +1486,61 @@ done
 rm -rf "$tg_dir"
 echo "forest_bind_gate: [typedefguard] OK — a taken #if arm skipped only by its own live guard is masked (glibc's off64_t typedef guard, C and C++)"
 
+# --- case: overlap (docs/plans/2026-10-18-verified-cxx-bind.md, K1b) ---
+# A C++ root that declines AFTER a bind parses live beside the bound units.
+# When its live closure declares a name a bound unit declares (fbg_ov_fn in
+# both fbgate_ov_a.h and fbgate_ov_b.h), bound and live content would mix on
+# that name, so binding stops for the rest of the TU: the later fbgate_ov_c.h
+# parses live. A disjoint decline (fbgate_ov_d.h declares only its own names)
+# keeps binding: fbgate_ov_c.h binds. Both print g++'s v=8.
+ov_dir=tmp/fbgate_overlap
+rm -rf "$ov_dir"
+mkdir -p "$ov_dir/inc"
+printf '#ifndef FBG_OV_A_H\n#define FBG_OV_A_H\nint fbg_ov_fn(void);\nstruct fbg_ov_a { int a; };\n#endif\n' > "$ov_dir/inc/fbgate_ov_a.h"
+printf '#ifndef FBG_OV_B_H\n#define FBG_OV_B_H\nint fbg_ov_fn(void);\n#ifdef FBG_OV_WIDE\n#define FBG_OV_B 5\n#else\n#define FBG_OV_B 4\n#endif\n#endif\n' > "$ov_dir/inc/fbgate_ov_b.h"
+printf '#ifndef FBG_OV_D_H\n#define FBG_OV_D_H\nint fbg_ov_dfn(void);\n#ifdef FBG_OV_WIDE\n#define FBG_OV_B 5\n#else\n#define FBG_OV_B 4\n#endif\n#endif\n' > "$ov_dir/inc/fbgate_ov_d.h"
+printf '#ifndef FBG_OV_C_H\n#define FBG_OV_C_H\nstruct fbg_ov_c { int c; };\n#endif\n' > "$ov_dir/inc/fbgate_ov_c.h"
+printf '#include <fbgate_ov_a.h>\n#include <fbgate_ov_b.h>\n#include <fbgate_ov_d.h>\n#include <fbgate_ov_c.h>\nint main() { return 0; }\n' > "$ov_dir/producer.cpp"
+for ov_case in "b stop" "d bind"; do
+    read -r ov_hdr ov_want <<<"$ov_case"
+    printf '#include <cstdio>\n#include <fbgate_ov_a.h>\n#define FBG_OV_WIDE 1\n#include <fbgate_ov_%s.h>\n#include <fbgate_ov_c.h>\nint fbg_ov_fn(void) { return 1; }\nint main() { struct fbg_ov_a a = { 2 }; struct fbg_ov_c c = { 1 }; std::printf("v=%%d\\n", FBG_OV_B + a.a + c.c + fbg_ov_fn() - 1); return 0; }\n' "$ov_hdr" > "$ov_dir/use_$ov_hdr.cpp"
+done
+timeout 600 "$BIN" --std=gnu++17 --freeze="$ov_dir/ov.msnap" -I "$ov_dir/inc" "$ov_dir/producer.cpp" \
+    > "$ov_dir/freeze.log" 2>&1 \
+    || fail "[overlap] the freeze FAILED: $(tail -n 3 "$ov_dir/freeze.log")"
+for ov_case in "b stop" "d bind"; do
+    read -r ov_hdr ov_want <<<"$ov_case"
+    timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$ov_dir/ov.msnap" -I "$ov_dir/inc" "$ov_dir/use_$ov_hdr.cpp" \
+        > "$ov_dir/trace.log" 2>&1
+    grep -aqE "bound to grove unit [0-9]+ \([^)]*fbgate_ov_a\.h\)" "$ov_dir/trace.log" \
+        || fail "[overlap] $ov_hdr: fbgate_ov_a.h did not bind first"
+    grep -aqE "DECLINE root [^ ]*fbgate_ov_$ov_hdr\.h" "$ov_dir/trace.log" \
+        || fail "[overlap] $ov_hdr: fbgate_ov_$ov_hdr.h did not decline (the leg needs a decline after a bind)"
+    if [ "$ov_want" = stop ]; then
+        grep -aq "binding stopped for this TU" "$ov_dir/trace.log" \
+            || fail "[overlap] an overlapping decline after a bind did not stop binding"
+        grep -aqE "bound to grove unit [0-9]+ \([^)]*fbgate_ov_c\.h\)" "$ov_dir/trace.log" \
+            && fail "[overlap] fbgate_ov_c.h bound after an overlapping decline"
+    else
+        grep -aq "binding stopped for this TU" "$ov_dir/trace.log" \
+            && fail "[overlap] a disjoint decline after a bind stopped binding"
+        grep -aqE "bound to grove unit [0-9]+ \([^)]*fbgate_ov_c\.h\)" "$ov_dir/trace.log" \
+            || fail "[overlap] fbgate_ov_c.h did not bind after a disjoint decline"
+    fi
+    ov_out=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$ov_dir/ov.msnap" -I "$ov_dir/inc" "$ov_dir/use_$ov_hdr.cpp" 2>"$ov_dir/run.err")
+    [ "$ov_out" = "v=8" ] || fail "[overlap] $ov_hdr printed '$ov_out', want 'v=8' $(head -n 2 "$ov_dir/run.err")"
+done
+rm -rf "$ov_dir"
+echo "forest_bind_gate: [overlap] OK — a C++ decline after a bind whose live closure redeclares a bound name stops binding; a disjoint one keeps binding"
+
 # --- case: cenv (docs/plans/2026-10-18-c-pack-layer.md, J4) ---
 # A C program sets feature-test macros ahead of its system includes as a
 # matter of course — sqlite3.c defines NDEBUG and _GNU_SOURCE. The C layer
 # froze those headers without them, so binding the frozen view hands such a
-# program the wrong declarations: a live assert(), no mremap. A C compile's
-# bind is therefore verified whatever the rollout knob says
-# (forest_bind_verified): a root whose recorded conditionals take another arm
-# here declines to a live parse. Run with the knob OFF — this gate exports it ON for the C++ frontier.
-# The control: a C program that sets no feature macro still binds.
+# program the wrong declarations: a live assert(), no mremap. The bind is
+# verified: a root whose recorded conditionals take another arm here declines
+# to a live parse. The control: a C program that sets no feature macro still
+# binds.
 ce_dir=tmp/fbgate_cenv
 ce_snap=$ce_dir/c.msnap
 rm -rf "$ce_dir"
@@ -1529,16 +1572,16 @@ timeout 600 "$BIN" --std=gnu17 --freeze-raw --freeze="$ce_snap" "$ce_dir/c_tu.c"
     > "$ce_dir/freeze.log" 2>&1 \
     || fail "[cenv] the C freeze FAILED: $(tail -n 3 "$ce_dir/freeze.log")"
 # The oracle: gcc compiles feat.c and prints mremap=1.
-ce_out=$(MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" --std=gnu17 --forest-bind="$ce_snap" \
+ce_out=$(timeout 60 "$BIN" --std=gnu17 --forest-bind="$ce_snap" \
     "$ce_dir/feat.c" 2>"$ce_dir/feat.err")
 [ "$ce_out" = "mremap=1" ] \
     || fail "[cenv] a C program's feature macros were ignored by the bind: '$ce_out' $(head -n 2 "$ce_dir/feat.err")"
-MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$ce_snap" \
+timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$ce_snap" \
     "$ce_dir/plain.c" > "$ce_dir/plain.log" 2>/dev/null
 grep -aq "bound to grove unit" "$ce_dir/plain.log" \
     || fail "[cenv] a C program with no feature macro no longer binds the C layer"
 rm -rf "$ce_dir"
-echo "forest_bind_gate: [cenv] OK — a C compile's bind honours its feature macros (NDEBUG, _GNU_SOURCE) with the knob off; a plain C program still binds"
+echo "forest_bind_gate: [cenv] OK — a C compile's bind honours its feature macros (NDEBUG, _GNU_SOURCE); a plain C program still binds"
 
 # --- case: cdefine (docs/plans/2026-10-20-front-end-speed-plan.md, B1) ---
 # A command-line -D is a macro defined before the first line. The pack is
@@ -1665,9 +1708,8 @@ rm -f tmp/fbgate_nsenum.h tmp/fbgate_nsenum_producer.cpp tmp/fbgate_nsenum_consu
 # v70 a CIR_BRANCH_DEP_PP_ARM tuple), and the bind's walk runs it through the
 # live preprocessor when the consumer lacks X: the unit still BINDS, and
 # the arm's nested conditional answers in the CONSUMER's macro state
-# (FBG_LV_WIDE, which the producer never defined, selects 50). The consumer
-# runs at the knob's shipping default (MADC_FOREST_ENV_CHECK=0, overriding this
-# gate's battery-wide =1). Negative controls: the v54 binary fails with "use of
+# (FBG_LV_WIDE, which the producer never defined, selects 50). Negative
+# controls: the v54 binary fails with "use of
 # undeclared identifier 'FBG_MC_X'"; d939e2a09's verified bind printed v=52
 # with fbgate_lv_b.h live-parsed, which the bound assertion refuses.
 mkdir -p tmp/fbgate_lv
@@ -1714,9 +1756,9 @@ lv_log=tmp/fbgate_lv.log
 rm -f "$lv_snap"
 timeout 600 "$BIN" --freeze="$lv_snap" --freeze-also-std=c++17 -I tmp/fbgate_lv \
     tmp/fbgate_lv_producer.cpp >"$lv_log" 2>&1 || fail "[armreplay] the madc --freeze-also-std FAILED: $(tail -n 3 "$lv_log")"
-lv_out=$(MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp 2>&1)
+lv_out=$(timeout 60 "$BIN" --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp 2>&1)
 [ "$lv_out" = "v=52" ] || fail "[armreplay] c++17 consumer output '$lv_out' != 'v=52'"
-MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" -v --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp >"$lv_log" 2>/dev/null
+timeout 60 "$BIN" -v --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp >"$lv_log" 2>/dev/null
 grep -aq "bound to grove unit.*fbgate_lv_b.h" "$lv_log" \
     || fail "[armreplay] the unit with the skipped arm did not BIND for the c++17 consumer"
 grep -aq "fbgate_lv_b.h replays its skipped '#ifndef FBG_MC_X' arm" "$lv_log" \
@@ -2838,8 +2880,7 @@ echo "forest_bind_gate: [redecl] OK — (C) replayed arm live + masked-bind twin
 # freeze skipped: it runs it in place — its guard define leaves the state the
 # freeze held, its new FBG_HUSK_VALUE was undefined there — and its typedef
 # parses live, while root + sibling + husk bind. This recovery is
-# correctness-critical and must work with the MADC_FOREST_ENV_CHECK knob both
-# OFF and ON.
+# correctness-critical.
 cat > tmp/fbgate_husk_pre.h <<'EOF'
 #ifndef FBG_HUSK_PRE_H
 #define FBG_HUSK_PRE_H
@@ -2891,8 +2932,7 @@ int main()
 EOF
 hs_snap="tmp/fbgate_husk.msnap"
 hs_gcc="tmp/fbgate_husk_gcc"
-hs_vlog_off="tmp/fbgate_husk_off_v.log"
-hs_vlog_on="tmp/fbgate_husk_on_v.log"
+hs_vlog="tmp/fbgate_husk_v.log"
 hs_exp="v=12"
 hs_live=$(timeout 60 "$BIN" tmp/fbgate_husk_consumer.cpp -I tmp 2>/dev/null)
 [ "$hs_live" = "$hs_exp" ] || fail "[husk] live-parse output '$hs_live' != '$hs_exp'"
@@ -2907,31 +2947,24 @@ fi
 timeout 120 "$BIN" --freeze="$hs_snap" tmp/fbgate_husk_producer.cpp -I tmp >/dev/null 2>&1 \
     || fail "[husk] --freeze FAILED"
 [ -f "$hs_snap" ] || fail "[husk] --freeze produced no container"
-for hs_knob in 0 1; do
-    if [ "$hs_knob" = 0 ]; then
-	hs_vlog="$hs_vlog_off"
-    else
-	hs_vlog="$hs_vlog_on"
-    fi
-    hs_bind=$(MADC_FOREST_ENV_CHECK="$hs_knob" timeout 60 "$BIN" --forest-bind="$hs_snap" tmp/fbgate_husk_consumer.cpp -I tmp 2>/dev/null)
-    [ "$hs_bind" = "$hs_exp" ] \
-	|| fail "[husk] knob-$hs_knob bind output '$hs_bind' != '$hs_exp'"
-    MADC_FOREST_ENV_CHECK="$hs_knob" timeout 60 "$BIN" -v --forest-bind="$hs_snap" tmp/fbgate_husk_consumer.cpp -I tmp >"$hs_vlog" 2>&1
-    grep -aq "fbgate_husk.h replays its skipped '#ifndef FBG_HUSK_SHARED_GUARD' arm (its declarations parse live)" "$hs_vlog" \
-	|| fail "[husk] knob-$hs_knob did NOT replay the husk's skipped arm"
-    grep -aq "DECLINE root.*fbgate_husk_root.h" "$hs_vlog" \
-	&& fail "[husk] knob-$hs_knob declined the whole root"
-    grep -aq "bound to grove unit.*fbgate_husk_root.h" "$hs_vlog" \
-	|| fail "[husk] knob-$hs_knob root did NOT bind"
-    grep -aq "forest_restore_decls: typedef fbg_husk_sibling_t" "$hs_vlog" \
-	|| fail "[husk] knob-$hs_knob sibling decl did NOT restore"
-    grep -aq "forest_restore_decls: typedef fbg_husk_root_t" "$hs_vlog" \
-	|| fail "[husk] knob-$hs_knob root decl did NOT restore"
-    grep -aq "forest_restore_decls: typedef fbg_husk_t" "$hs_vlog" \
-	&& fail "[husk] knob-$hs_knob restored the frozen husk decl instead of using live tokens"
-done
-rm -f "$hs_snap" "$hs_gcc" "$hs_vlog_off" "$hs_vlog_on"
-echo "forest_bind_gate: [husk] OK — the missing content is the husk's skipped arm, replayed live; root + sibling + husk bound with the knob OFF and ON; output == live == g++"
+hs_bind=$(timeout 60 "$BIN" --forest-bind="$hs_snap" tmp/fbgate_husk_consumer.cpp -I tmp 2>/dev/null)
+[ "$hs_bind" = "$hs_exp" ] \
+    || fail "[husk] bind output '$hs_bind' != '$hs_exp'"
+timeout 60 "$BIN" -v --forest-bind="$hs_snap" tmp/fbgate_husk_consumer.cpp -I tmp >"$hs_vlog" 2>&1
+grep -aq "fbgate_husk.h replays its skipped '#ifndef FBG_HUSK_SHARED_GUARD' arm (its declarations parse live)" "$hs_vlog" \
+    || fail "[husk] did NOT replay the husk's skipped arm"
+grep -aq "DECLINE root.*fbgate_husk_root.h" "$hs_vlog" \
+    && fail "[husk] declined the whole root"
+grep -aq "bound to grove unit.*fbgate_husk_root.h" "$hs_vlog" \
+    || fail "[husk] root did NOT bind"
+grep -aq "forest_restore_decls: typedef fbg_husk_sibling_t" "$hs_vlog" \
+    || fail "[husk] sibling decl did NOT restore"
+grep -aq "forest_restore_decls: typedef fbg_husk_root_t" "$hs_vlog" \
+    || fail "[husk] root decl did NOT restore"
+grep -aq "forest_restore_decls: typedef fbg_husk_t" "$hs_vlog" \
+    && fail "[husk] restored the frozen husk decl instead of using live tokens"
+rm -f "$hs_snap" "$hs_gcc" "$hs_vlog"
+echo "forest_bind_gate: [husk] OK — the missing content is the husk's skipped arm, replayed live; root + sibling + husk bound; output == live == g++"
 
 # --- case: silbody — a static-inline header fn passed BY ADDRESS through a
 # bound template (task #57, the mingw strtof/__stoa shape). fbg_strtof is a
