@@ -212,7 +212,10 @@ the pack attached as shipped), callgrind:
 | lex Ir per token (~107k tokens) | **≈ 2,800** | — |
 
 tcc's whole compile — its system headers lexed too — is under 1,000 Ir per token; madc's lexer alone
-is ~2,800, without lexing the system headers (the pack binds them). The release profile is flat:
+is ~2,800. **Correction (c2m front-end recon, same day):** the command-line `-D` in this run declines
+the pack bind, so these 303M include lexing the system headers from text (86.4M); pack-bound (defines
+in a wrapper file) the lexer is 233M, ~2,385 Ir per token — the `-D` decline is plan item B1 in
+[the front-end speed plan](2026-10-20-front-end-speed-plan.md). The release profile is flat:
 
 | where the lexer's Ir go | share |
 |---|---:|
