@@ -362,9 +362,13 @@ extern uintptr_t _Unwind_GetGR(struct MadcUnwindContext *, int);
 extern void *_Unwind_GetLanguageSpecificData(struct MadcUnwindContext *);
 
 // A generated frame's region table, as MIR writes it: the layout is
-// MIR_UNWIND_TABLE_VERSION's in third_party/mir/mir.h.
+// MIR_UNWIND_TABLE_VERSION's in third_party/mir/mir.h. Its header names how
+// the cleanup pointers are written: the address itself in the JIT, and in an
+// image a pc-relative 32-bit offset to the pool slot holding the address
+// (indirect | pcrel | sdata4, as gcc's personality pointer reaches DW.ref).
 #define MADC_UNWIND_TABLE_VERSION 1
 #define MADC_DW_EH_PE_absptr 0x00
+#define MADC_DW_EH_PE_image 0x9b
 
 static uint64_t madc_uleb(const uint8_t **p)
 {
@@ -398,22 +402,39 @@ static int64_t madc_sleb(const uint8_t **p)
     return (int64_t)v;
 }
 
-// Region REGION (from 1) of the region list at P: its parent, its variable's
-// offset from the frame base, and its cleanup.
-static void madc_table_region(const uint8_t *p, uint64_t region, uint64_t *parent,
-			      int64_t *offset, uintptr_t *cleanup)
+// The cleanup pointer at P, written in ENC.
+static uintptr_t madc_table_pointer(const uint8_t *p, uint8_t enc)
 {
-    uint64_t i, v;
+    if ( enc == MADC_DW_EH_PE_image )
+    {
+	int32_t rel;
+	uintptr_t slot;
+	memcpy(&rel, p, sizeof(rel));
+	memcpy(&slot, p + rel, sizeof(slot));
+	return slot;
+    }
+    {
+	uint64_t v;
+	memcpy(&v, p, sizeof(v));
+	return (uintptr_t)v;
+    }
+}
+
+// Region REGION (from 1) of the region list at P, its pointers written in
+// ENC: its parent, its variable's offset from the frame base, and its cleanup.
+static void madc_table_region(const uint8_t *p, uint8_t enc, uint64_t region,
+			      uint64_t *parent, int64_t *offset, uintptr_t *cleanup)
+{
+    uint64_t i;
     for ( i = 1; ; i++ )
     {
 	*parent = madc_uleb(&p);
 	*offset = madc_sleb(&p);
 	if ( i == region )
 	    break;
-	p += sizeof(v);
+	p += enc == MADC_DW_EH_PE_image ? 4 : 8;
     }
-    memcpy(&v, p, sizeof(v));
-    *cleanup = (uintptr_t)v;
+    *cleanup = madc_table_pointer(p, enc);
 }
 
 // The personality every generated function with regions names: in the cleanup
@@ -433,10 +454,13 @@ int __madc_personality(int version, int actions, uint64_t exception_class,
     uint64_t base_reg, base_align, ncalls, nregions, region = 0, i;
     int64_t base_offset;
     uintptr_t ra, base;
+    uint8_t enc;
 
     if ( version != 1 || !p || !(actions & MADC_UA_CLEANUP_PHASE) )
 	return MADC_URC_CONTINUE_UNWIND;
-    if ( p[0] != MADC_UNWIND_TABLE_VERSION || p[1] != MADC_DW_EH_PE_absptr )
+    enc = p[1];
+    if ( p[0] != MADC_UNWIND_TABLE_VERSION
+	 || (enc != MADC_DW_EH_PE_absptr && enc != MADC_DW_EH_PE_image) )
 	return MADC_URC_CONTINUE_UNWIND;
     p += 2;
     if ( exception_class == MADC_UNWIND_CLASS )
@@ -465,7 +489,7 @@ int __madc_personality(int version, int actions, uint64_t exception_class,
 	int64_t offset;
 	uintptr_t cleanup;
 	void *var;
-	madc_table_region(regions, region, &parent, &offset, &cleanup);
+	madc_table_region(regions, enc, region, &parent, &offset, &cleanup);
 	var = (void *)(base + (uintptr_t)offset);
 	if ( target && cleanup == (uintptr_t)__madc_try_leave && *(void **)var == (void *)target )
 	    break;

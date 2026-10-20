@@ -153,7 +153,36 @@ remove on every normal path.
    relocations in objects), Mach-O `__TEXT,__eh_frame`, PE `.pdata`/`.xdata`
    (the exception directory) — each FDE pointing at its function's region
    table (an ELF/Mach-O except-table section; on Windows the UNWIND_INFO's
-   language-specific data). Linux executables gain `libgcc_s.so.1`.
+   language-specific data). Linux executables already import
+   `libgcc_s.so.1` (the probed C++ NEEDED set).
+   - Canon (gcc 13 / clang 18 `-fexceptions`, recon 2026-10-20). A `.o`
+     carries `.eh_frame` (SHF_ALLOC, align 8) with PC32 relocations:
+     pc_begin to `.text`+off, the CIE's personality to a `DW.ref` data word
+     (encoding 0x9b, indirect pcrel sdata4; the word holds an ABS64 to the
+     personality), the FDE's LSDA to `.gcc_except_table`+off (0x1b). Every
+     function gets an FDE. There is one "zR" CIE plus one "zPLR" CIE per
+     personality, and no terminator (crtend's). The executable puts
+     `.eh_frame_hdr` (v1; 0x1b / 0x03 / 0x3b; a sorted table),
+     `.eh_frame` + terminator and `.gcc_except_table` in a read-only
+     segment, with `PT_GNU_EH_FRAME` over the header.
+   - Two object section kinds, `.eh_frame` and `.gcc_except_table`, through
+     every consumer of the builder: the `.o` writer, the merge reader
+     (concatenation is sound — CIE pointers are section-relative), the
+     in-process loader (registers its `.eh_frame` as the JIT does), the
+     executable writer. Section kinds are counted by `MIR_OBJ_SEC_NUM`, never
+     a literal.
+   - `.mir.addrpool` is MIR's GOT. The personality's `DW.ref` word is a pool
+     slot, and so is each cleanup the region table names: in an image its
+     pointers are 0x9b into those slots. The table therefore needs no
+     dynamic relocation and stays read-only, even for an imported cleanup.
+     The JIT keeps absptr. The table's header byte names the encoding, and
+     the runtime reads both.
+   - ONE CIE/FDE + region-table encoder for the JIT registration and the
+     object capture (gcc's `output_call_frame_info` shape), parametrized by
+     the address model (JIT: absolute values; object: PC32 relocations).
+   - Order: ELF (x86-64, aarch64) first; Mach-O (`__TEXT,__eh_frame`,
+     `__gcc_except_tab`) next; PE `.pdata`/`.xdata` with the Windows runtime
+     switch. Until a container carries the sections, its capture emits none.
 5. **Runtime (`src/rt/rt_except.c`, strict C11)**
    - the walk is the platform unwinder's forced unwind to the SJLJ try
      (revised 2026-10-20 from an `_Unwind_Backtrace` loop, which cannot tell
@@ -239,6 +268,16 @@ saved and restored with the rest of the exception state at task switches.
    personality end to end through c2mir-compiled frames in madc's try shape.
 6. AOT: CFI and region tables in ELF, Mach-O and PE images; Windows unwind
    codes and JIT registration.
+   - 6.0 `MIR_OBJ_SEC_NUM`: per-kind tables replace the literal 5s and the
+     per-kind ternary chains (builder, input view, loader, merge reader, ELF
+     writers, Mach-O / PE fronts). Behaviour-preserving.
+   - 6.1 ELF: the two kinds, the one encoder, the capture's FDEs + tables,
+     `.o` writer, merge, loader registration, executable `.eh_frame_hdr` +
+     `PT_GNU_EH_FRAME`, runtime reads 0x9b. Unit tests: an object loaded
+     in-process and a merged one run the real personality (cleanups 112,
+     11, 10, caught 12); an emitted executable's raise reaches a
+     c2mir-compiled personality through `PT_GNU_EH_FRAME`.
+   - 6.2 Mach-O. 6.3 PE + the Windows runtime.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,
    consumers converted, runtime cleanup stack deleted, REPL boundary.
    `tests/testthrow_through_frame` (11 cases, g++/clang oracle) is the gate,

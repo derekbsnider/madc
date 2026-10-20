@@ -15,7 +15,13 @@
 
 #include <csetjmp>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <initializer_list>
+#include <string>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <unwind.h>
 #include <utility>
 #include <vector>
@@ -25,6 +31,7 @@ extern "C" {
 #include "mir-gen.h"
 #include "c2mir.h"
 }
+#include "mir-debug.h"
 #include "../../src/rt/rt_except.h"
 
 // The targets whose generated frames are registered with the host unwinder
@@ -892,6 +899,232 @@ TEST_CASE("a g++ frame between the throw and the try runs its destructor and res
 }
 
 }
+
+// The AOT images (ELF): the same frames reach the platform unwinder through
+// the image's .eh_frame -- registered by the in-process loader, found through
+// PT_GNU_EH_FRAME in an executable -- each FDE pointing at its region table in
+// .gcc_except_table, whose cleanup pointers (like the CIE's personality, gcc's
+// DW.ref word) go through .mir.addrpool slots: encoding 0x9b.
+#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+
+struct AotUnit {
+	const char *text;
+	const char *personality;	// the regions name it; nullptr = no regions
+};
+
+// Object mode leaves every import an undefined symbol of the capture (madc's
+// cir_object_import_resolver).
+static void *object_import_sentinel(const char *)
+{
+	static char sentinel;
+	return &sentinel;
+}
+
+// UNITS, each a c2mir translation unit, linked in object mode: every
+// function is captured. The caller emits, then calls aot_finish.
+static MIR_context_t aot_context(std::initializer_list<AotUnit> units)
+{
+	MIR_context_t ctx = gen_context();
+	MIR_gen_set_object_mode(ctx, 1);
+	c2mir_init(ctx);
+	int n = 0;
+	for (const AotUnit &u : units) {
+		struct c2mir_options opts;
+		memset(&opts, 0, sizeof(opts));
+		opts.message_file = stderr;
+		opts.unwind_regions_p = u.personality != nullptr;
+		opts.unwind_personality = u.personality;
+		C2mirSource src = {u.text, 0};
+		char name[32];
+		snprintf(name, sizeof(name), "aot%d.c", n++);
+		REQUIRE(c2mir_compile(ctx, &opts, c2mir_source_getc, &src, name, nullptr));
+	}
+	for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx)); m != nullptr;
+	     m = DLIST_NEXT(MIR_module_t, m))
+		MIR_load_module(ctx, m);
+	MIR_link(ctx, MIR_set_gen_interface, object_import_sentinel);
+	return ctx;
+}
+
+static void aot_finish(MIR_context_t ctx)
+{
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+}
+
+static std::vector<uint8_t> emit_object(std::initializer_list<AotUnit> units)
+{
+	MIR_context_t ctx = aot_context(units);
+	void *buf = nullptr;
+	size_t size = 0;
+	REQUIRE(MIR_gen_object_emit(ctx, &buf, &size) == 0);
+	std::vector<uint8_t> bytes((uint8_t *)buf, (uint8_t *)buf + size);
+	free(buf);
+	aot_finish(ctx);
+	return bytes;
+}
+
+// A second translation unit for the merge: its own frames with regions.
+static const char *rt_other_text =
+	"struct O { long v; };\n"
+	"void rt_record (long *p);\n"
+	"static void o_done (struct O *p) { rt_record (&p->v); }\n"
+	"long other (long a) {\n"
+	"  struct O o __attribute__ ((cleanup (o_done))) = {a};\n"
+	"  rt_record (&o.v);\n"
+	"  return a;\n"
+	"}\n";
+
+static void *rt_object_resolver(const char *name, void *)
+{
+	return rt_import_resolver(name);
+}
+
+// rt_try_text (with or without regions) as an ELF relocatable -- with MERGE,
+// read into a fresh builder after another object, so every section and
+// relocation of it rebases -- loaded in-process; FUNC(A): its result.
+static int64_t run_caught_aot(bool regions, int64_t a, const char *func, bool merge)
+{
+	const char *personality = regions ? "__madc_personality" : nullptr;
+	std::vector<uint8_t> bytes = emit_object({{rt_try_text, personality}});
+	char err[256] = "";
+	if (merge) {
+		std::vector<uint8_t> first = emit_object({{rt_other_text, personality}});
+		MIR_object_t obj = MIR_object_create();
+		REQUIRE(obj != nullptr);
+		INFO("MIR_object_read: " << err);
+		REQUIRE(MIR_object_read(obj, first.data(), first.size(), err, sizeof(err)) == 0);
+		REQUIRE(MIR_object_read(obj, bytes.data(), bytes.size(), err, sizeof(err)) == 0);
+		void *buf = nullptr;
+		size_t size = 0;
+		REQUIRE(MIR_object_emit(obj, &buf, &size) == 0);
+		bytes.assign((uint8_t *)buf, (uint8_t *)buf + size);
+		free(buf);
+		MIR_object_destroy(obj);
+	}
+	MIR_object_loaded_t lo = MIR_object_load(bytes.data(), bytes.size(), rt_object_resolver,
+						 nullptr, err, sizeof(err));
+	INFO("MIR_object_load: " << err);
+	REQUIRE(lo != nullptr);
+	int64_t (*fn)(int64_t) = (int64_t (*)(int64_t))MIR_object_loaded_sym(lo, func);
+	REQUIRE(fn != nullptr);
+	recorded.clear();
+	int64_t r = fn(a);
+	MIR_object_loaded_unload(lo);
+	return r;
+}
+
+// An executable's own personality and stop function (libc + libgcc_s only):
+// the personality counts the frames that name it and the ones whose table it
+// reads with the image encoding; the forced unwind's end prints both.
+static const char *exe_personality_text =
+	"int printf (const char *, ...);\n"
+	"void exit (int);\n"
+	"void *_Unwind_GetLanguageSpecificData (void *);\n"
+	"static int calls, tables;\n"
+	"int aot_personality (int version, int actions, unsigned long cls, void *ex, void *uc) {\n"
+	"  const unsigned char *t = _Unwind_GetLanguageSpecificData (uc);\n"
+	"  calls++;\n"
+	"  if (t != 0 && t[0] == 1 && t[1] == 0x9b) tables++;\n"
+	"  return 8; /* _URC_CONTINUE_UNWIND */\n"
+	"}\n"
+	"int aot_stop (int version, int actions, unsigned long cls, void *ex, void *uc, void *arg) {\n"
+	"  if (actions & 16) { /* _UA_END_OF_STACK */\n"
+	"    printf (\"%d %d\\n\", calls, tables);\n"
+	"    exit (0);\n"
+	"  }\n"
+	"  return 0; /* _URC_NO_REASON */\n"
+	"}\n";
+
+static const char *exe_program_text =
+	"int _Unwind_ForcedUnwind (void *, void *, void *);\n"
+	"int aot_stop (int, int, unsigned long, void *, void *, void *);\n"
+	"static void done (long *p) { (void) p; }\n"
+	"static _Alignas (16) long ex[4];\n"
+	"static void thrower (long v) {\n"
+	"  long t __attribute__ ((cleanup (done))) = v;\n"
+	"  _Unwind_ForcedUnwind (ex, aot_stop, 0);\n"
+	"}\n"
+	"static void mid (long v) {\n"
+	"  long t __attribute__ ((cleanup (done))) = v;\n"
+	"  thrower (v + 1);\n"
+	"}\n"
+	"int main (void) { mid (1); return 1; }\n";
+
+// UNITS as an ELF executable (libc, libgcc_s), run: its output.
+static std::string run_executable(std::initializer_list<AotUnit> units)
+{
+	MIR_context_t ctx = aot_context(units);
+	static const char *const needed[] = {"libgcc_s.so.1", "libc.so.6"};
+	MIR_object_exec_params params;
+	memset(&params, 0, sizeof(params));
+	params.needed = needed;
+	params.n_needed = 2;
+	void *buf = nullptr;
+	size_t size = 0;
+	REQUIRE(MIR_gen_object_emit_executable(ctx, &params, &buf, &size) == 0);
+	aot_finish(ctx);
+	char path[] = "/tmp/madc_unwind_exe_XXXXXX";
+	int fd = mkstemp(path);
+	REQUIRE(fd >= 0);
+	bool written = write(fd, buf, size) == (ssize_t)size;
+	close(fd);
+	free(buf);
+	std::string out;
+	if (written && chmod(path, 0755) == 0) {
+		FILE *p = popen(path, "r");
+		char line[256];
+		while (p != nullptr && fgets(line, sizeof(line), p) != nullptr) out += line;
+		if (p != nullptr) CHECK(pclose(p) == 0);
+	}
+	unlink(path);
+	CHECK(written);
+	return out;
+}
+
+TEST_SUITE("AOT unwind tables") {
+
+TEST_CASE("an object loaded in-process: its frames reach the unwinder, the personality runs their regions")
+{
+	CHECK(run_caught_aot(true, 10, "caught", false) == 12);
+	REQUIRE(recorded.size() == 3);
+	CHECK(recorded[0] == 112);
+	CHECK(recorded[1] == 11);
+	CHECK(recorded[2] == 10);
+	// a g++ frame between the throw and the try
+	CHECK(run_caught_aot(true, 10, "caught_host", false) == 12);
+	REQUIRE(recorded.size() == 3);
+	CHECK(recorded[0] == 412);
+	CHECK(recorded[1] == 212);
+	CHECK(recorded[2] == 11);
+	// without regions every frame has its FDE and none names the personality
+	CHECK(run_caught_aot(false, 10, "caught", false) == 12);
+	REQUIRE(recorded.size() == 1);
+	CHECK(recorded[0] == 10);
+}
+
+TEST_CASE("merged objects: the concatenated .eh_frame and region tables rebase")
+{
+	CHECK(run_caught_aot(true, 10, "caught", true) == 12);
+	REQUIRE(recorded.size() == 3);
+	CHECK(recorded[0] == 112);
+	CHECK(recorded[1] == 11);
+	CHECK(recorded[2] == 10);
+}
+
+TEST_CASE("an executable: the unwinder finds its frames through PT_GNU_EH_FRAME")
+{
+	// thrower and mid name the personality, and their tables are read with
+	// the image encoding; main has no regions
+	CHECK(run_executable({{exe_personality_text, nullptr},
+			      {exe_program_text, "aot_personality"}})
+	      == "2 2\n");
+}
+
+}
+
+#endif
 
 #else
 

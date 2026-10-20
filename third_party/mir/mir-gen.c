@@ -235,9 +235,30 @@ DEF_VARR (MIR_unwind_call_t);
 typedef struct obj_item_sym {
   MIR_item_t item;
   int sym;
+  int64_t eh_slot; /* the .mir.addrpool slot holding the item's address for the
+                      unwind records, -1 until one is made */
 } obj_item_sym_t;
 
 DEF_HTAB (obj_item_sym_t);
+
+/* AOT object mode: a pc-relative field of the unwind record being encoded --
+   its offset in the record and its target, an offset in a section. */
+typedef struct gen_eh_reloc {
+  size_t pos;
+  int sec;
+  int64_t offset;
+} gen_eh_reloc_t;
+
+DEF_VARR (gen_eh_reloc_t);
+
+/* AOT object mode: one of the object's CIEs -- the personality's object
+   symbol (-1: none) and the CIE's .eh_frame offset. */
+typedef struct gen_eh_cie {
+  int personality_sym;
+  size_t off;
+} gen_eh_cie_t;
+
+DEF_VARR (gen_eh_cie_t);
 
 /* AOT object mode: an lref value captured while the function's label
    displacements are still available (they die with the func's gen data). */
@@ -317,6 +338,8 @@ struct gen_ctx {
   HTAB (obj_item_sym_t) * obj_item_sym_tab; /* MIR item -> object symbol id */
   VARR (obj_lref_val_t) * obj_lref_vals;    /* lref values recorded during capture */
   int obj_data_emitted_p; /* the module-data walk ran (emit entries are one-shot) */
+  VARR (gen_eh_reloc_t) * eh_relocs; /* the PC32 fields of the unwind record being encoded */
+  VARR (gen_eh_cie_t) * eh_cies;     /* the object's CIEs, one per personality */
 };
 
 #define optimize_level gen_ctx->optimize_level
@@ -753,13 +776,15 @@ static void gen_index_patterns (gen_ctx_t gen_ctx, const MIR_insn_code_t *first_
 #endif
 
 #ifndef TARGET_HAS_OBJECT_CAPTURE
-/* Targets without AOT object-capture support: MIR_gen_set_object_mode fails
+/* (A capture returns the function's .text offset.)
+   Targets without AOT object-capture support: MIR_gen_set_object_mode fails
    before this can ever be reached (MIR_object_create returns NULL for
    targets without a capture + reloc mapping -- x86-64 and aarch64 have
    them). */
-static void target_object_capture (gen_ctx_t gen_ctx MIR_UNUSED, uint8_t *code MIR_UNUSED,
-                                   size_t code_len MIR_UNUSED) {
+static size_t target_object_capture (gen_ctx_t gen_ctx MIR_UNUSED, uint8_t *code MIR_UNUSED,
+                                     size_t code_len MIR_UNUSED) {
   gen_assert (FALSE);
+  return 0;
 }
 #endif
 
@@ -1269,6 +1294,7 @@ static int gen_obj_item_sym (gen_ctx_t gen_ctx, MIR_item_t item) {
   item = obj_canonical_item (gen_ctx->ctx, item);
   el.item = item;
   el.sym = -1;
+  el.eh_slot = -1;
   if (HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)) return tab_el.sym;
   const char *name = MIR_item_name (gen_ctx->ctx, item);
   /* imports stay undefined, weak when only weak references reach them
@@ -10036,37 +10062,108 @@ int MIR_gen_cfi_cie (MIR_cfi_cie_t *cie) {
 #endif
 }
 
-/* Generated code runs here when the target is the host: its frames are
-   registered with the host's unwinder (libgcc / libunwind) so a walk passes
-   through them.  Windows describes frames with its own tables. */
+/* Where generated functions' unwind records go: the host unwinder's
+   registry when the target is the host (Windows describes frames with its
+   own tables), and the object an AOT capture builds when its container
+   carries them (ELF; Mach-O and PE when their writers do). */
 #if defined(TARGET_CFI_CIE_INSNS) && !MIR_CROSS_P && !MIR_TARGET_WINDOWS_P
 #define GEN_CFI_REGISTER_P 1
-extern void __register_frame (void *);
-extern void __deregister_frame (void *);
+#else
+#define GEN_CFI_REGISTER_P 0
+#endif
+#if defined(TARGET_CFI_CIE_INSNS) && !MIR_TARGET_APPLE_P && !MIR_TARGET_WINDOWS_P
+#define GEN_EH_OBJECT_P 1
+#else
+#define GEN_EH_OBJECT_P 0
+#endif
 
+#if GEN_CFI_REGISTER_P || GEN_EH_OBJECT_P
+/* ---- The records: ONE encoder for both (gcc's output_call_frame_info).  A
+   pointer field holds the JIT's address (absptr) or, in an object, is a
+   pc-relative sdata4 field covered by a PC32 relocation -- through the
+   .mir.addrpool slot holding the address when the image's relocations
+   supply it (indirect: the CIE's personality and each table's cleanups,
+   gcc's DW.ref word), so the records never need a dynamic relocation. */
+#define GEN_DW_EH_PE_absptr 0x00
+#define GEN_DW_EH_PE_sdata4 0x0b
+#define GEN_DW_EH_PE_pcrel 0x10
+#define GEN_DW_EH_PE_indirect 0x80
+
+/* The encoding of the records' pointers: absptr in the JIT, pcrel sdata4 in
+   an object. */
+static uint8_t gen_eh_ptr_enc (gen_ctx_t gen_ctx) {
+  return object_mode_p ? GEN_DW_EH_PE_pcrel | GEN_DW_EH_PE_sdata4 : GEN_DW_EH_PE_absptr;
+}
+
+/* Records are 8-byte multiples (every MIR target is 64-bit). */
 static void gen_cfi_align (VARR (uint8_t) * b, size_t start) {
-  while ((VARR_LENGTH (uint8_t, b) - start) % sizeof (void *) != 0)
-    VARR_PUSH (uint8_t, b, GEN_DW_CFA_nop);
+  while ((VARR_LENGTH (uint8_t, b) - start) % 8 != 0) VARR_PUSH (uint8_t, b, GEN_DW_CFA_nop);
 }
 
 static void gen_cfi_patch_u32 (VARR (uint8_t) * b, size_t pos, uint32_t v) {
   memcpy (VARR_ADDR (uint8_t, b) + pos, &v, sizeof (v));
 }
 
-#define GEN_DW_EH_PE_absptr 0x00
+static void gen_cfi_push_u32 (VARR (uint8_t) * b, uint32_t v) {
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &v, sizeof (v));
+}
 
 static void gen_cfi_push_u64 (VARR (uint8_t) * b, uint64_t v) {
   VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &v, sizeof (v));
 }
 
-/* FUNC's region table (MIR_UNWIND_TABLE_VERSION) into B, its cleanup pointers
-   absolute. */
-static void gen_unwind_table (VARR (uint8_t) * b, MIR_func_t func) {
+/* A pointer field: ADDR in the JIT; in an object a pc-relative field to
+   offset OFFSET of section SEC, its relocation recorded for the caller. */
+static void gen_eh_ptr (gen_ctx_t gen_ctx, VARR (uint8_t) * b, uint64_t addr, int sec,
+                        int64_t offset) {
+  gen_eh_reloc_t r;
+
+  if (!object_mode_p) {
+    gen_cfi_push_u64 (b, addr);
+    return;
+  }
+  r.pos = VARR_LENGTH (uint8_t, b);
+  r.sec = sec;
+  r.offset = offset;
+  VARR_PUSH (gen_eh_reloc_t, gen_ctx->eh_relocs, r);
+  gen_cfi_push_u32 (b, 0);
+}
+
+/* The .mir.addrpool slot holding ITEM's address in the object, made on
+   first use: its ABS64 relocation is the image's (dynamic for an import). */
+static int64_t gen_obj_eh_slot (gen_ctx_t gen_ctx, MIR_item_t item) {
+  obj_item_sym_t el, tab_el;
+  uint64_t zero = 0;
+
+  el.sym = gen_obj_item_sym (gen_ctx, item); /* enters the item */
+  el.item = obj_canonical_item (gen_ctx->ctx, item);
+  el.eh_slot = -1;
+  if (!HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)) tab_el = el;
+  if (tab_el.eh_slot >= 0) return tab_el.eh_slot;
+  tab_el.eh_slot = (int64_t) MIR_object_addrpool_append (gen_object, &zero, 8, 8);
+  MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_ADDRPOOL, (uint64_t) tab_el.eh_slot, tab_el.sym,
+                        0, MIR_OBJ_RELOC_ABS64);
+  HTAB_DO (obj_item_sym_t, obj_item_sym_tab, tab_el, HTAB_REPLACE, el);
+  return tab_el.eh_slot;
+}
+
+/* Does FUNC hand its personality a region table: it names one and has calls
+   in its regions (gcc and clang give a function with a cleanup an LSDA). */
+static int gen_eh_table_p (MIR_func_t func) {
+  return func->unwind_personality != NULL && func->unwind_regions != NULL && func->unwind.base_p
+         && func->unwind.ncalls != 0;
+}
+
+/* FUNC's region table (MIR_UNWIND_TABLE_VERSION) into B; its header names
+   the encoding of its cleanup pointers. */
+static void gen_unwind_table (gen_ctx_t gen_ctx, VARR (uint8_t) * b, MIR_func_t func) {
   const MIR_unwind_info_t *u = &func->unwind;
   size_t i, nregions = VARR_LENGTH (MIR_unwind_region_t, func->unwind_regions);
 
   VARR_PUSH (uint8_t, b, MIR_UNWIND_TABLE_VERSION);
-  VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr);
+  VARR_PUSH (uint8_t, b,
+             object_mode_p ? GEN_DW_EH_PE_indirect | gen_eh_ptr_enc (gen_ctx)
+                           : GEN_DW_EH_PE_absptr);
   gen_cfi_uleb (b, u->base_reg);
   gen_cfi_sleb (b, u->base_offset);
   gen_cfi_uleb (b, u->base_align);
@@ -10082,84 +10179,178 @@ static void gen_unwind_table (VARR (uint8_t) * b, MIR_func_t func) {
 
     gen_cfi_uleb (b, r.parent);
     gen_cfi_sleb (b, r.offset);
-    gen_cfi_push_u64 (b, (uint64_t) (uintptr_t) r.cleanup->addr);
+    if (object_mode_p)
+      gen_eh_ptr (gen_ctx, b, 0, MIR_OBJ_SEC_ADDRPOOL, gen_obj_eh_slot (gen_ctx, r.cleanup));
+    else
+      gen_eh_ptr (gen_ctx, b, (uint64_t) (uintptr_t) r.cleanup->addr, 0, 0);
   }
 }
 
-/* An .eh_frame table for one generated function -- its CIE (absolute
-   pointers), its FDE and the terminator -- registered with the host unwinder:
-   libgcc takes the table, libunwind (Apple) one FDE.  A function with a
-   personality and calls in a region (as gcc and clang give one with a cleanup)
-   names the personality (augmentation "zPLR"), and its FDE points at its region
-   table, which follows the terminator in the same allocation. */
-static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, size_t code_len) {
-  VARR (uint8_t) *b = gen_ctx->cfi_insns;
+/* A CIE into B: "zPLR" naming PERSONALITY, else "zR". */
+static void gen_eh_cie (gen_ctx_t gen_ctx, VARR (uint8_t) * b, MIR_item_t personality) {
   MIR_cfi_cie_t cie;
-  size_t len_pos, fde_pos, lsda_slot = 0, unwind_table_pos = 0;
-  uint32_t u32 = 0;
-  uint8_t *table;
-  int table_p = func->unwind_personality != NULL && func->unwind_regions != NULL
-                && func->unwind.base_p && func->unwind.ncalls != 0;
+  size_t start = VARR_LENGTH (uint8_t, b);
+  uint8_t enc = gen_eh_ptr_enc (gen_ctx);
 
-  if (func->cfi == NULL || code == NULL || code_len == 0) return;
   MIR_gen_cfi_cie (&cie);
-  VARR_TRUNC (uint8_t, b, 0);
-  /* CIE */
-  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4); /* length, patched */
-  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4); /* CIE id 0 */
-  VARR_PUSH (uint8_t, b, 1);                        /* version */
-  if (table_p)
+  gen_cfi_push_u32 (b, 0);   /* length, patched */
+  gen_cfi_push_u32 (b, 0);   /* CIE id */
+  VARR_PUSH (uint8_t, b, 1); /* version */
+  if (personality != NULL)
     VARR_PUSH_ARR (uint8_t, b, (uint8_t *) "zPLR", 5);
   else
     VARR_PUSH_ARR (uint8_t, b, (uint8_t *) "zR", 3);
   gen_cfi_uleb (b, cie.code_align);
   gen_cfi_sleb (b, cie.data_align);
   VARR_PUSH (uint8_t, b, (uint8_t) cie.ra_column);
-  if (table_p) {
-    gen_cfi_uleb (b, 1 + 8 + 1 + 1); /* augmentation data length */
-    VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr); /* P: the personality */
-    gen_cfi_push_u64 (b, (uint64_t) (uintptr_t) func->unwind_personality->addr);
-    VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr); /* L: the FDE's region table */
-    VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr); /* R: the FDE's code range */
+  if (personality != NULL) {
+    gen_cfi_uleb (b, 1 + (object_mode_p ? 4 : 8) + 1 + 1); /* augmentation data length */
+    if (object_mode_p) { /* P: the slot holding it */
+      VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_indirect | enc);
+      gen_eh_ptr (gen_ctx, b, 0, MIR_OBJ_SEC_ADDRPOOL, gen_obj_eh_slot (gen_ctx, personality));
+    } else {
+      VARR_PUSH (uint8_t, b, enc);
+      gen_eh_ptr (gen_ctx, b, (uint64_t) (uintptr_t) personality->addr, 0, 0);
+    }
+    VARR_PUSH (uint8_t, b, enc); /* L: the FDE's region table */
   } else {
     gen_cfi_uleb (b, 1); /* augmentation data length */
-    VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr);
   }
+  VARR_PUSH (uint8_t, b, enc); /* R: the FDE's code range */
   VARR_PUSH_ARR (uint8_t, b, cie.insns, cie.insns_len);
-  gen_cfi_align (b, 0);
-  gen_cfi_patch_u32 (b, 0, (uint32_t) VARR_LENGTH (uint8_t, b) - 4);
-  /* FDE */
-  fde_pos = len_pos = VARR_LENGTH (uint8_t, b);
-  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4); /* length, patched */
-  u32 = (uint32_t) (fde_pos + 4);                   /* back to the CIE */
-  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4);
-  gen_cfi_push_u64 (b, (uint64_t) (uintptr_t) code);
-  gen_cfi_push_u64 (b, code_len);
+  gen_cfi_align (b, start);
+  gen_cfi_patch_u32 (b, start, (uint32_t) (VARR_LENGTH (uint8_t, b) - start - 4));
+}
+
+/* FUNC's FDE into B -- the record lands at SEC_BASE + its offset in B in a
+   section whose CIE_POS holds its CIE: its code (CODE in the JIT, .text +
+   TEXT_OFF in an object) and, with a region table, the table's address
+   (.gcc_except_table + TABLE_OFF in an object; the JIT patches the returned
+   field). */
+static size_t gen_eh_fde (gen_ctx_t gen_ctx, VARR (uint8_t) * b, size_t sec_base, size_t cie_pos,
+                          MIR_func_t func, uint64_t code, int64_t text_off, size_t code_len,
+                          int table_p, int64_t table_off) {
+  size_t start = VARR_LENGTH (uint8_t, b), lsda_pos = 0;
+
+  gen_cfi_push_u32 (b, 0); /* length, patched */
+  gen_cfi_push_u32 (b, (uint32_t) (sec_base + start + 4 - cie_pos)); /* back to the CIE */
+  gen_eh_ptr (gen_ctx, b, code, MIR_OBJ_SEC_TEXT, text_off);        /* initial location */
+  if (object_mode_p) /* the address range, in the R encoding's size */
+    gen_cfi_push_u32 (b, (uint32_t) code_len);
+  else
+    gen_cfi_push_u64 (b, code_len);
   if (table_p) {
-    gen_cfi_uleb (b, 8); /* augmentation data length: the region table's address */
-    lsda_slot = VARR_LENGTH (uint8_t, b);
-    gen_cfi_push_u64 (b, 0); /* patched */
+    gen_cfi_uleb (b, object_mode_p ? 4 : 8); /* augmentation data length */
+    lsda_pos = VARR_LENGTH (uint8_t, b);
+    gen_eh_ptr (gen_ctx, b, 0, MIR_OBJ_SEC_EXCEPT, table_off);
   } else {
-    gen_cfi_uleb (b, 0); /* augmentation data length */
+    gen_cfi_uleb (b, 0);
   }
   VARR_PUSH_ARR (uint8_t, b, func->cfi, func->cfi_len);
-  gen_cfi_align (b, fde_pos);
-  gen_cfi_patch_u32 (b, len_pos, (uint32_t) (VARR_LENGTH (uint8_t, b) - len_pos - 4));
-  u32 = 0; /* terminator */
-  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4);
+  gen_cfi_align (b, start);
+  gen_cfi_patch_u32 (b, start, (uint32_t) (VARR_LENGTH (uint8_t, b) - start - 4));
+  return lsda_pos;
+}
+#endif
+
+#if GEN_EH_OBJECT_P
+/* Append B's record to SEC of the object at ALIGN with the PC32 relocations
+   of its pointer fields; the record's offset. */
+static size_t gen_eh_append (gen_ctx_t gen_ctx, VARR (uint8_t) * b, int sec, size_t align) {
+  size_t i, off = MIR_object_section_append (gen_object, sec, VARR_ADDR (uint8_t, b),
+                                             VARR_LENGTH (uint8_t, b), align);
+
+  for (i = 0; i < VARR_LENGTH (gen_eh_reloc_t, gen_ctx->eh_relocs); i++) {
+    gen_eh_reloc_t r = VARR_GET (gen_eh_reloc_t, gen_ctx->eh_relocs, i);
+
+    MIR_object_add_reloc (gen_object, sec, off + r.pos,
+                          MIR_object_section_symbol (gen_object, r.sec), r.offset,
+                          MIR_OBJ_RELOC_PC32);
+  }
+  VARR_TRUNC (gen_eh_reloc_t, gen_ctx->eh_relocs, 0);
+  return off;
+}
+
+/* The object's CIE for PERSONALITY (NULL: the "zR" one), appended on first
+   use. */
+static size_t gen_eh_object_cie (gen_ctx_t gen_ctx, MIR_item_t personality) {
+  VARR (uint8_t) *b = gen_ctx->cfi_insns;
+  int sym = personality == NULL ? -1 : gen_obj_item_sym (gen_ctx, personality);
+  gen_eh_cie_t c;
+
+  for (size_t i = 0; i < VARR_LENGTH (gen_eh_cie_t, gen_ctx->eh_cies); i++)
+    if (VARR_GET (gen_eh_cie_t, gen_ctx->eh_cies, i).personality_sym == sym)
+      return VARR_GET (gen_eh_cie_t, gen_ctx->eh_cies, i).off;
+  VARR_TRUNC (uint8_t, b, 0);
+  gen_eh_cie (gen_ctx, b, personality);
+  c.personality_sym = sym;
+  c.off = gen_eh_append (gen_ctx, b, MIR_OBJ_SEC_EHFRAME, 8);
+  VARR_PUSH (gen_eh_cie_t, gen_ctx->eh_cies, c);
+  return c.off;
+}
+
+/* FUNC's records in the object, its code at .text + TEXT_OFF: its region
+   table in .gcc_except_table and its FDE in .eh_frame, after the CIE it
+   shares with the object's other functions of its personality. */
+static void gen_eh_capture (gen_ctx_t gen_ctx, MIR_func_t func, size_t text_off,
+                            size_t code_len) {
+  VARR (uint8_t) *b = gen_ctx->cfi_insns;
+  int table_p = gen_eh_table_p (func);
+  size_t table_off = 0, cie_off, base = 0;
+  const void *bytes;
+
+  if (func->cfi == NULL || code_len == 0) return;
   if (table_p) {
-    unwind_table_pos = VARR_LENGTH (uint8_t, b);
-    gen_unwind_table (b, func);
+    VARR_TRUNC (uint8_t, b, 0);
+    gen_unwind_table (gen_ctx, b, func);
+    table_off = gen_eh_append (gen_ctx, b, MIR_OBJ_SEC_EXCEPT, 1);
+  }
+  cie_off = gen_eh_object_cie (gen_ctx, table_p ? func->unwind_personality : NULL);
+  MIR_object_section_bytes (gen_object, MIR_OBJ_SEC_EHFRAME, &bytes, &base);
+  VARR_TRUNC (uint8_t, b, 0);
+  gen_eh_fde (gen_ctx, b, base, cie_off, func, 0, (int64_t) text_off, code_len, table_p,
+              (int64_t) table_off);
+  gen_eh_append (gen_ctx, b, MIR_OBJ_SEC_EHFRAME, 8);
+}
+#endif
+
+#if GEN_CFI_REGISTER_P
+extern void __register_frame (void *);
+extern void __deregister_frame (void *);
+
+/* An .eh_frame table for one generated function -- its CIE, its FDE and the
+   terminator -- registered with the host unwinder: libgcc takes the table,
+   libunwind (Apple) one FDE.  With a region table (gen_eh_table_p) the CIE
+   names the personality and the FDE points at the table, which follows the
+   terminator in the same allocation. */
+static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, size_t code_len) {
+  VARR (uint8_t) *b = gen_ctx->cfi_insns;
+  size_t fde_pos, lsda_pos, table_pos = 0;
+  uint8_t *table;
+  int table_p = gen_eh_table_p (func);
+
+  if (func->cfi == NULL || code == NULL || code_len == 0) return;
+  VARR_TRUNC (uint8_t, b, 0);
+  gen_eh_cie (gen_ctx, b, table_p ? func->unwind_personality : NULL);
+  fde_pos = VARR_LENGTH (uint8_t, b);
+  lsda_pos = gen_eh_fde (gen_ctx, b, 0, 0, func, (uint64_t) (uintptr_t) code, 0, code_len,
+                         table_p, 0);
+  gen_cfi_push_u32 (b, 0); /* terminator */
+  if (table_p) {
+    table_pos = VARR_LENGTH (uint8_t, b);
+    gen_unwind_table (gen_ctx, b, func);
   }
   table = gen_malloc (gen_ctx, VARR_LENGTH (uint8_t, b));
   memcpy (table, VARR_ADDR (uint8_t, b), VARR_LENGTH (uint8_t, b));
   if (table_p) {
-    uint64_t lsda = (uint64_t) (uintptr_t) (table + unwind_table_pos);
+    uint64_t lsda = (uint64_t) (uintptr_t) (table + table_pos);
 
-    memcpy (table + lsda_slot, &lsda, sizeof (lsda));
+    memcpy (table + lsda_pos, &lsda, sizeof (lsda));
   }
 #if defined(__APPLE__)
   table += fde_pos;
+#else
+  (void) fde_pos;
 #endif
   __register_frame (table);
   VARR_PUSH (void_ptr_t, gen_ctx->cfi_registered, table);
@@ -10176,8 +10367,6 @@ static void gen_cfi_deregister_all (gen_ctx_t gen_ctx) {
     MIR_free (gen_alloc (gen_ctx), table);
   }
 }
-#else
-#define GEN_CFI_REGISTER_P 0
 #endif
 
 static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int machine_code_p) {
@@ -10424,7 +10613,12 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
     if (object_mode_p) {
       /* Capture the blob + relocations instead of publishing; no rebase, no
          thunk redirect -- nothing may depend on run-time addresses. */
-      target_object_capture (gen_ctx, code, code_len);
+      size_t text_off = target_object_capture (gen_ctx, code, code_len);
+#if GEN_EH_OBJECT_P
+      gen_eh_capture (gen_ctx, func_item->u.func, text_off, code_len);
+#else
+      (void) text_off;
+#endif
       machine_code = NULL;
     } else {
       machine_code = func_item->u.func->call_addr = _MIR_publish_code (ctx, code, code_len);
@@ -10871,6 +11065,8 @@ void MIR_gen_init (MIR_context_t ctx) {
   VARR_CREATE (gen_cfi_rule_t, gen_ctx->cfi_rules, alloc, 16);
   VARR_CREATE (uint8_t, gen_ctx->cfi_insns, alloc, 128);
   VARR_CREATE (void_ptr_t, gen_ctx->cfi_registered, alloc, 0);
+  VARR_CREATE (gen_eh_reloc_t, gen_ctx->eh_relocs, alloc, 8);
+  VARR_CREATE (gen_eh_cie_t, gen_ctx->eh_cies, alloc, 2);
   gen_ctx->cfi_prev_insn = NULL;
   gen_ctx->cfi_pending = 0;
   VARR_CREATE (MIR_unwind_call_t, gen_ctx->unwind_calls, alloc, 0);
@@ -10957,6 +11153,8 @@ void MIR_gen_finish (MIR_context_t ctx) {
   gen_cfi_deregister_all (gen_ctx);
 #endif
   VARR_DESTROY (void_ptr_t, gen_ctx->cfi_registered);
+  VARR_DESTROY (gen_eh_reloc_t, gen_ctx->eh_relocs);
+  VARR_DESTROY (gen_eh_cie_t, gen_ctx->eh_cies);
   VARR_DESTROY (gen_cfi_mark_t, gen_ctx->cfi_marks);
   VARR_DESTROY (gen_cfi_rule_t, gen_ctx->cfi_rules);
   VARR_DESTROY (uint8_t, gen_ctx->cfi_insns);

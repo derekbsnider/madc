@@ -3586,7 +3586,7 @@ static void target_rebase (gen_ctx_t gen_ctx, uint8_t *base) {
    silent text relocation.  The JIT-only change_calls / call_refs (redef)
    machinery is skipped: the emitted module is emit-final. */
 #define TARGET_HAS_OBJECT_CAPTURE 1
-static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
+static size_t target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
   MIR_context_t ctx = gen_ctx->ctx;
   MIR_object_t obj = gen_object;
   size_t i, j;
@@ -3670,6 +3670,7 @@ static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code
                                  curr_func_item->u.func->name);
   VARR_TRUNC (MIR_code_reloc_t, relocs, 0);
   gen_obj_record_lrefs (gen_ctx, func_off);
+  return func_off;
 }
 
 static void target_change_to_direct_calls (MIR_context_t ctx) {

@@ -1,6 +1,10 @@
 # Changelog
 
 ## [Unreleased]
+### MIR emits unwind records for generated code in ELF images
+
+Object files, merged objects, in-process loads and executables carry `.eh_frame` (one FDE per generated function) and `.gcc_except_table` (the region tables). Executables also carry `.eh_frame_hdr` and `PT_GNU_EH_FRAME`. A forced unwind walks through generated frames in AOT images. Region tables are not yet emitted in AOT images: madc does not set c2mir's unwind options.
+
 Consolidated: type_trait_dispatch — gate scripts/check-one-trait-dispatch.sh
 Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh

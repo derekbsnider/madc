@@ -146,9 +146,9 @@ extern void MIR_debug_gdb_unregister (MIR_debug_jit_t entry);
 
 typedef struct MIR_object *MIR_object_t;
 
-/* Section identifiers (fixed section-header indexes 1..4 in the emitted
-   object; .init_array follows at 5 when non-empty).  MIR_OBJ_SEC_UNDEF
-   marks an imported (undefined) symbol.
+/* Section identifiers (section-header indexes in kind order from 1 in the
+   emitted object: .text, .data, .bss and .mir.addrpool always, the others
+   when non-empty).  MIR_OBJ_SEC_UNDEF marks an imported (undefined) symbol.
    ADDRPOOL (".mir.addrpool", R6 PIC) is the GOT-shaped address-slot
    section: every 8-byte address the generated code materializes or calls
    through -- const-pool entries and switch tables -- lives here instead of
@@ -158,7 +158,14 @@ typedef struct MIR_object *MIR_object_t;
    INITARR (".init_array", SHT_INIT_ARRAY -- the platform section, so an
    external linker collects it natively) holds 8-byte function-pointer
    slots, one per registered module initializer (MIR_object_add_init);
-   each slot is zero in the file and covered by an ABS64 relocation. */
+   each slot is zero in the file and covered by an ABS64 relocation.
+   EHFRAME (".eh_frame") and EXCEPT (".gcc_except_table") are the generated
+   functions' unwind records, read-only: their CIEs and FDEs, and the region
+   tables the FDEs hand their personality (MIR_UNWIND_TABLE_VERSION).  Every
+   pointer in them is pc-relative (PC32), so neither ever needs a dynamic
+   relocation; the CIE's personality and each table's cleanups go through
+   .mir.addrpool slots (gcc's DW.ref word).  Present only when non-empty;
+   ELF images only for now. */
 enum {
   MIR_OBJ_SEC_UNDEF = -1,
   MIR_OBJ_SEC_TEXT = 0,
@@ -166,6 +173,8 @@ enum {
   MIR_OBJ_SEC_BSS = 2,
   MIR_OBJ_SEC_ADDRPOOL = 3,
   MIR_OBJ_SEC_INITARR = 4,
+  MIR_OBJ_SEC_EHFRAME = 5,
+  MIR_OBJ_SEC_EXCEPT = 6,
   MIR_OBJ_SEC_NUM /* the count of kinds: every per-kind table is sized by it */
 };
 
@@ -213,6 +222,13 @@ extern size_t MIR_object_bss_reserve (MIR_object_t obj, size_t len, size_t align
    relocation in MIR_OBJ_SEC_ADDRPOOL. */
 extern size_t MIR_object_addrpool_append (MIR_object_t obj, const void *bytes, size_t len,
                                           size_t align);
+/* Append len bytes to section sec (any kind with a body; .bss has
+   MIR_object_bss_reserve) at the given power-of-2 alignment, padding with
+   zeros (bytes == NULL appends zero fill); returns the section offset.
+   MIR_object_data_append and MIR_object_addrpool_append are this for their
+   kinds. */
+extern size_t MIR_object_section_append (MIR_object_t obj, int sec, const void *bytes,
+                                         size_t len, size_t align);
 
 /* Define (sec >= 0, at section offset value with the given size) or import
    (sec == MIR_OBJ_SEC_UNDEF) a symbol.  func_p selects STT_FUNC vs
