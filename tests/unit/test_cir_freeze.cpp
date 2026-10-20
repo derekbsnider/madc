@@ -3665,6 +3665,76 @@ TEST_CASE("A3: for_prefix reads the one run of names a prefix starts") {
 	CHECK(e == 0u);
 }
 
+// B2: the HASH index answers every lookup the binary search answers —
+// bare and qualified, hits and misses — and a malformed index is refused
+// (lookups keep the binary search).
+TEST_CASE("B2: the decl-name hash index agrees with the binary search") {
+	std::map<madc::dis::istring, std::vector<uint32_t> > in;
+	for (int i = 0; i < 40; ++i) {
+		char nm[32];
+		snprintf(nm, sizeof nm, "name%d", i);
+		in[madc::dis::istring(nm)] = {(uint32_t)i};
+		snprintf(nm, sizeof nm, "std::name%d", i);
+		in[madc::dis::istring(nm)] = {(uint32_t)i, 100u};
+	}
+	in[madc::dis::istring("std")] = {7};
+	in[madc::dis::istring("std::")] = {8};
+	std::vector<uint8_t> bytes;
+	ForestDeclNames::build(in, bytes);
+	ForestDeclNames sorted, hashed;
+	REQUIRE(sorted.bind(bytes.data(), bytes.size()));
+	REQUIRE(hashed.bind(bytes.data(), bytes.size()));
+	std::vector<uint32_t> h;
+	ForestDeclNames::build_hash(hashed, h);
+	REQUIRE(h.size() > 1u);
+	REQUIRE(hashed.bind_hash(h.data(), h.size()));
+	CHECK(hashed.hash_slots() == h[0]);
+	CHECK(hashed.hash_slots() > hashed.size());
+	CHECK(sorted.hash_slots() == 0u);
+	// Every name, bare: the same run from both readers.
+	for (uint32_t i = 0; i < sorted.size(); ++i) {
+		const char *nm = sorted.name_at(i);
+		REQUIRE(nm != NULL);
+		uint32_t n1 = 99, n2 = 99;
+		const uint32_t *u1 = sorted.units_of(nm, n1);
+		const uint32_t *u2 = hashed.units_of(nm, n2);
+		CHECK(n1 == n2);
+		CHECK(u1 == u2);
+	}
+	// Qualified: hashed in pieces, the same answer as the whole spelling.
+	uint32_t n = 99, nq = 99;
+	const uint32_t *u = hashed.units_of_qualified("std", "name3", nq);
+	REQUIRE(nq == 2u);
+	CHECK(u == sorted.units_of("std::name3", n));
+	CHECK(u[1] == 100u);
+	CHECK(sorted.units_of_qualified("std", "name3", n) == u);
+	// Misses: a prefix of a name, a name with a suffix, a namespace that is a
+	// prefix of the stored one, an empty name under "std" ("std::" itself).
+	CHECK((hashed.units_of("name", n) == NULL));
+	CHECK(n == 0u);
+	CHECK((hashed.units_of("name399", n) == NULL));
+	CHECK((hashed.units_of_qualified("st", "name3", n) == NULL));
+	CHECK((hashed.units_of_qualified("std", "nam", n) == NULL));
+	CHECK((hashed.units_of_qualified("std", "", n) != NULL));
+	CHECK(n == 1u);
+	CHECK((hashed.units_of_qualified("std", "", n) == sorted.units_of("std::", nq)));
+	CHECK((hashed.units_of(NULL, n) == NULL));
+	// Malformed: B not above N, not a power of two, the wrong size, unbound
+	// names — each refused, the view keeps the binary search.
+	std::vector<uint32_t> bad = h;
+	bad[0] = 16;	// 82 names: not above N
+	ForestDeclNames v;
+	REQUIRE(v.bind(bytes.data(), bytes.size()));
+	CHECK_FALSE(v.bind_hash(bad.data(), bad.size()));
+	bad[0] = h[0] + 1;
+	CHECK_FALSE(v.bind_hash(bad.data(), bad.size()));
+	CHECK_FALSE(v.bind_hash(h.data(), h.size() - 1));
+	CHECK(v.hash_slots() == 0u);
+	CHECK(v.units_of("name3", n) == sorted.units_of("name3", nq));
+	ForestDeclNames unbound;
+	CHECK_FALSE(unbound.bind_hash(h.data(), h.size()));
+}
+
 // A container's ROLE (optional segment 28) — which consumer a profile
 // serves. The system profile writes none (absent = system); a code this
 // reader has no row for — a profile an older madc froze for another role

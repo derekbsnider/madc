@@ -57,10 +57,65 @@ bool ForestDeclNames::bind(const uint8_t *p, size_t len)
 	return true;
 }
 
+bool ForestDeclNames::bind_hash(const uint32_t *w, size_t words)
+{
+	_slots = NULL;
+	_mask = 0;
+	if (!w || words < 1 || !_n)
+		return false;
+	const uint32_t b = w[0];
+	if (b <= _n || (b & (b - 1)) != 0 || words != 1 + (size_t)b)
+		return false;
+	_slots = w + 1;
+	_mask = b - 1;
+	return true;
+}
+
+void ForestDeclNames::build_hash(const ForestDeclNames &dn, std::vector<uint32_t> &out)
+{
+	out.clear();
+	const uint32_t n = dn.size();
+	if (!n)
+		return;
+	uint32_t b = 16;
+	while (b < n + n / 3 + 1)	// load at most 3/4
+		b <<= 1;
+	out.assign(1 + (size_t)b, 0);
+	out[0] = b;
+	for (uint32_t i = 0; i < n; ++i) {
+		const char *nm = dn.name_at(i);
+		if (!nm)
+			continue;
+		uint32_t at = madc::dis::intern_table::hash_bytes(nm, (uint32_t)strlen(nm)) & (b - 1);
+		while (out[1 + at])
+			at = (at + 1) & (b - 1);
+		out[1 + at] = i + 1;
+	}
+}
+
+const uint32_t *ForestDeclNames::units_of_qualified(const char *ns, const char *name,
+						    uint32_t &n) const
+{
+	n = 0;
+	if (!ns || !name)
+		return NULL;
+	if (!_slots)
+		return units_of_sorted((std::string(ns) + "::" + name).c_str(), n);
+	typedef madc::dis::intern_table T;
+	const uint32_t ns_len = (uint32_t)strlen(ns), len = (uint32_t)strlen(name);
+	uint32_t h = T::hash_init();
+	for (uint32_t i = 0; i < ns_len; ++i)
+		h = T::hash_step(h, (unsigned char)ns[i]);
+	h = T::hash_step(T::hash_step(h, ':'), ':');
+	for (uint32_t i = 0; i < len; ++i)
+		h = T::hash_step(h, (unsigned char)name[i]);
+	return probe(h, ns, ns_len, name, len, n);
+}
+
 // Every probe is bounds-checked against the bound sizes (a corrupt offset
 // answers "not declared", never a wild read): name_at and units_at
 // (cir_freeze.h) are the two readers of one name's slot.
-const uint32_t *ForestDeclNames::units_of(const char *name, uint32_t &n) const
+const uint32_t *ForestDeclNames::units_of_sorted(const char *name, uint32_t &n) const
 {
 	n = 0;
 	if (!_n || !name)
@@ -121,7 +176,7 @@ const uint32_t *ForestDeclNames::surface(const char *name, const char *ns, uint3
 	if (!name || !*name)
 		return NULL;
 	if (ns && *ns) {
-		const uint32_t *q = units_of((std::string(ns) + "::" + name).c_str(), n);
+		const uint32_t *q = units_of_qualified(ns, name, n);
 		if (n)
 			return q;
 	}
@@ -325,6 +380,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	ForestDeclNames::build(names, f.decl_names);
 	ForestDeclNames dn;
 	dn.bind(f.decl_names.data(), f.decl_names.size());	// the one reader, freeze side too
+	ForestDeclNames::build_hash(dn, f.decl_names_hash);	// B2
 
 	std::map<madc::dis::istring, uint32_t> unit_by_name;
 	for (uint32_t u = 0; u < nunits; ++u)

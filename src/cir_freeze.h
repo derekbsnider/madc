@@ -58,6 +58,7 @@
 #include <chrono>
 #include "madcdis/istring.h"	// names are interned (madc::dis::istring)
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <map>
@@ -163,7 +164,10 @@ enum : uint32_t
 	// B1 (docs/plans/2026-10-20-front-end-speed-plan.md): every name a
 	// frozen unit spells, with its units (ForestDeclNames layout).
 	// OPTIONAL segment: absent = a -D consumer declines, as before.
-	SNAP_KIND_CIR_SPELLED_NAMES    = madc::dis::SNAP_KIND_CONSUMER + 33
+	SNAP_KIND_CIR_SPELLED_NAMES    = madc::dis::SNAP_KIND_CONSUMER + 33,
+	// B2: DECL_NAMES's hash index (ForestDeclNames::build_hash). OPTIONAL:
+	// absent = the binary search, as before.
+	SNAP_KIND_CIR_DECL_NAMES_HASH  = madc::dis::SNAP_KIND_CONSUMER + 34
 };
 
 // v68: one frozen condition record's words (SNAP_KIND_CIR_UNIT_CONDS).
@@ -758,7 +762,8 @@ enum : uint32_t
 	CIR_FOREST_SEG_ARENA_DEF_POS    = 27,	// v60: slot -> record position (absent = slot order)
 	CIR_FOREST_SEG_ROLE             = 28,	// the profile's role (optional; absent = system)
 	CIR_FOREST_SEG_SPELLED_NAMES    = 29,	// B1: name -> the frozen units spelling it (optional)
-	// 30-31 reserved.
+	CIR_FOREST_SEG_DECL_NAMES_HASH  = 30,	// B2: DECL_NAMES's hash index (optional)
+	// 31 reserved.
 	CIR_FOREST_SEG_UNIT_BASE     = 32,
 	CIR_FOREST_SEGS_PER_UNIT     = 11	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -918,18 +923,38 @@ struct cir_forest_decl_entry
 //   [N+2 .. 2N+2]       unit-run word offsets into the unit words (u[N] = total)
 //   unit words          the declaring units of name i at [u[i], u[i+1])
 //   name bytes          NUL-terminated names
+// B2 (docs/plans/2026-10-20-front-end-speed-plan.md): an optional HASH index
+// beside it (u32 words) — [0] B slots (a power of two above N), then B slots,
+// each a name index + 1 (0 = empty), placed at intern_table::hash_bytes(name)
+// & (B - 1) and probed linearly. Bound, a lookup hashes the name once and
+// compares one or two names; absent, units_of binary-searches (~13 strcmps).
 class ForestDeclNames
 {
 public:
 	ForestDeclNames() : _n(0), _off(0), _uoff(0), _units(0), _nunits(0),
-			    _bytes(0), _nbytes(0) {}
+			    _bytes(0), _nbytes(0), _slots(0), _mask(0) {}
 	// Binds the layout in place (validated: the header, both offset tails, the
 	// section sizes); false = malformed, the view stays empty.
 	bool bind(const uint8_t *p, size_t len);
+	// Binds the HASH index, after bind (validated: B a power of two above N,
+	// the size); false = malformed or absent, lookups binary-search.
+	bool bind_hash(const uint32_t *w, size_t words);
 	bool empty() const { return _n == 0; }
 	uint32_t size() const { return _n; }
+	// The bound HASH index's slot count (0: none bound).
+	uint32_t hash_slots() const { return _slots ? _mask + 1 : 0; }
 	// The units declaring `name` (n = 0: none).
-	const uint32_t *units_of(const char *name, uint32_t &n) const;
+	const uint32_t *units_of(const char *name, uint32_t &n) const
+	{
+		n = 0;
+		if (!_slots || !name)
+			return units_of_sorted(name, n);
+		const uint32_t len = (uint32_t)strlen(name);
+		return probe(madc::dis::intern_table::hash_bytes(name, len), NULL, 0, name, len, n);
+	}
+	// The units declaring "ns::name" — with the index bound, hashed and
+	// compared in pieces, never built as one spelling.
+	const uint32_t *units_of_qualified(const char *ns, const char *name, uint32_t &n) const;
 	// The names starting with `stem`: the table is sorted by strcmp, so
 	// they are one run [begin, end) — a binary search to its start, a walk
 	// while the stem matches. begin == end: none ("" is every name).
@@ -967,7 +992,35 @@ public:
 	// Builds the layout from (name -> sorted unique units).
 	static void build(const std::map<madc::dis::istring, std::vector<uint32_t> > &names,
 			  std::vector<uint8_t> &out);
+	// Builds the HASH index of a bound layout.
+	static void build_hash(const ForestDeclNames &dn, std::vector<uint32_t> &out);
 private:
+	const uint32_t *units_of_sorted(const char *name, uint32_t &n) const;
+	// The slot run from hash h: the name equal to ns "::" (ns_len bytes; none
+	// when ns is NULL) followed by the name's len bytes.
+	const uint32_t *probe(uint32_t h, const char *ns, uint32_t ns_len,
+			      const char *name, uint32_t len, uint32_t &n) const
+	{
+		for (uint32_t b = h & _mask, step = 0; step <= _mask; b = (b + 1) & _mask, ++step) {
+			const uint32_t s = _slots[b];
+			if (!s)
+				return NULL;
+			const uint32_t i = s - 1;
+			if (i >= _n || _off[i] >= _nbytes)
+				return NULL;
+			const char *p = _bytes + _off[i];
+			// strncmp stops at the stored name's NUL: a shorter name never
+			// reads past its own bytes.
+			if (ns) {
+				if (strncmp(p, ns, ns_len) != 0 || p[ns_len] != ':' || p[ns_len + 1] != ':')
+					continue;
+				p += ns_len + 2;
+			}
+			if (strncmp(p, name, len) == 0 && p[len] == '\0')
+				return units_at(i, n);
+		}
+		return NULL;
+	}
 	uint32_t        _n;
 	const uint32_t *_off;
 	const uint32_t *_uoff;
@@ -975,6 +1028,8 @@ private:
 	uint32_t        _nunits;
 	const char     *_bytes;
 	uint32_t        _nbytes;
+	const uint32_t *_slots;		// B2: the HASH index (NULL: binary search)
+	uint32_t        _mask;		// its B - 1
 };
 
 // SEEDS: per bound unit, what a bind of it visits. L lists = unit_count + 1;
@@ -1399,6 +1454,7 @@ struct cir_frozen_forest
 	std::vector<requirement>        requirements;
 	// Built by cir_forest_build_seeds; written as DECL_NAMES / SEEDS / RECORDABLE.
 	std::vector<uint8_t>  decl_names;
+	std::vector<uint32_t> decl_names_hash;	// B2: written as DECL_NAMES_HASH
 	std::vector<uint32_t> seeds;
 	std::vector<uint32_t> recordable;
 };

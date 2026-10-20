@@ -7967,6 +7967,7 @@ int madc_cir_dump_forest(const char *container_path)
 	ForestSeeds::Run sa = sd.arena(sd.always()), st = sd.templates(sd.always()),
 			 sg = sd.globals(sd.always());
 	printf("declnames\t%u\n", forest.decl_names().size());
+	printf("declnameshash\t%u\n", forest.decl_names().hash_slots());
 	printf("seeds-always\t%u\t%u\t%u\n", sa.n, st.n, sg.n);
 	printf("recordable-anon\t%u\n", forest.recordable_bits().max_anon_tag());
     }

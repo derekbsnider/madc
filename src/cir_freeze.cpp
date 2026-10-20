@@ -889,6 +889,12 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	    && !add_seg(w, CIR_FOREST_SEG_DECL_NAMES, SNAP_KIND_CIR_DECL_NAMES,
 			f.decl_names.data(), f.decl_names.size(), PchCompression::None))
 		return false;
+	// B2: its hash index, raw like it (optional: absent = binary search).
+	if (!f.decl_names_hash.empty()
+	    && !add_seg(w, CIR_FOREST_SEG_DECL_NAMES_HASH, SNAP_KIND_CIR_DECL_NAMES_HASH,
+			f.decl_names_hash.data(), f.decl_names_hash.size() * sizeof(uint32_t),
+			PchCompression::None))
+		return false;
 	if (!f.seeds.empty()
 	    && !add_seg(w, CIR_FOREST_SEG_SEEDS, SNAP_KIND_CIR_SEEDS,
 			f.seeds.data(), f.seeds.size() * sizeof(uint32_t),
@@ -2595,6 +2601,9 @@ void CirFrozenForest::bind_seed_index() const
 	if ((s = _reader.find(CIR_FOREST_SEG_DECL_NAMES)) && s->kind == SNAP_KIND_CIR_DECL_NAMES)
 		if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
 			_decl_names.bind(p, len);
+	if ((s = _reader.find(CIR_FOREST_SEG_DECL_NAMES_HASH)) && s->kind == SNAP_KIND_CIR_DECL_NAMES_HASH)
+		if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
+			_decl_names.bind_hash((const uint32_t *)p, len / sizeof(uint32_t));
 	if ((s = _reader.find(CIR_FOREST_SEG_SEEDS)) && s->kind == SNAP_KIND_CIR_SEEDS)
 		if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
 			_seeds.bind((const uint32_t *)p, len / sizeof(uint32_t));
@@ -2641,11 +2650,11 @@ int CirFrozenForest::name_verdict(const char *nm, const char *ns,
 	const ForestDeclNames &dn = decl_names();
 	uint32_t n = 0;
 	if (ns && *ns) {
-		std::string q = std::string(ns) + "::" + nm;
-		if (!f.extra_names.empty() && f.extra_names.count(q))
+		if (!f.extra_names.empty()
+		    && f.extra_names.count(madc::dis::istring(std::string(ns) + "::" + nm)))
 			return 1;
 		if (!f.exact) {
-			const uint32_t *run = dn.units_of(q.c_str(), n);
+			const uint32_t *run = dn.units_of_qualified(ns, nm, n);
 			if (n)
 				return forest_run_bound(run, n, f) ? 1 : -1;
 		}
@@ -2685,7 +2694,7 @@ bool CirFrozenForest::declared_system(const char *nm, const char *ns,
 	if (n && forest_run_meets(run, n, f.system_units))
 		return true;
 	if (ns && *ns) {
-		run = dn.units_of((std::string(ns) + "::" + nm).c_str(), n);
+		run = dn.units_of_qualified(ns, nm, n);
 		if (n && forest_run_meets(run, n, f.system_units))
 			return true;
 	}
