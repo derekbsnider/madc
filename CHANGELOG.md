@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### The verified C++ bind accepts two equal-in-effect differences: lex-alike macro bodies and a compound `#if` guard
+
+- A written object-like macro whose body lexes to the same tokens as the frozen body counts as the frozen state, not only one spelled alike (`forest_object_states_lex_alike`). glibc's `__attr_dealloc_fclose` is `__attr_dealloc (fclose, 1)` in a frozen `<stdio.h>` and empty in `<wchar.h>` alone; both lex to no token.
+- A frozen arm-state entry is checked after the next recorded conditional when that conditional's captured arm writes the same name and no macro expands in between (`pack_arm_state` marks such an entry `^`; `forest_walk_resolve_deferred` settles it). The freeze format is unchanged.
+- A taken single `#if` arm skipped by the bind is masked when its own live guards skip it, not only for `#ifndef`. The guards are the names the arm defines and its condition spells, read undefined (`forest_arm_guard_passed`). glibc's `off64_t` typedefs (`#if defined __USE_LARGEFILE64 && !defined __off64_t_defined`) bind when `<unistd.h>` is included before `<stdio.h>`.
+- `scripts/forest_bind_gate.sh` `[lexalike]` and `[typedefguard]`: a `<wchar.h>` / `<cwchar>` consumer prints `n=3`, and a `<unistd.h>` consumer that includes `<stdio.h>` / `<cstdio>` prints `o=5`, as gcc and g++ do.
+- Packed `madc-release` with `MADC_FOREST_ENV_CHECK=1`: the nine tests that declined on these two differences (`testforeachauto`, `testforeachiter`, `testforeachscope`, `testforinitscope`, `testmapiter`, `testoutoflinectoroverload`, `testphpdumpiter`, `testsubscriptoverload`, `testvecclassgrowth`) bind with no decline and exit 0.
+
 ### A -D that no frozen header spells keeps the pack bound
 
 - A compile with `-D` macros binds the pack when no frozen header spells any `-D` name. Before, any `-D` changed the defines hash, so the pack declined and every system header was lexed from text.

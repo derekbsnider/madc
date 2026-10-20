@@ -786,6 +786,35 @@ static std::string forest_macro_state_spelling(Program &pgm,
     return out;
 }
 
+// A forest_macro_state_spelling's entries ("\x1e"-separated), and an entry's
+// macro name (after its kind character — or the freeze's "?" / "^" marks —
+// up to the first "\x1f").
+static std::vector<std::string> forest_state_entries(const std::string &state)
+{
+    std::vector<std::string> entries;
+    for ( size_t at = 0; !state.empty(); )
+    {
+	size_t end = state.find('\x1e', at);
+	if ( end == std::string::npos )
+	    end = state.size();
+	entries.push_back(state.substr(at, end - at));
+	if ( end == state.size() )
+	    break;
+	at = end + 1;
+    }
+    return entries;
+}
+
+static madc::dis::istring forest_state_entry_name(const std::string &e)
+{
+    if ( e.empty() )
+	return madc::dis::istring();
+    const size_t skip = e[0] == '^' ? 2 : 1;
+    const size_t name_end = e.find('\x1f');
+    return madc::dis::istring(e, skip, name_end == std::string::npos ? std::string::npos
+								     : name_end - skip);
+}
+
 static bool find_filesystem_precompiled_header(Program &pgm,
 					       const madc::dis::istring &incfile,
 					       bool is_system,
@@ -5738,6 +5767,11 @@ struct ForestWalk
     std::vector<uint32_t> bound;	// post-order: the chain's (and the decl restore's) order
     std::vector<double> bound_cost;	// each bound unit's own walk seconds (--show-stats)
     std::vector<TokenBase *> arm_tokens;	// a run arm's tokens, pushed when the walk commits
+    // K2b: a run arm's write whose check the freeze deferred ("^" entry) to
+    // the unit's conditional `record` — checked after it, or at the unit's end.
+    struct Deferred { uint32_t unit, record; std::string entry; };
+    std::vector<Deferred> deferred;
+    std::set<std::pair<uint32_t, uint32_t> > ran;	// (unit, record): the arms run
 };
 
 // The verified-bind knob (task #57): MADC_FOREST_ENV_CHECK=1 makes a
@@ -5827,15 +5861,21 @@ int Program::forest_condition_now(CirFrozenForest *f, const ForestUnitItems &it,
     }
 }
 
-// A taken single arm of `#ifndef guard` that this consumer skips: the walk may
-// skip its events, edges and nested records only when it is the arm's own
-// sub-block guard (the arm defines it) and every other macro the arm writes
-// already holds the arm's final value — the frozen content after the arm was
-// expanded with those values. The guard itself only needs to be defined.
+// A taken single arm that this consumer skips: the walk may skip its events,
+// edges and nested records only when the arm's own sub-block guards skip it —
+// the names the arm defines and its condition spells (`#ifndef G`, glibc's
+// `#if defined __USE_LARGEFILE64 && !defined __off64_t_defined`), defined
+// here — so the condition read with them undefined is taken. Every other macro
+// the arm writes must already hold the arm's final value: the frozen content
+// after the arm was expanded with those values. A guard only needs to be
+// defined.
 bool Program::forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems &it,
-				      const uint32_t *c, const char *guard)
+				      const uint32_t *c)
 {
     typedef MadcSharedPreludeCache::MacroState MacroState;
+    const char *text = f->pool_str(c[CIR_COND_TEXT]);
+    if ( !text )
+	return false;
     std::map<madc::dis::istring, MacroState> last;
     ForestEventCursor cur(it.ev);
     for ( cur.seek(c[CIR_COND_EV_BEGIN]); cur.index < c[CIR_COND_EV_END] && cur.index < it.nevents;
@@ -5845,16 +5885,29 @@ bool Program::forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems 
 	if ( !st.name.empty() )
 	    last[st.name] = st;
     }
-    const madc::dis::istring g(guard);
-    std::map<madc::dis::istring, MacroState>::const_iterator gi = last.find(g);
-    if ( gi == last.end() || gi->second.kind == MacroState::absent )
-	return false;
+    std::set<madc::dis::istring> spelled;
+    source_spelled_names(text, spelled);
+    std::vector<MacroState> guards;
     for ( std::map<madc::dis::istring, MacroState>::const_iterator li = last.begin();
 	  li != last.end(); ++li )
-	if ( li->first != g && !MadcSharedPreludeCache::same_macro_state(
-		 li->second, MadcSharedPreludeCache::macro_state(*this, li->first)) )
+    {
+	if ( spelled.count(li->first) && li->second.kind != MacroState::absent
+	  && macro_name_defined(li->first) )
+	    guards.push_back(MadcSharedPreludeCache::macro_state(*this, li->first));
+	else if ( !MadcSharedPreludeCache::same_macro_state(
+		      li->second, MadcSharedPreludeCache::macro_state(*this, li->first)) )
 	    return false;
-    return true;
+    }
+    if ( guards.empty() )
+	return false;
+    // The condition without the guards, through set_macro both ways so the
+    // walk's undo log keeps every name's earliest state.
+    for ( size_t i = 0; i < guards.size(); ++i )
+	MadcSharedPreludeCache::set_macro(*this, guards[i].name, NULL, NULL);
+    const int taken = forest_condition_now(f, it, c);
+    for ( size_t i = 0; i < guards.size(); ++i )
+	MadcSharedPreludeCache::set_macro_state(*this, guards[i]);
+    return taken == 1;
 }
 
 // Run a captured skipped arm in place: its directives write through set_macro
@@ -5901,28 +5954,87 @@ bool Program::run_frozen_arm(const char *unit_name, const std::string &text,
 // other name carries no value into a frozen token, and a later conditional on
 // it is recorded and re-evaluated.
 bool Program::forest_arm_state_matches(const char *frozen,
-				       const std::vector<madc::dis::istring> &writes)
+				       const std::vector<madc::dis::istring> &writes,
+				       ForestWalk &w, uint32_t unit, uint32_t next_record)
 {
-    const std::string want = frozen ? frozen : "";
-    size_t at = 0;
-    for ( size_t i = 0; i < writes.size(); ++i )
+    const std::vector<std::string> want = forest_state_entries(frozen ? frozen : "");
+    for ( size_t i = 0; i < writes.size() && i < want.size(); ++i )
     {
-	size_t end = want.find('\x1e', at);
-	if ( end == std::string::npos )
-	    end = want.size();
-	const std::string entry = want.substr(at, end - at);
-	at = end < want.size() ? end + 1 : end;
+	const std::string &entry = want[i];
 	if ( entry.empty() || entry[0] == '-' || entry[0] == '?' )
 	    continue;
-	const std::string now =
-	    forest_macro_state_spelling(*this, std::vector<madc::dis::istring>(1, writes[i]));
-	if ( now != entry )
+	if ( entry[0] == '^' )
 	{
-	    DBG(std::cout << "forest bind: arm state differs — frozen '" << entry
-		<< "', here '" << now << "'" << std::endl);
-	    return false;
+	    // K2b: the next conditional's arm writes it before any expansion.
+	    w.deferred.push_back(ForestWalk::Deferred{ unit, next_record, entry.substr(1) });
+	    continue;
 	}
+	if ( !forest_state_holds(entry, writes[i]) )
+	    return false;
     }
+    return true;
+}
+
+// Does `name` hold the frozen state `entry` (forest_macro_state_spelling's
+// form) here — the same spelling, or an object-like body that lexes alike?
+bool Program::forest_state_holds(const std::string &entry, const madc::dis::istring &name)
+{
+    const std::string now = forest_macro_state_spelling(*this, std::vector<madc::dis::istring>(1, name));
+    if ( now == entry || forest_object_states_lex_alike(entry, now) )
+	return true;
+    DBG(std::cout << "forest bind: arm state differs — frozen '" << entry
+	<< "', here '" << now << "'" << std::endl);
+    return false;
+}
+
+// K2b: settle the deferred checks of `unit` whose conditional the walk has
+// passed (record < upto): an arm that ran there checked the name itself;
+// otherwise the name must hold the frozen state now. False: the root declines.
+static bool forest_walk_resolve_deferred(Program &pgm, ForestWalk &w, uint32_t unit,
+					 uint32_t upto)
+{
+    for ( size_t i = 0; i < w.deferred.size(); )
+    {
+	const ForestWalk::Deferred d = w.deferred[i];
+	if ( d.unit != unit || d.record >= upto )
+	{
+	    ++i;
+	    continue;
+	}
+	w.deferred.erase(w.deferred.begin() + (std::ptrdiff_t)i);
+	if ( w.ran.count(std::make_pair(unit, d.record)) )
+	    continue;
+	if ( !pgm.forest_state_holds(d.entry, forest_state_entry_name(d.entry)) )
+	    return false;
+    }
+    return true;
+}
+
+// Two object-like states of one macro (forest_macro_state_spelling's
+// "=NAME\x1fBODY") whose bodies the token reader turns into the same tokens
+// here: the content the freeze expanded the frozen body into is what the live
+// body gives, so the arm's write leaves it as it is. madc reads a GNU
+// attribute it does not model as no token — glibc's __attr_dealloc_fclose is
+// <stdio.h>'s `__attr_dealloc (fclose, 1)` at the freeze and <wchar.h>'s
+// empty default in a consumer that never includes <stdio.h>: both lex to
+// nothing (docs/plans/2026-10-18-verified-cxx-bind.md, K2b).
+bool Program::forest_object_states_lex_alike(const std::string &frozen, const std::string &now)
+{
+    if ( frozen.empty() || now.empty() || frozen[0] != '=' || now[0] != '=' )
+	return false;
+    const size_t fs = frozen.find('\x1f'), ns = now.find('\x1f');
+    if ( fs == std::string::npos || ns == std::string::npos || fs != ns
+      || frozen.compare(0, fs, now, 0, ns) != 0 )
+	return false;
+    const std::vector<TokenBase *> a = tokenize_text_run(frozen.substr(fs + 1), NULL, NULL);
+    const std::vector<TokenBase *> b = tokenize_text_run(now.substr(ns + 1), NULL, NULL);
+    if ( a.size() != b.size() )
+	return false;
+    for ( size_t i = 0; i < a.size(); ++i )
+	if ( a[i]->id() != b[i]->id() || madc_token_spelling(a[i]) != madc_token_spelling(b[i]) )
+	    return false;
+    DBG(std::cout << "forest bind: arm state '" << frozen << "' and '" << now
+	<< "' lex alike (" << a.size() << " token(s))" << std::endl);
     return true;
 }
 
@@ -5933,6 +6045,7 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 				    uint32_t &i_c, uint32_t &i_ev, uint32_t &i_ed)
 {
     CirFrozenForest *f = w.s.forest;
+    const uint32_t record = i_c;
     const uint32_t *c = it.cond(i_c);
     ++i_c;
     const bool frozen = (c[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) != 0;
@@ -5951,11 +6064,11 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
     const char *kind_spelling = (unsigned)kind < 5 ? spell[(unsigned)kind] : "?";
     const char *text = f->pool_str(c[CIR_COND_TEXT]);
     const char *uname = f->unit_name(unit);
-    if ( now == 0 && frozen && single && kind == CondDirective::Ifndef && text
-      && forest_arm_guard_passed(f, it, c, text) )
+    if ( now == 0 && frozen && single && forest_arm_guard_passed(f, it, c) )
     {
-	DBG(std::cout << "forest bind: unit " << (uname ? uname : "?") << " '#ifndef "
-	    << text << "' arm skipped — its guard is live (masked bind)" << std::endl);
+	DBG(std::cout << "forest bind: unit " << (uname ? uname : "?") << " '#" << kind_spelling
+	    << " " << (text ? text : "?") << "' arm skipped — its guard is live (masked bind)"
+	    << std::endl);
 	i_ev = std::max(i_ev, c[CIR_COND_EV_END]);
 	i_ed = std::max(i_ed, c[CIR_COND_ED_END]);
 	i_c = std::max(i_c, c[CIR_COND_REC_END]);
@@ -5974,8 +6087,10 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 	else
 	{
 	    w.arm_tokens.insert(w.arm_tokens.end(), toks.begin(), toks.end());
+	    w.ran.insert(std::make_pair(unit, record));
 	    const char *state = c[CIR_COND_ARM_STATE] ? f->pool_str(c[CIR_COND_ARM_STATE]) : NULL;
-	    if ( !w.verified || forest_arm_state_matches(state, writes) )
+	    if ( !w.verified
+	      || forest_arm_state_matches(state, writes, w, unit, c[CIR_COND_REC_END]) )
 	    {
 		DBG(std::cout << "forest bind: unit " << (uname ? uname : "?")
 		    << " replays its skipped '#" << kind_spelling << " " << (text ? text : "?")
@@ -6059,7 +6174,8 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 	    if ( (i_ed >= ed_hi || c[CIR_COND_ED_BEGIN] <= i_ed)
 	      && (i_ev >= ev_hi || c[CIR_COND_EV_BEGIN] <= i_ev) )
 	    {
-		if ( !forest_walk_condition(w, unit, it, i_c, i_ev, i_ed) )
+		if ( !forest_walk_condition(w, unit, it, i_c, i_ev, i_ed)
+		  || !forest_walk_resolve_deferred(*this, w, unit, i_c) )
 		{
 		    w.on_stack.erase(unit);
 		    return false;
@@ -6083,6 +6199,8 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 	forest_apply_event(*this, s.forest, it.ev, cur.word);
     }
     w.on_stack.erase(unit);
+    if ( !forest_walk_resolve_deferred(*this, w, unit, UINT32_MAX) )
+	return false;
     if ( !reinclude && inc == 0 )
     {
 	w.bound.push_back(unit);
@@ -7234,6 +7352,7 @@ void Program::pack_cond_elif(const std::string &text, bool outcome, size_t consu
     r.outcome = outcome;
     r.ev_begin = (uint32_t)pack_pp_exports[f.unit].size();
     r.ed_begin = (uint32_t)pack_unit_edges[f.unit].size();
+    r.expansions_at_begin = pack_expansion_clock;
     std::set<madc::dis::istring> seen;
     for ( size_t i = 0; i < consulted.size(); ++i )
 	if ( seen.insert(consulted[i]).second )
@@ -7379,28 +7498,30 @@ TokenBase *Program::skip_capturing_arm(SkippedArmCapture &cap)
 // the token stream after the arm becomes "?NAME": no frozen token carries its
 // value, so the bind need not match it (WCHAR_MIN — madc's stdint.h spells it
 // INT32_MIN, glibc wchar.h's arm __WCHAR_MIN).
-std::string Program::pack_arm_state(const PackCondRecord &r)
+// K2b: an entry the NEXT recorded conditional's captured arm writes too, with
+// no macro expanded into the token stream in between, is "^" + the entry: the
+// bind checks the name after that conditional instead (glibc's <wchar.h>
+// reads `#ifndef __attr_dealloc_fclose` twice — the first arm may leave it
+// undefined, the second defaults it — and only then expands it).
+std::string Program::pack_arm_state(const std::vector<PackCondRecord> &recs, size_t k)
 {
-    std::vector<std::string> entries;
-    for ( size_t at = 0; !r.arm_state.empty(); )
+    const PackCondRecord &r = recs[k];
+    const PackCondRecord *next = r.rec_end < recs.size() ? &recs[r.rec_end] : NULL;
+    std::set<madc::dis::istring> next_writes;
+    if ( next && next->arm_captured && next->expansions_at_begin == r.expansions_at_end )
     {
-	size_t end = r.arm_state.find('\x1e', at);
-	if ( end == std::string::npos )
-	    end = r.arm_state.size();
-	entries.push_back(r.arm_state.substr(at, end - at));
-	if ( end == r.arm_state.size() )
-	    break;
-	at = end + 1;
+	const std::vector<std::string> ne = forest_state_entries(next->arm_state);
+	for ( size_t i = 0; i < ne.size(); ++i )
+	    next_writes.insert(forest_state_entry_name(ne[i]));
     }
+    std::vector<std::string> entries = forest_state_entries(r.arm_state);
     std::string out;
     for ( size_t i = 0; i < entries.size(); ++i )
     {
 	std::string &e = entries[i];
 	if ( !e.empty() && e[0] != '-' )
 	{
-	    const size_t name_end = e.find('\x1f');
-	    const madc::dis::istring name(e, 1, name_end == std::string::npos
-					      ? std::string::npos : name_end - 1);
+	    const madc::dis::istring name = forest_state_entry_name(e);
 	    std::map<madc::dis::istring, uint64_t>::const_iterator ei =
 		pack_macro_expanded_at.find(name);
 	    if ( ei == pack_macro_expanded_at.end() || ei->second <= r.expansions_at_end )
@@ -7408,6 +7529,8 @@ std::string Program::pack_arm_state(const PackCondRecord &r)
 		e = "?";
 		e.append(name.data(), name.size());
 	    }
+	    else if ( next_writes.count(name) )
+		e.insert(e.begin(), '^');
 	}
 	if ( i )
 	    out += '\x1e';

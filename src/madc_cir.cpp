@@ -4136,7 +4136,7 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    w[CIR_COND_ARM] = r.arm_captured ? pool->intern(r.arm) : 0;
 	    w[CIR_COND_REC_END] = r.rec_end;
 	    w[CIR_COND_ARM_STATE] = r.arm_captured && !r.arm_state.empty()
-				  ? pool->intern(prog->pack_arm_state(r)) : 0;
+				  ? pool->intern(prog->pack_arm_state(*recs, c)) : 0;
 	    w[CIR_COND_CONSULT_AT] = (uint32_t)(consult_words.size() / CIR_CONSULT_WORDS);
 	    w[CIR_COND_CONSULT_N] = (uint32_t)r.consults.size();
 	    for (size_t k = 0; k < r.consults.size(); ++k) {

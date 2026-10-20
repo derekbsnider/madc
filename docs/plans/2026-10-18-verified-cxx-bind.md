@@ -353,6 +353,60 @@ Result (the gate run recorded in e5b0d55b5): `rung_stdio` 19.35M → 18.80M Ir
 `c_headers.forest` 38.01M → 38.16M (+0.39%; bind 2.78M → 2.94M, the
 per-condition consult checks the verified walk adds).
 
+### K2b — the 9 are a false difference (2026-10-20, measured)
+
+Re-measured on the packed release over 87cb582f6: the 9 knob-on failures are one
+decline, `<wchar.h>`'s `__attr_dealloc_fclose`, in a TU that binds `<map>` / `<vector>`
+first and never includes `<stdio.h>`. The decline is not a real difference:
+- glibc's `<wchar.h>` reads `#ifndef __attr_dealloc_fclose` twice. The first arm
+  defines it only `if __has_builtin (__builtin_fclose)` — 0 under gcc, clang and
+  madc alike — so it leaves the name UNDEFINED. The second arm defaults it to
+  empty. Only then does `open_wmemstream`'s declaration expand it.
+- The walk checked the first arm's write at the first arm's end ("frozen
+  `__attr_dealloc (fclose, 1)`, here undefined") and declined.
+- And the two values the content can see lex alike: madc reads a GNU attribute
+  it does not model (`__malloc__`) as no token, so `<stdio.h>`'s
+  `__attr_dealloc (fclose, 1)` and the empty default both give nothing.
+
+Two refinements of K2's arm-state rule, both exact:
+- **Lex alike.** A written object-like macro holds the frozen state when its
+  body and the frozen body lex to the same tokens here (`tokenize_text_run`,
+  compared by token kind and `madc_token_spelling`) — not only when they are
+  spelled alike (`forest_object_states_lex_alike`).
+- **Deferred check.** The freeze marks an arm's entry `^` when the NEXT recorded
+  conditional's captured arm writes the same name and no macro is expanded
+  into the token stream in between (`expansions_at_begin` of that conditional ==
+  `expansions_at_end` of this arm). The bind checks such a name after that
+  conditional instead: an arm that ran there checked it itself; otherwise the
+  name must hold the frozen state then, or the root declines
+  (`forest_walk_resolve_deferred`; any check left at the unit's end runs there).
+  No format bump: the mark lives in the arm state's pooled text, and a reader
+  without K2b compares the marked entry, mismatches, and declines (safe).
+- Gate: `forest_bind_gate.sh` `[lexalike]` — a corpus frozen `<stdio.h>` first;
+  a consumer of `<wchar.h>` / `<cwchar>` alone binds and prints g++'s `n=3`
+  (the C++ half RED before: `<cwchar>` declined on the arm).
+
+With those two, 1 of the 9 binds; the other 8 decline at the next false
+difference, one family with the first: glibc guards each `off64_t` typedef
+with `#if defined __USE_LARGEFILE64 && !defined __off64_t_defined`, an `#if`
+whose arm defines the guard it tests. The corpus froze `<stdio.h>` first; a
+consumer that reaches `<unistd.h>` (or `<sys/types.h>`, `<fcntl.h>`) first
+takes that header's arm and skips `<stdio.h>`'s.
+- **The masked bind reads the condition, not the directive.** A taken single
+  arm skipped here is masked when its guards are the arm's own: the names its
+  events define that its condition spells (`source_spelled_names`), defined
+  here, and the condition read with them undefined (`set_macro` both ways,
+  under the undo log) is taken. `#ifndef G` is the one-name case. Every other
+  name the arm writes still must hold the arm's final value
+  (`forest_arm_guard_passed`).
+- Gate: `forest_bind_gate.sh` `[typedefguard]` — a corpus frozen `<stdio.h>`
+  then `<unistd.h>`; a consumer of `<unistd.h>` first binds `<stdio.h>` /
+  `<cstdio>` and prints gcc's / g++'s `o=5` (C and C++ both RED before).
+
+K2b measured 2026-10-20 (packed `madc-release`, knob on): the 9 → 0 declines;
+the suite 2137 / 2139, and the 2 (`testnoreturn_c11`, `testthrow_through_frame`,
+B205's gates not yet landed) fail with the knob off too. Knob-only failures: 0.
+
 ### K2 — the deps are exact (a decline means the content really differs)
 
 - Freeze (format v68): record each conditional's OUTCOME.

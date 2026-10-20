@@ -6010,6 +6010,7 @@ public:
 	std::string arm;
 	uint32_t rec_end = 0;		// v69: the unit's record count at the arm's end
 	std::string arm_state;		// v69: the arm's written macros as the freeze held them (forest_macro_state_spelling)
+	uint64_t expansions_at_begin = 0;	// K2b: pack_expansion_clock at the directive
 	uint64_t expansions_at_end = 0;	// v69: pack_expansion_clock at the arm's end
 	// v69: an #if / #elif's consulted macros and their state hashes at the
 	// evaluation — the bind takes the frozen outcome when every one matches.
@@ -6025,7 +6026,7 @@ public:
     uint64_t pack_expansion_clock = 0;
     std::map<madc::dis::istring, uint64_t> pack_macro_expanded_at;
     void pack_note_expansion(const madc::dis::istring &name);
-    std::string pack_arm_state(const PackCondRecord &r);
+    std::string pack_arm_state(const std::vector<PackCondRecord> &recs, size_t k);
     std::map<const char *, std::vector<PackCondRecord> > pack_unit_conds;
     std::map<const char *, std::vector<uint32_t> > pack_unit_edge_events;	// v68: per edge, the unit's events ahead of it
     // v69: where each of a unit's inclusions ended — its event, edge and
@@ -7752,8 +7753,11 @@ public:
     int forest_condition_now(CirFrozenForest *f, const ForestUnitItems &it,
 			     const uint32_t *cond);	// 1 taken, 0 skipped, -1 not readable here
     bool forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems &it,
-				 const uint32_t *cond, const char *guard);
-    bool forest_arm_state_matches(const char *frozen, const std::vector<madc::dis::istring> &writes);
+				 const uint32_t *cond);
+    bool forest_arm_state_matches(const char *frozen, const std::vector<madc::dis::istring> &writes,
+				  ForestWalk &w, uint32_t unit, uint32_t next_record);
+    bool forest_state_holds(const std::string &entry, const madc::dis::istring &name);
+    bool forest_object_states_lex_alike(const std::string &frozen, const std::string &now);
     bool run_frozen_arm(const char *unit_name, const std::string &text,
 			std::vector<TokenBase *> &out, std::vector<madc::dis::istring> &writes);
     ForestMacroUndo *forest_macro_undo = NULL;	// the walk in flight's undo log (set_macro notes into it)

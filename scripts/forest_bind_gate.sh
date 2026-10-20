@@ -1420,6 +1420,75 @@ kw_case undo "saw=1 s=20" "-" "fbgate_kw_r.h"
 rm -rf "$kw_dir"
 echo "forest_bind_gate: [k2walk] OK — the bind re-evaluates each frozen conditional at its position: an equal outcome binds, a skipped arm runs (directives in place, declarations kept), a decline undoes the walk"
 
+# --- case: lexalike (docs/plans/2026-10-18-verified-cxx-bind.md, K2b) ---
+# A run arm whose write differs in SPELLING from the freeze's state but lexes
+# to the same tokens leaves the frozen content as it is. glibc's <wchar.h>
+# defaults __attr_dealloc_fclose to empty when <stdio.h> has not set it to
+# `__attr_dealloc (fclose, 1)`; the corpus froze <stdio.h> first, so a
+# consumer of <wchar.h> alone runs the arm. madc reads a GNU attribute it does
+# not model as no token, so both values lex to nothing and the root binds
+# (before K2b it declined on the spelling). Oracle: gcc / g++ print n=3.
+la_dir=tmp/fbgate_lexalike
+rm -rf "$la_dir"
+mkdir -p "$la_dir"
+printf '#include <stdio.h>\n#include <wchar.h>\nint main(void) { return 0; }\n' > "$la_dir/c_tu.c"
+printf '#include <cstdio>\n#include <cwchar>\nint main() { return 0; }\n' > "$la_dir/cxx_tu.cpp"
+printf '#include <wchar.h>\n#include <stdio.h>\nint main(void) { printf("n=%%d\\n", (int)wcslen(L"abc")); return 0; }\n' > "$la_dir/use.c"
+printf '#include <cwchar>\n#include <cstdio>\nint main() { std::printf("n=%%d\\n", (int)std::wcslen(L"abc")); return 0; }\n' > "$la_dir/use.cpp"
+timeout 600 "$BIN" --std=gnu17 --freeze-raw --freeze="$la_dir/c.msnap" "$la_dir/c_tu.c" \
+    > "$la_dir/freeze.log" 2>&1 \
+    || fail "[lexalike] the C freeze FAILED: $(tail -n 3 "$la_dir/freeze.log")"
+timeout 600 "$BIN" --std=gnu++17 --freeze="$la_dir/cxx.msnap" "$la_dir/cxx_tu.cpp" \
+    > "$la_dir/freeze_cxx.log" 2>&1 \
+    || fail "[lexalike] the C++ freeze FAILED: $(tail -n 3 "$la_dir/freeze_cxx.log")"
+for la_case in "gnu17 c.msnap use.c wchar.h" "gnu++17 cxx.msnap use.cpp cwchar"; do
+    read -r la_std la_snap la_src la_root <<<"$la_case"
+    timeout 60 "$BIN" -v --std="$la_std" --forest-bind="$la_dir/$la_snap" "$la_dir/$la_src" \
+        > "$la_dir/trace.log" 2>&1
+    grep -aqE "bound to grove unit [0-9]+ \([^)]*/$la_root\)" "$la_dir/trace.log" \
+        || fail "[lexalike] $la_std: <$la_root> did not bind ($(grep -a -m1 'DECLINE root' "$la_dir/trace.log"))"
+    la_out=$(timeout 60 "$BIN" --std="$la_std" --forest-bind="$la_dir/$la_snap" "$la_dir/$la_src" 2>"$la_dir/run.err")
+    [ "$la_out" = "n=3" ] \
+        || fail "[lexalike] $la_std printed '$la_out', want 'n=3' $(head -n 2 "$la_dir/run.err")"
+done
+rm -rf "$la_dir"
+echo "forest_bind_gate: [lexalike] OK — a run arm whose write lexes to the frozen state's tokens binds (glibc's __attr_dealloc_fclose, C and C++)"
+
+# --- case: typedefguard (docs/plans/2026-10-18-verified-cxx-bind.md, K2b) ---
+# glibc guards each off64_t typedef with `#if defined __USE_LARGEFILE64 &&
+# !defined __off64_t_defined`, an #if whose arm defines the guard it tests.
+# The corpus froze <stdio.h> first, so <stdio.h> took the arm and <unistd.h>
+# skipped it. A consumer of <unistd.h> first takes <unistd.h>'s arm and skips
+# <stdio.h>'s: the arm's own guard is live, the condition read without it is
+# taken, so the arm is masked as a plain `#ifndef` guard is (before K2b the
+# root declined). Oracle: gcc / g++ print o=5.
+tg_dir=tmp/fbgate_typedefguard
+rm -rf "$tg_dir"
+mkdir -p "$tg_dir"
+printf '#include <stdio.h>\n#include <unistd.h>\nint main(void) { return 0; }\n' > "$tg_dir/c_tu.c"
+printf '#include <cstdio>\n#include <unistd.h>\nint main() { return 0; }\n' > "$tg_dir/cxx_tu.cpp"
+printf '#include <unistd.h>\n#include <stdio.h>\nint main(void) { off64_t o = 5; printf("o=%%d\\n", (int)o); return 0; }\n' > "$tg_dir/use.c"
+printf '#include <unistd.h>\n#include <cstdio>\nint main() { off64_t o = 5; std::printf("o=%%d\\n", (int)o); return 0; }\n' > "$tg_dir/use.cpp"
+timeout 600 "$BIN" --std=gnu17 -D_GNU_SOURCE --freeze-raw --freeze="$tg_dir/c.msnap" "$tg_dir/c_tu.c" \
+    > "$tg_dir/freeze.log" 2>&1 \
+    || fail "[typedefguard] the C freeze FAILED: $(tail -n 3 "$tg_dir/freeze.log")"
+timeout 600 "$BIN" --std=gnu++17 --freeze="$tg_dir/cxx.msnap" "$tg_dir/cxx_tu.cpp" \
+    > "$tg_dir/freeze_cxx.log" 2>&1 \
+    || fail "[typedefguard] the C++ freeze FAILED: $(tail -n 3 "$tg_dir/freeze_cxx.log")"
+for tg_case in "gnu17 -D_GNU_SOURCE c.msnap use.c stdio.h" "gnu++17 - cxx.msnap use.cpp cstdio"; do
+    read -r tg_std tg_def tg_snap tg_src tg_root <<<"$tg_case"
+    [ "$tg_def" = "-" ] && tg_def=
+    timeout 60 "$BIN" -v --std="$tg_std" $tg_def --forest-bind="$tg_dir/$tg_snap" "$tg_dir/$tg_src" \
+        > "$tg_dir/trace.log" 2>&1
+    grep -aqE "bound to grove unit [0-9]+ \([^)]*/$tg_root\)" "$tg_dir/trace.log" \
+        || fail "[typedefguard] $tg_std: <$tg_root> did not bind ($(grep -a -m1 'DECLINE root' "$tg_dir/trace.log"))"
+    tg_out=$(timeout 60 "$BIN" --std="$tg_std" $tg_def --forest-bind="$tg_dir/$tg_snap" "$tg_dir/$tg_src" 2>"$tg_dir/run.err")
+    [ "$tg_out" = "o=5" ] \
+        || fail "[typedefguard] $tg_std printed '$tg_out', want 'o=5' $(head -n 2 "$tg_dir/run.err")"
+done
+rm -rf "$tg_dir"
+echo "forest_bind_gate: [typedefguard] OK — a taken #if arm skipped only by its own live guard is masked (glibc's off64_t typedef guard, C and C++)"
+
 # --- case: cenv (docs/plans/2026-10-18-c-pack-layer.md, J4) ---
 # A C program sets feature-test macros ahead of its system includes as a
 # matter of course — sqlite3.c defines NDEBUG and _GNU_SOURCE. The C layer
