@@ -52490,8 +52490,9 @@ TokenDataType *Program::declare_class_placeholder(TokenIdent *tag,
 	fwd->enclosing_class = nested_owner_class;
 	set_class_type_alias(nested_owner_class, class_source_name, fwd);
     }
-    else if ( !current_namespace().empty() )
-	fwd->set_canonical_spelling(current_namespace() + "::" + tag->spelling());
+    else if ( !current_namespace().empty() )	// the source name (see TokenCLASS::parse)
+	fwd->set_canonical_spelling(current_namespace() + "::"
+	    + (local_class_identity ? tag->spelling() : class_source_name));
     pack_tap_struct(tag->spelling());	// B4a tap (class fwd decl)
     pack_tap_type(tag->spelling());
     struct_map.set(tag->spelling(), fwd);
@@ -53236,8 +53237,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // enclosing aggregate's spelling qualifies this class ([class.nest]).
     else if ( !pgm.enclosing_aggregate_spelling.empty() )
 	ddc->set_canonical_spelling(pgm.enclosing_aggregate_spelling + "::" + class_source_name);
+    // A namespace-scope class is spelled by its SOURCE name: the sibling-
+    // namespace re-key above respelled the tag to its emitted identity
+    // (`std__exception` where a C `struct exception` holds the bare key —
+    // Apple's <math.h>), which is no part of the C++ name the Itanium
+    // encoders receive (_ZTVSt9exception). A function-local class keeps its
+    // hoisted identity.
     else if ( ddc->canonical_cpp_spelling().empty() && !pgm.current_namespace().empty() )
-	ddc->set_canonical_spelling(pgm.current_namespace() + "::" + tag->spelling());
+	ddc->set_canonical_spelling(pgm.current_namespace() + "::"
+	    + (has_local_class_identity ? tag->spelling() : class_source_name));
     // Record whether this class is being DEFINED from a system/toolchain header
     // (glibc / libstdc++): such a class's vtable/typeinfo/member symbols are
     // owned by that library's explicit instantiation, so madc defers to the real

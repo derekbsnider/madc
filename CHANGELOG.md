@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### A namespace-scope class keeps its source name in its C++ spelling
+
+- A class declared at namespace scope takes its C++ name from its source name, so `typeid(lib::node).name()` is `N3lib4nodeE` and the vtable, typeinfo and member symbols use `lib::node`. Before, a global `struct node` declared earlier in the same translation unit changed the name to `N3lib9lib__nodeE`: the output was silently wrong, or linking failed with an undefined `_ZTV`/`_ZTI`/`_ZNS` item.
+- On macOS, the darwin prelude's `struct exception` (from Apple's `<math.h>`) caused the same re-key for `std::exception`. Classes deriving from `std::exception` referenced `_ZTVSt14std__exception` and failed with "import of undefined item". They now reference `_ZTVSt9exception`.
+- A function-local class keeps its hoisted identity.
+- Tests: `testnsclasstagcollide` (C++, `--std=gnu++17`) checks the typeid name and a class deriving from `std::bad_exception` with a global `struct bad_exception` declared first; `testcatch_std_exception` covers the darwin case.
+
 ### The darwin prelude honours NDEBUG
 
 - On the hosted-darwin build, `assert` is disabled when NDEBUG is defined on the command line (`-DNDEBUG`) or with `#define NDEBUG` before the first standard include. Before, the operand was evaluated and a failing assert aborted.
