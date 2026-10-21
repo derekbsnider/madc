@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### The generated predefined-macro table covers the darwin capture gaps
+
+- `scripts/gen_predefined_macros.sh` adds `__FLT_EVAL_METHOD__` to a capture whose `-dM` dump omits it. Clang 15+ expands that macro inside the preprocessor, so the dump lacks it; the same compiler expands it with `-E -P`.
+- For `FLT`, `DBL` and `LDBL`, the script adds `__X_NORM_MAX__` (equal to `__X_MAX__`) and `__X_IS_IEC_60559__` 1 when the dump lacks them and the type's format is IEC 60559 binary (24/128, 53/1024, 64/16384, 113/16384). Other formats get neither.
+- Measured: the Linux g++ table is byte-identical to the previous capture. A clang 18 `--target=arm64-apple-macos14` capture gains exactly seven lines.
+- `testfloatlimits` no longer fails on darwin with undeclared `__FLT_EVAL_METHOD__` and `__FLT_NORM_MAX__`.
+
 ### testlibvirtualcall has a libc++ expect twin
 
 - `tests/testlibvirtualcall.libcxx_expect` holds the output for the libc++ domain. Against libc++ the library's `what()` strings carry no `std::` prefix (for example `bad_array_new_length`), so the libstdc++ `.expect` does not match there.
