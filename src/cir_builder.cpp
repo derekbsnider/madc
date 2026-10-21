@@ -4053,6 +4053,9 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 							pc, conv, cnodes, arg);
 						if (cc)
 							prefix_items.push_back(cc);
+						if (node_t arm = object_cleanup_arm(
+							    name, pc, arg))
+							prefix_items.push_back(arm);
 						return object_addr(name, arg);
 					}
 				}
@@ -6494,6 +6497,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 		append(ca, temp_addr(tnm));	// stateless allocator: any live addr
 		stmts.push_back(node2(N_EXPR, list(),
 				      node2(N_CALL, id(ctor_sym.c_str()), ca)));
+		stmts.push_back(cleanup_arm_stmt(tnm, NULL));
 	}
 	// the host call
 	node_t ha = list();
@@ -7190,6 +7194,36 @@ node_t CirBuilder::cleanup_guard_local(const char *name, node_t init,
 	return sd;
 }
 
+node_t CirBuilder::cleanup_arm_stmt(const char *name, TokenBase *origin)
+{
+	// The call node carries no origin: an origin that is a call token makes
+	// the tsubst copy rebuild the node as THAT source call (copy_cir_subtree's
+	// member-call claim). The statement keeps the position.
+	node_t args = list();
+	append(args, node1(N_ADDR, id(name)));
+	node_t call = node2(N_CALL, id("__builtin_cleanup_arm"), args);
+	return node2(N_EXPR, list(), call, origin);
+}
+
+node_t CirBuilder::object_cleanup_arm(const char *name, DataDefCLASS *cdd,
+				      TokenBase *origin)
+{
+	// The carrier's storage always carries madarray_destruct
+	// (array_storage_decl); a class, its destructor.
+	if (!cdd || !(is_array_object(cdd) || class_needs_dtor(cdd)))
+		return NULL;
+	return cleanup_arm_stmt(name, origin);
+}
+
+void CirBuilder::pending_construction(node_t construct, const char *name,
+				      DataDefCLASS *cdd, TokenBase *origin)
+{
+	if (construct)
+		m_pending_stmts.push_back(construct);
+	if (node_t arm = object_cleanup_arm(name, cdd, origin))
+		m_pending_stmts.push_back(arm);
+}
+
 // `dtor_sym((void*)name)` as a block-item expression-statement — the default
 // (no-argument) constructor call for a runtime object lowered by obj_storage_decl.
 node_t CirBuilder::obj_default_ctor_call(const char *name, const char *ctor_sym,
@@ -7523,7 +7557,7 @@ node_t CirBuilder::carrier_ternary_value(TokenTerQ *tq, TokenBase *origin)
 	char name[40];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	m_pending_stmts.push_back(array_storage_decl(name, origin));
-	m_pending_stmts.push_back(array_ctor_call(name, origin));
+	pending_construction(array_ctor_call(name, origin), name, &ddARRAY, origin);
 	TokenBase *arm_tok[2] = { tq->true_expr, tq->false_expr };
 	node_t arm[2];
 	for (int i = 0; i < 2; i++) {
@@ -8238,7 +8272,7 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 	}
 	if (arg)
 		m_objaddr_inprogress.erase(coerce_key);
-	if (cc) m_pending_stmts.push_back(cc);
+	pending_construction(cc, name, target, arg);
 	return object_addr(name, arg);
 }
 
@@ -8308,7 +8342,7 @@ node_t CirBuilder::class_object_temp(TokenBase *arg, DataDefCLASS *target)
 	std::vector<TokenBase *> ctor_args;
 	if (arg) ctor_args.push_back(arg);
 	node_t cc = class_ctor_call(tmp, target, ctor_args, arg);
-	if (cc) m_pending_stmts.push_back(cc);
+	pending_construction(cc, name, target, arg);
 	return id(name, arg);
 }
 
@@ -8608,6 +8642,8 @@ node_t CirBuilder::ref_param_arg_addr_from_value(
 		rhs = upcast_class_ptr(rhs, tmp_type, arg, arg, value_type);
 		node_t assign = node2(N_ASSIGN, id(name, arg), rhs, arg);
 		prefix.push_back(node2(N_EXPR, list(), assign, arg));
+		if (node_t arm = object_cleanup_arm(name, as_class_instance(tmp_type), arg))
+			prefix.push_back(arm);
 		return node1(N_ADDR, id(name, arg), arg);
 	}
 	return node1(N_ADDR, value(), arg);
@@ -9022,7 +9058,7 @@ node_t CirBuilder::object_call_temp(TokenBase *call_tok, DataDefCLASS *cdd,
 		build_call_args(tcf, cargs);
 		node_t call = node2(N_CALL, id(sym.c_str(), origin), cargs, origin);
 		CIR_NODE(call)->synth_from_origin = true;
-		m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
+		pending_construction(node2(N_EXPR, list(), call, origin), name, cdd, origin);
 	} else if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(call_tok)) {
 		// Functional construction T(args): construct directly into the temp
 		// (class_ctor_call emits the ctor on &__t with the parsed args).
@@ -9045,7 +9081,7 @@ node_t CirBuilder::object_call_temp(TokenBase *call_tok, DataDefCLASS *cdd,
 				}, cdd, ot->ctor_args, origin);
 		if (!cc)
 			cc = class_ctor_call(&tmpv, cdd, ot->ctor_args, origin);
-		if (cc) m_pending_stmts.push_back(cc);
+		pending_construction(cc, name, cdd, origin);
 	}
 
 	return id(name, origin);
@@ -10218,10 +10254,10 @@ node_t CirBuilder::multi_return_unpack(TokenAssign *as, TokenBase *origin)
 	build_call_args(tcf, cargs);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), cargs, origin);
 	CIR_NODE(call)->synth_from_origin = true;
-	m_pending_stmts.push_back(node2(N_EXPR, list(),
+	pending_construction(node2(N_EXPR, list(),
 		via_retbuf ? call
 			   : node2(N_ASSIGN, id(nm, origin), call, origin),
-		origin));
+		origin), nm, as_class_instance(sdd), origin);
 
 	// Receiver fills.
 	for (size_t i = 0; i < n && i < sdd->members.size(); i++) {
@@ -14652,7 +14688,8 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	if (retc) {
 		// sret: the call runs as a statement; the expression value is the
 		// temp's object lvalue.
-		m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
+		pending_construction(node2(N_EXPR, list(), call, origin), sret_tmp,
+				     retc, origin);
 		return id(sret_tmp, origin);
 	}
 	// A T&-returning method returns an address; deref so the call expression is
@@ -15199,8 +15236,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 		}
 		node_t mcall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 		if (pret) {
-			m_pending_stmts.push_back(node2(N_EXPR, list(), mcall,
-							origin));
+			pending_construction(node2(N_EXPR, list(), mcall, origin),
+					     ptmp, pret, origin);
 			return id(ptmp, origin);   // materialized object lvalue
 		}
 		return reference_call_result(callee, mcall, origin);
@@ -15316,7 +15353,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 			return vcall;	// the caller runs it as a statement
 		}
 		if (ret_obj) {
-			m_pending_stmts.push_back(node2(N_EXPR, list(), vcall, origin));
+			pending_construction(node2(N_EXPR, list(), vcall, origin),
+					     ret_tmp, ret_obj, origin);
 			return id(ret_tmp, origin);
 		}
 		return vcall;
@@ -15331,7 +15369,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 	// __retbuf ABI: the void call writes the result into the temp; the
 	// expression value is the materialized temp lvalue.
 	if (ret_obj) {
-		m_pending_stmts.push_back(node2(N_EXPR, list(), mcall, origin));
+		pending_construction(node2(N_EXPR, list(), mcall, origin), ret_tmp,
+				     ret_obj, origin);
 		return id(ret_tmp, origin);
 	}
 	// A T&-returning method returns the address of its result; deref so the
@@ -18840,6 +18879,7 @@ node_t CirBuilder::initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
 			ec, elems, false, true, origin, stmts);
 		for (node_t st : stmts)
 			m_pending_stmts.push_back(st);
+		pending_construction(NULL, tname, ec, origin);
 		node_t ispec = list();
 		append_lit_type_spec(ispec, ilc, madc::dis::istring());
 		node_t itype = node2(N_TYPE, ispec, node2(N_DECL, ignore(), list()));
@@ -22634,7 +22674,8 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 	if (retc) {
 		if (slot_consumed)
 			return ocall;   // the caller wraps the bare call as a statement
-		m_pending_stmts.push_back(node2(N_EXPR, list(), ocall, origin));
+		pending_construction(node2(N_EXPR, list(), ocall, origin), objtmp,
+				     retc, origin);
 		return id(objtmp, origin);   // materialized object lvalue
 	}
 	return reference_call_result(callee, ocall, origin);
@@ -23489,11 +23530,9 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	node_t ocall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 
 	if (by_value_object) {
-		if (via_retbuf)
-			m_pending_stmts.push_back(node2(N_EXPR, list(), ocall, origin));
-		else
-			m_pending_stmts.push_back(node2(N_EXPR, list(),
-				node2(N_ASSIGN, id(objtmp, origin), ocall, origin), origin));
+		pending_construction(node2(N_EXPR, list(), via_retbuf ? ocall
+				: node2(N_ASSIGN, id(objtmp, origin), ocall, origin),
+				origin), objtmp, retc, origin);
 		return id(objtmp, origin);   // materialized object lvalue
 	}
 	// T&-returning operator returns an address; deref to the lvalue.
@@ -24363,7 +24402,8 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	node_t ocall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(ocall)->synth_from_origin = true;
 	if (retc) {
-		m_pending_stmts.push_back(node2(N_EXPR, list(), ocall, origin));
+		pending_construction(node2(N_EXPR, list(), ocall, origin), rtmp, retc,
+				     origin);
 		return id(rtmp, origin);
 	}
 	// A T&-returning unary operator returns an address; deref to the lvalue.
@@ -25356,6 +25396,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			m_pending_stmts.push_back(array_storage_decl(otname, tb));
 			std::vector<node_t> lst;
 			lst.push_back(array_ctor_call(otname, tb));
+			lst.push_back(cleanup_arm_stmt(otname, tb));
 			if (node_t err = carrier_list_elements(
 				    [&]() { return object_addr(otname, tb); },
 				    ot->ctor_args, ot->ctor_arg_keys, tb, lst))
@@ -25368,9 +25409,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		otmp->flags |= vfLOCAL;
 		m_pending_stmts.push_back(var_decl(otmp, tb));
 		if (deferred_slot) {
+			// The tsubst copy turns the marker into the construction;
+			// the arm after it is copied as it stands.
 			cir_node *marker = make(N_IGNORE, tb);
 			marker->set_datadef(ocdd);
-			m_pending_stmts.push_back(marker->as_node());
+			pending_construction(marker->as_node(), otname, ocdd, tb);
 			return id(otname, tb);
 		}
 		// Aggregate list-init FIRST ([dcl.init.aggr]): this construction
@@ -25395,7 +25438,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				}, ocdd, ot->ctor_args, tb);
 		if (!occ)
 			occ = class_ctor_call(otmp, ocdd, ot->ctor_args, tb);
-		if (occ) m_pending_stmts.push_back(occ);
+		pending_construction(occ, otname, ocdd, tb);
 		return id(otname, tb);
 	}
 	if (TokenNEW *tn = (tb ? tb->as_new_tok() : NULL)) {
@@ -28032,6 +28075,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						node2(N_CALL,
 						      id(hctor.c_str(), tb),
 						      ca, tb), tb));
+					m_pending_stmts.push_back(
+						cleanup_arm_stmt(tnm, tb));
 					val = taddr();
 				}
 			} else if (raw == DataType::dtARRAY) {
@@ -28643,6 +28688,7 @@ void CirBuilder::header_declarator_stmts(TokenDecl *td, node_t items)
 	if (is_array_object(td->var.type)) {
 		append(items, var_decl(&td->var, td));
 		append(items, array_decl_ctor_call(td));	// allowed-exception: header-declarator scope local
+		append(items, cleanup_arm_stmt(var_emit_name(td->var).c_str(), td));
 		return;
 	}
 	// Scalar declarator: var_decl folds td->initialize into the SPEC_DECL
@@ -29747,6 +29793,7 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 	append(items, var_decl(ev, fe));
 	if (is_array_object(ev->type)) {
 		append(items, array_ctor_call(ev->name.c_str(), fe));
+		append(items, cleanup_arm_stmt(var_emit_name(*ev).c_str(), fe));
 	} else if (DataDefCLASS *edc = as_class_instance(ev->type)) {
 		// class_ctor_call owns implicit default construction end-to-end
 		// (user ctor call, or vptr stores + member construction + default
@@ -29755,6 +29802,8 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 		node_t cc = class_ctor_call(ev, edc, std::vector<TokenBase *>(), fe);
 		if (cc)
 			append(items, cc);
+		if (node_t arm = object_cleanup_arm(var_emit_name(*ev).c_str(), edc, fe))
+			append(items, arm);
 	}
 	append(items, loop);
 	return node2(N_BLOCK, list(), items, fe);
@@ -31052,6 +31101,9 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		return;
 	}
 	class_decl_construction(sdcl, cdcl, items);
+	if (node_t arm = object_cleanup_arm(var_emit_name(sdcl->var).c_str(),
+					    cdcl, sdcl))
+		append(items, arm);
 }
 
 void CirBuilder::emit_static_local_once(node_t items, node_t init_items,
@@ -31562,8 +31614,10 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(cons, array_ctor_call(vname.c_str(), tc));
 					emit_static_local_once(items, cons, tc,
 						(v->flags & vfTHREADLOCAL) != 0, v);
-				} else
+				} else {
 					append(items, array_ctor_call(vname.c_str(), tc));
+					append(items, cleanup_arm_stmt(vname.c_str(), tc));
+				}
 			}
 		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
 			// `Foo f;` / `string s;` — a class instance declared without an
@@ -31583,6 +31637,10 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			if (once)
 				emit_static_local_once(items, cons, tc,
 					(v->flags & vfTHREADLOCAL) != 0, v);
+			else if (!(v->flags & vfEXTERN))
+				if (node_t arm = object_cleanup_arm(
+					    var_emit_name(*v).c_str(), cdd, tc))
+					append(items, arm);
 		}
 	}
 
@@ -31659,6 +31717,10 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 						append(cons, p);
 					m_pending_stmts.clear();
 					if (cc) append(cons, cc);
+					if (!once)
+						append(cons, cleanup_arm_stmt(
+							var_emit_name(sdcl->var).c_str(),
+							sdcl));
 				}
 				// …and its INITIALIZER. Without this the `continue`
 				// below dropped it silently: `value v = "hello";`
@@ -34779,6 +34841,8 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 			stmts.push_back(pstmt);
 		m_pending_stmts.clear();
 		stmts.push_back(cc);
+		if (node_t arm = object_cleanup_arm(tname, params[i].cdd, NULL))
+			stmts.push_back(arm);
 	}
 
 	// 2b. Class-INSTANCE parameter temporaries for a class passed by
@@ -34826,6 +34890,8 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 			stmts.push_back(pstmt);
 		m_pending_stmts.clear();
 		stmts.push_back(cc);
+		if (node_t arm = object_cleanup_arm(tname, params[i].cdd, NULL))
+			stmts.push_back(arm);
 	}
 
 	// 3. Return landing: an instance cell or a protocol temp, before the call.
@@ -34954,6 +35020,8 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		break;
 	case R_TEXTOBJ: {
 		stmts.push_back(node2(N_EXPR, list(), call));
+		if (node_t arm = object_cleanup_arm(ret_tmp.c_str(), ret_cdd, NULL))
+			stmts.push_back(arm);
 		madc::dis::istring cs = class_method_symbol(ret_cdd, "c_str");
 		madc::dis::istring ls = ret_len_fd == class_method_def(ret_cdd, "size")
 				 ? class_method_symbol(ret_cdd, "size")

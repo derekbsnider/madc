@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### An object's cleanup arm follows its construction
+
+- The CIR builder places `__builtin_cleanup_arm(&name);` after the statement that constructs a cleanup-tagged object it declares: class declarations, carrier and class temporaries, returned-object temporaries, foreach elements, block locals, and host-call shim temporaries. A class without a destructor and a static or extern object get no arm.
+- c2mir accepts the arm of a variable with no cleanup as a no-op. It is an error only when the operand is not a variable's address.
+- `--emit=c11` writes an arm as an empty statement, keeping its labels.
+- With c2mir's unwind regions off (the madc default), the arm generates no code, so this change alters no output.
+- `tests/unit/test_mir_unwind.cpp` gains a case for the no-op arm and the non-variable error.
+
 ### c2mir's builtin call names live in one table
 
 Consolidated: c2mir_builtin_call_names — gate scripts/check-one-c2mir-builtin-names.sh

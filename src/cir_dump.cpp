@@ -2744,7 +2744,7 @@ madc::dis::istring CirBuilder::dump_result_value_temp(TokenBase *origin)
 	Variable *tmp = new Variable(name, ddARRAY, 1, NULL, false);
 	tmp->flags |= vfLOCAL;
 	m_pending_stmts.push_back(var_decl(tmp, origin));
-	m_pending_stmts.push_back(array_ctor_call(name, origin));
+	pending_construction(array_ctor_call(name, origin), name, &ddARRAY, origin);
 	return madc::dis::istring(name);
 }
 

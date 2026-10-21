@@ -742,6 +742,29 @@ TEST_CASE("without the option: no regions, no personality, the arm is a no-op")
 	MIR_finish(ctx);
 }
 
+TEST_CASE("__builtin_cleanup_arm of a variable without a cleanup does nothing; of a non-variable, an error")
+{
+	MIR_context_t ctx = MIR_init();
+	c2mir_init(ctx);
+	MIR_module_t mod = compile_c(ctx,
+		"long unwind_cb_fp (long p);\n"
+		"long plain (long a) {\n"
+		"  long x = a;\n"
+		"  static long s;\n"
+		"  __builtin_cleanup_arm (&x);\n"
+		"  __builtin_cleanup_arm (&s);\n"
+		"  return unwind_cb_fp ((long) &x) + s;\n"
+		"}\n", true);
+	REQUIRE(mod != nullptr);
+	MIR_item_t f = find_item(ctx, mod, "plain");
+	REQUIRE(f != nullptr);
+	CHECK(f->u.func->unwind_regions == nullptr);
+	CHECK(f->u.func->unwind_personality == nullptr);
+	CHECK(compile_c(ctx, "void bad (void) { __builtin_cleanup_arm (0); }\n", true) == nullptr);
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+}
+
 }
 
 // The runtime's personality (src/rt/rt_except.c): madc's own try shape -- the

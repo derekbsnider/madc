@@ -590,6 +590,19 @@ class CirBuilder {
 	// attribute when leave_fn is NULL. The caller declares leave_fn.
 	node_t cleanup_guard_local(const char *name, node_t init,
 				   const char *leave_fn, TokenBase *origin);
+	// `__builtin_cleanup_arm(&name);` — the statement after the one that
+	// constructs object `name`: from here a throw passing through the frame
+	// runs the object's cleanup (B205), never during its constructor (g++
+	// registers a cleanup when the object's initialization completes).
+	// Inert for a variable without a cleanup. object_cleanup_arm: NULL for
+	// a class with no destructor (the carrier always has one).
+	node_t cleanup_arm_stmt(const char *name, TokenBase *origin);
+	node_t object_cleanup_arm(const char *name, DataDefCLASS *cdd,
+				  TokenBase *origin);
+	// A pending temporary's construction completes: `construct` (when not
+	// NULL), then the temp's cleanup arm, onto m_pending_stmts.
+	void pending_construction(node_t construct, const char *name,
+				  DataDefCLASS *cdd, TokenBase *origin);
 	// Host-call shim synthesis (translate_module): a per-function
 	// `long __madc_shim_<sym>(char *__args, char *__out)` adapter over
 	// the 32-byte madc_value ABI. NULL when the signature is not

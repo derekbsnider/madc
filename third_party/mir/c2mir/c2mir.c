@@ -8149,18 +8149,25 @@ static node_t build_cleanup_stmt (c2m_ctx_t c2m_ctx, node_t decl_node, node_t co
   return stmt;
 }
 
-/* The automatic cleanup variable a checked __builtin_cleanup_arm argument
-   (`&var`) names, or NULL when it names none. */
-static decl_t cleanup_arm_decl (c2m_ctx_t c2m_ctx, node_t arg) {
-  check_ctx_t check_ctx = c2m_ctx->check_ctx;
+/* The variable a checked __builtin_cleanup_arm argument (`&var`) names, or
+   NULL when the argument is not a variable's address. */
+static decl_t cleanup_arm_operand (node_t arg) {
   node_t id;
   struct expr *e;
-  decl_t decl;
 
   if (arg == NULL || arg->code != N_ADDR || (id = NL_HEAD (arg->u.ops)) == NULL
       || id->code != N_ID || (e = id->attr) == NULL || e->u.lvalue_node == NULL)
     return NULL;
-  decl = e->u.lvalue_node->attr;
+  return e->u.lvalue_node->attr;
+}
+
+/* The automatic cleanup variable a checked __builtin_cleanup_arm argument
+   names, or NULL when it names none: the arm of a variable with no cleanup
+   (static storage, or none declared) does nothing. */
+static decl_t cleanup_arm_decl (c2m_ctx_t c2m_ctx, node_t arg) {
+  check_ctx_t check_ctx = c2m_ctx->check_ctx;
+  decl_t decl = cleanup_arm_operand (arg);
+
   if (decl == NULL || decl->cleanup_fn == NULL || decl->scope == top_scope
       || decl->decl_spec.static_p || decl->decl_spec.thread_local_p)
     return NULL;
@@ -11903,12 +11910,12 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
               || (signed_integer_type_p (e2->type) && e2->c.i_val < 0))
             error (c2m_ctx, POS (arg), "invalid argument to %s", op1->u.s.s);
         } else if (cleanup_arm_p) {
-          decl_t armed = cleanup_arm_decl (c2m_ctx, NL_HEAD (arg_list->u.ops));
+          node_t operand = NL_HEAD (arg_list->u.ops);
+          decl_t armed = cleanup_arm_decl (c2m_ctx, operand);
 
-          if (armed == NULL)
-            error (c2m_ctx, POS (r), "%s needs the address of an automatic cleanup variable",
-                   CLEANUP_ARM);
-          else
+          if (cleanup_arm_operand (operand) == NULL)
+            error (c2m_ctx, POS (r), "%s needs the address of a variable", CLEANUP_ARM);
+          else if (armed != NULL)
             armed->cleanup_arm_p = TRUE;
         }
       }
