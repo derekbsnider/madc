@@ -53616,6 +53616,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	bool is_constexpr_member = false;
 	for (;;)
 	{
+	    // A GNU attribute group may stand among the specifiers too:
+	    // libc++'s `_LIBCPP_CONSTEXPR_SINCE_CXX20 _LIBCPP_NOINLINE void f(...)`
+	    // once __has_attribute(noinline) answers 1.
+	    skip_member_attributes();
+	    if ( !(tn = pgm.peekToken()) )
+		pgm.Throw(this) << "Unexpected end of input after member specifier" << flush;
 	    // [dcl.spec] leaves specifier order free: `inline friend bool
 	    // operator==(...)` reaches here with `friend` AFTER the consumed
 	    // specifiers. Friend decides the declaration kind — route to the

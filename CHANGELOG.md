@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### A GNU attribute among a member's specifiers is read
+
+- A class member may carry a GNU attribute group among its decl-specifiers, for example `static __attribute__((__noinline__)) int f(int)` or `constexpr __attribute__((__noinline__)) int g(int) const`. Before, the member was refused with "Expecting type in class definition". This is the form libc++'s `_LIBCPP_CONSTEXPR_SINCE_CXX20 _LIBCPP_NOINLINE` takes once `__has_attribute(noinline)` answers 1.
+- Tests: `testnoinlinememberspec` (C++, `--std=gnu++17`) prints `3 8`, the output of g++ 13 and clang++ 18.
+
 ### A namespace-scope class keeps its source name in its C++ spelling
 
 - A class declared at namespace scope takes its C++ name from its source name, so `typeid(lib::node).name()` is `N3lib4nodeE` and the vtable, typeinfo and member symbols use `lib::node`. Before, a global `struct node` declared earlier in the same translation unit changed the name to `N3lib9lib__nodeE`: the output was silently wrong, or linking failed with an undefined `_ZTV`/`_ZTI`/`_ZNS` item.
