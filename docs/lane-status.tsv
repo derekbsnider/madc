@@ -12,10 +12,10 @@ interactive-win	release	b6eaa13b0c3a	2026-10-15	54 passed, 0 failed, 0 timed out
 interactive-darwin	release	b6eaa13b0c3a	2026-10-15	arm64 Mac Mini 58/0/0TO/2skip + Intel MacBook 58/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.105.0 at f45eca6e4 content; madcide 0.8.0 (84fbb13) 67/0 + check_install PASS on both
 linux-battery	yes	e09316d0dc71	2026-10-15	seam_battery.sh at e09316d0d (0.105.0 release seam, after the dialect-faces commit f45eca6e4): headerless 2005/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2039/0/9skip, EXE 1830/0, OBJ 1830/0; parse-cost 0 red of 14; static gates 0 red of 99 + make gates green
 headerless-win	yes	e09316d0dc71	2026-10-15	1964/0/0TO/84skip at e09316d0d + ondisk-win 1/0 — packed PE under wine (seam_battery.sh)
-wine64	yes	e09316d0dc71	2026-10-15	the packed PE under wine at e09316d0d: headerless-win 1964/0 + ondisk-win 1/0 (seam_battery.sh)
 macos	yes	e09316d0dc71	2026-10-15	BUILD lane: macos-build + macos stages rc=0 at e09316d0d (seam_battery.sh, 0.105.0 release seam)
 genuine-win	release	e09316d0dc71	2026-10-15	1963/0/0TO/85skip — the FULL suite on the owner Windows 11 box at e09316d0d content (scripts/win_suite.sh, the release-seam packed PE)
 brew-linux	release	e09316d0dc71	2026-10-15	2039/0/0TO/9skip - scripts/brew_lane.sh at e09316d0d content (bottle + pour + brew test, keg-masked runpath gate)
 darwin-suite	release	e09316d0dc71	2026-10-15	darwin-suite native libc++ at e09316d0d content: arm64 Mac Mini (macOS 14) 2005/0/0TO/43skip + mac battery 12/0; Intel MacBook (macOS 15) 2008/0/0TO/40skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>); EXE advisory 291/297 failed (D5 class)
 aarch64-ld	yes	ed6d6f131c75	2026-10-20	aarch64_ldouble_lane GREEN (control; aot + jit on every fixture, nansl jit skipped by reason; bootstrap)
 tests-jit	batch	01ad985f120f	2026-10-21	2148 passed, 2 failed (untracked pending-gate reducers testnoreturn_c11, testthrow_through_frame), 9 skipped
+wine64	yes	4ed893d64225	2026-10-21	2062 passed, 0 tracked failed (untracked known-RED testnoreturn_c11, testthrow_through_frame), 99 skipped -- JIT, B205 6.3 step 3
