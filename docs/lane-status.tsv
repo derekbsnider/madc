@@ -17,5 +17,5 @@ macos	yes	e09316d0dc71	2026-10-15	BUILD lane: macos-build + macos stages rc=0 at
 genuine-win	release	e09316d0dc71	2026-10-15	1963/0/0TO/85skip — the FULL suite on the owner Windows 11 box at e09316d0d content (scripts/win_suite.sh, the release-seam packed PE)
 brew-linux	release	e09316d0dc71	2026-10-15	2039/0/0TO/9skip - scripts/brew_lane.sh at e09316d0d content (bottle + pour + brew test, keg-masked runpath gate)
 darwin-suite	release	e09316d0dc71	2026-10-15	darwin-suite native libc++ at e09316d0d content: arm64 Mac Mini (macOS 14) 2005/0/0TO/43skip + mac battery 12/0; Intel MacBook (macOS 15) 2008/0/0TO/40skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>); EXE advisory 291/297 failed (D5 class)
-tests-jit	batch	ed6d6f131c75	2026-10-20	2144 passed, 2 failed (untracked pending-gate reducers testnoreturn_c11, testthrow_through_frame), 9 skipped
 aarch64-ld	yes	ed6d6f131c75	2026-10-20	aarch64_ldouble_lane GREEN (control; aot + jit on every fixture, nansl jit skipped by reason; bootstrap)
+tests-jit	batch	01ad985f120f	2026-10-21	2148 passed, 2 failed (untracked pending-gate reducers testnoreturn_c11, testthrow_through_frame), 9 skipped
