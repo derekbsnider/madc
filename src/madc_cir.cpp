@@ -4109,13 +4109,14 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	if (incls_in_order[k]->second.size() > CIR_INCL_WORDS)
 	    incls_of[ensure_unit(incls_in_order[k]->first)] = &incls_in_order[k]->second;
     // v71 (K2c): each unit's expansion points of the macros a captured arm
-    // writes — the only names a bind's run arm can leave unlike the freeze's.
+    // writes — the names a bind's run arm can leave unlike the freeze's —
+    // and (v73, K2e) of the macros a maskable taken arm writes, which a bind
+    // that skips the arm can leave unlike the freeze's.
     std::set<uint32_t> watched;
     for (size_t k = 0; k < conds_in_order.size(); ++k)
 	for (const Program::PackCondRecord &r : conds_in_order[k]->second)
-	    if (r.arm_captured)
-		for (const madc::dis::istring &w : r.arm_writes)
-		    watched.insert(prog->strpool.find(w.str()));
+	    for (const madc::dis::istring &w : r.arm_writes)
+		watched.insert(prog->strpool.find(w.str()));
     std::map<uint32_t, std::vector<uint32_t> > points_of;
     typedef std::map<const char *, std::vector<Program::PackExpansionPoint> > point_map;
     const std::vector<point_map::const_iterator> points_in_order =
@@ -4199,7 +4200,8 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    w[CIR_COND_KIND] = (uint32_t)r.kind;
 	    w[CIR_COND_TEXT] = pool->intern(r.text);
 	    w[CIR_COND_FLAGS] = (r.outcome ? CIR_COND_F_OUTCOME : 0u)
-			      | (r.single_arm ? CIR_COND_F_SINGLE_ARM : 0u);
+			      | (r.single_arm ? CIR_COND_F_SINGLE_ARM : 0u)
+			      | (!r.arm_writes.empty() ? CIR_COND_F_WATCHED : 0u);
 	    w[CIR_COND_EV_BEGIN] = r.ev_begin;
 	    w[CIR_COND_ED_BEGIN] = r.ed_begin;
 	    w[CIR_COND_EV_END] = r.ev_end;

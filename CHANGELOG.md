@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### A forest bind checks a masked arm's differing macro where frozen content expands it
+
+- A forest root whose taken guard arm is skipped as masked no longer declines when another macro the arm writes differs from the consumer's state. The name joins the walk's differs-set and is checked at each frozen expansion point it reaches (the K2c check), so the root declines only where frozen content expands it to a different state. A spelled name that differs still declines.
+- The freeze records the writes of a taken single arm whose condition spells a name it defines, for names the condition does not spell, and keeps their expansion points. A unit's own include guard is not recorded. Container format v73 (`CIR_COND_F_WATCHED`); a v72 container lacks those points.
+- On win64, `<iostream>` binds its frozen roots with no declines, and the masked `stdio.h` arm leaves `getwc`, `getwchar`, `putwc` and `putwchar` to their expansion points.
+- `scripts/forest_bind_gate.sh` `[k2e]` prints `t=4` for the masked shape and `s=9` where frozen content expands the differing macro (g++ 13 prints the same).
+
 ### A forest bind follows a run arm's `#include` and withdraws a skipped frozen arm's declarations
 
 - A forest root whose run arm holds an `#include` no longer declines on that include alone. The included header binds as an edge of the walk, at that point of the arm, and its declarations restore with the root. An include the walk cannot bind (not frozen, quoted, `#include_next`, `__need`, or a unit whose own walk declines) still declines the root, which then parses live.

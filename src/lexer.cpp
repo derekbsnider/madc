@@ -6000,12 +6000,13 @@ int Program::forest_condition_now(CirFrozenForest *f, const ForestUnitItems &it,
 // edges and nested records only when the arm's own sub-block guards skip it —
 // the names the arm defines and its condition spells (`#ifndef G`, glibc's
 // `#if defined __USE_LARGEFILE64 && !defined __off64_t_defined`), defined
-// here — so the condition read with them undefined is taken. Every other macro
-// the arm writes must already hold the arm's final value: the frozen content
-// after the arm was expanded with those values. A guard only needs to be
-// defined.
+// here — so the condition read with them undefined is taken. A guard only
+// needs to be defined. Every other macro the arm writes that does not hold the
+// arm's final value here goes to `differing` (K2e): the frozen content after
+// the arm was expanded with the final value, so where it expands the name
+// (forest_walk_points) the name must hold it — the K2c check.
 bool Program::forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems &it,
-				      const uint32_t *c)
+				      const uint32_t *c, std::vector<madc::dis::istring> &differing)
 {
     typedef MadcSharedPreludeCache::MacroState MacroState;
     const char *text = f->pool_str(c[CIR_COND_TEXT]);
@@ -6026,12 +6027,28 @@ bool Program::forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems 
     for ( std::map<madc::dis::istring, MacroState>::const_iterator li = last.begin();
 	  li != last.end(); ++li )
     {
-	if ( spelled.count(li->first) && li->second.kind != MacroState::absent
-	  && macro_name_defined(li->first) )
-	    guards.push_back(MadcSharedPreludeCache::macro_state(*this, li->first));
-	else if ( !MadcSharedPreludeCache::same_macro_state(
-		      li->second, MadcSharedPreludeCache::macro_state(*this, li->first)) )
-	    return false;
+	const bool same = MadcSharedPreludeCache::same_macro_state(
+	    li->second, MadcSharedPreludeCache::macro_state(*this, li->first));
+	if ( spelled.count(li->first) )
+	{
+	    if ( li->second.kind != MacroState::absent && macro_name_defined(li->first) )
+		guards.push_back(MadcSharedPreludeCache::macro_state(*this, li->first));
+	    else if ( !same )
+		return false;	// a spelled name the forest keeps no points for
+	}
+	else if ( !same )
+	{
+	    // Checkable only where the forest kept the arm's expansion points.
+	    if ( !(c[CIR_COND_FLAGS] & CIR_COND_F_WATCHED) )
+		return false;
+	    DBG(std::cout << "forest bind: a masked arm's '" << li->first << "' is '"
+		<< forest_macro_state_spelling(*this, std::vector<madc::dis::istring>(1, li->first))
+		<< "' here; the arm left it "
+		<< (li->second.kind == MacroState::absent ? "undefined"
+		    : li->second.kind == MacroState::object ? "object-like" : "function-like")
+		<< " — checked where frozen content expands it" << std::endl);
+	    differing.push_back(li->first);
+	}
     }
     if ( guards.empty() )
 	return false;
@@ -6176,7 +6193,7 @@ bool Program::forest_walk_points(ForestWalk &w, uint32_t unit, const ForestUnitI
 	const char *rname = f->unit_name(w.root), *uname = f->unit_name(unit);
 	DBG(std::cout << "forest bind: DECLINE root " << (rname ? rname : "?") << " — unit "
 	    << (uname ? uname : "?") << " expands '" << name
-	    << "' where a run arm left it unlike the freeze's" << std::endl);
+	    << "' where an arm left it unlike the freeze's" << std::endl);
 	return false;
     }
     return true;
@@ -6241,11 +6258,16 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
     const char *kind_spelling = (unsigned)kind < 5 ? spell[(unsigned)kind] : "?";
     const char *text = f->pool_str(c[CIR_COND_TEXT]);
     const char *uname = f->unit_name(unit);
-    if ( now == 0 && frozen && single && forest_arm_guard_passed(f, it, c) )
+    std::vector<madc::dis::istring> differing;
+    if ( now == 0 && frozen && single && forest_arm_guard_passed(f, it, c, differing) )
     {
 	DBG(std::cout << "forest bind: unit " << (uname ? uname : "?") << " '#" << kind_spelling
 	    << " " << (text ? text : "?") << "' arm skipped — its guard is live (masked bind)"
 	    << std::endl);
+	// K2e: the writes it leaves unlike the freeze's are checked where frozen
+	// content expands them.
+	for ( size_t i = 0; i < differing.size(); ++i )
+	    w.differs.insert(strpool.intern(differing[i].str()));
 	// K2d: the declarations the arm made are not this consumer's.
 	if ( c[CIR_COND_TOK_BEGIN] < c[CIR_COND_TOK_END] )
 	    w.withdrawn.push_back(ForestSide::WithdrawnArm{ unit, c[CIR_COND_TOK_BEGIN],
@@ -7670,6 +7692,31 @@ static void pack_cond_end_arm(Program &pgm, Program::PackCondFrame &f, bool sing
 	r.tok_first = pgm.tokens.buf_at(r.tok_open);
 	r.tok_last = pgm.tokens.back();
     }
+    // v73 (K2e): a taken single arm whose condition spells a name it defines
+    // (a sub-block guard) is one a bind may skip as masked; its other writes
+    // — the names its condition does not spell — are watched like a captured
+    // arm's, so the forest keeps their expansion points and a bind that skips
+    // the arm checks them where frozen content expands them.
+    if ( r.outcome && single_arm && r.ev_end > r.ev_begin )
+    {
+	const std::vector<Program::PackMacroEvent> &ev = pgm.pack_pp_exports[f.unit];
+	std::set<madc::dis::istring> spelled, seen;
+	source_spelled_names(r.text, spelled);
+	std::vector<madc::dis::istring> writes;
+	bool guarded = false;
+	for ( uint32_t i = r.ev_begin; i < r.ev_end && i < ev.size(); ++i )
+	{
+	    if ( !spelled.count(ev[i].name) )
+	    {
+		if ( seen.insert(ev[i].name).second )
+		    writes.push_back(ev[i].name);
+	    }
+	    else if ( Program::PackMacroEvent::defines_macro(ev[i].tag) )
+		guarded = true;
+	}
+	if ( guarded )
+	    r.arm_writes.swap(writes);
+    }
     ++pgm.pack_point_epoch;
     f.pending = -1;
 }
@@ -7710,6 +7757,22 @@ void Program::pack_note_expansion(uint32_t sid)
 void Program::pack_unit_leave(const char *unit)
 {
     std::vector<uint32_t> &incl = pack_unit_inclusions[unit];
+    // v73 (K2e): the inclusion's own include guard — an `#ifndef` taken over
+    // all of it, the shape the walk's include-once prune reads — is no masked
+    // arm: its writes (the whole header's) are not watched.
+    {
+	const size_t n = incl.size();
+	const uint32_t ev0 = n ? incl[n - CIR_INCL_WORDS] : 0, ed0 = n ? incl[n - CIR_INCL_WORDS + 1] : 0,
+		       rec0 = n ? incl[n - CIR_INCL_WORDS + 2] : 0;
+	std::vector<PackCondRecord> &recs = pack_unit_conds[unit];
+	if ( rec0 < recs.size() )
+	{
+	    PackCondRecord &g = recs[rec0];
+	    if ( g.kind == CondDirective::Ifndef && g.outcome && g.ev_begin == ev0 && g.ed_begin == ed0
+	      && g.ev_end == pack_pp_exports[unit].size() && g.ed_end == pack_unit_edges[unit].size() )
+		g.arm_writes.clear();
+	}
+    }
     incl.push_back((uint32_t)pack_pp_exports[unit].size());
     incl.push_back((uint32_t)pack_unit_edges[unit].size());
     incl.push_back((uint32_t)pack_unit_conds[unit].size());

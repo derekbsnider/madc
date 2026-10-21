@@ -1723,6 +1723,120 @@ grep -aq "DECLINE root.*fbgate_k2d_osroot\.h" "$kd_dir/stream.log" \
 rm -rf "$kd_dir"
 echo "forest_bind_gate: [k2d] OK — a run arm's #include is an edge of the walk (no serving completes there), and a frozen arm the walk skips withdraws its declarations"
 
+# --- case: k2e (docs/plans/2026-10-18-verified-cxx-bind.md, K2e) ---
+# A taken single arm the walk skips as masked (its sub-block guard is live)
+# may write a macro the consumer holds differently; that name joins the
+# walk's differs-set and is checked where frozen content expands it (the K2c
+# points), instead of declining. The mingw shape: stdio.h and wchar.h hold
+# the same block defining getwc; libstdc++'s <cwchar> #undefs it after
+# <wchar.h>; a consumer reaching wchar.h first meets stdio.h with getwc gone.
+#   masked  — k2e_d.h (wchar.h's copy runs, then #undef) before k2e_t.h, whose
+#           frozen arm defined FBG_K2E_GETC: nothing frozen expands it after
+#           the arm, so k2e_t.h binds.
+#   expands — k2e_c.h leaves FBG_K2E_VAL 9 where k2e_s.h's frozen arm left 7,
+#           and k2e_s.h's frozen content expands it after the arm: the root
+#           declines there and parses live (9, as gcc).
+# g++ and clang++: t=4 / s=9.
+ke_dir=tmp/fbgate_k2e
+rm -rf "$ke_dir"
+mkdir -p "$ke_dir"
+cat > "$ke_dir/fbgate_k2e_t.h" <<'EOF'
+#ifndef FBG_K2E_T_H
+#define FBG_K2E_T_H
+#ifndef FBG_K2E_BLOCK2
+#define FBG_K2E_BLOCK2
+#define FBG_K2E_GETC(x) ((x) + 1)
+#endif
+struct fbg_k2e_t { int v; };
+#endif
+EOF
+cat > "$ke_dir/fbgate_k2e_u.h" <<'EOF'
+#ifndef FBG_K2E_U_H
+#define FBG_K2E_U_H
+#ifndef FBG_K2E_BLOCK2
+#define FBG_K2E_BLOCK2
+#define FBG_K2E_GETC(x) ((x) + 1)
+#endif
+#endif
+EOF
+cat > "$ke_dir/fbgate_k2e_d.h" <<'EOF'
+#ifndef FBG_K2E_D_H
+#define FBG_K2E_D_H
+#include <fbgate_k2e_u.h>
+#undef FBG_K2E_GETC
+#endif
+EOF
+cat > "$ke_dir/fbgate_k2e_s.h" <<'EOF'
+#ifndef FBG_K2E_S_H
+#define FBG_K2E_S_H
+#ifndef FBG_K2E_BLOCK
+#define FBG_K2E_BLOCK
+#define FBG_K2E_VAL 7
+#endif
+static const int fbg_k2e_s = FBG_K2E_VAL;
+#endif
+EOF
+cat > "$ke_dir/fbgate_k2e_w.h" <<'EOF'
+#ifndef FBG_K2E_W_H
+#define FBG_K2E_W_H
+#ifndef FBG_K2E_BLOCK
+#define FBG_K2E_BLOCK
+#define FBG_K2E_VAL 7
+#endif
+#endif
+EOF
+cat > "$ke_dir/fbgate_k2e_c.h" <<'EOF'
+#ifndef FBG_K2E_C_H
+#define FBG_K2E_C_H
+#include <fbgate_k2e_w.h>
+#undef FBG_K2E_VAL
+#define FBG_K2E_VAL 9
+#endif
+EOF
+cat > "$ke_dir/producer.cpp" <<'EOF'
+#include <fbgate_k2e_t.h>
+#include <fbgate_k2e_d.h>
+#include <fbgate_k2e_s.h>
+#include <fbgate_k2e_c.h>
+int main() { return 0; }
+EOF
+cat > "$ke_dir/masked.cpp" <<'EOF'
+#include <fbgate_k2e_d.h>
+#include <fbgate_k2e_t.h>
+#include <stdio.h>
+int main() { printf("t=%d\n", (int)sizeof(struct fbg_k2e_t)); return 0; }
+EOF
+cat > "$ke_dir/expands.cpp" <<'EOF'
+#include <fbgate_k2e_c.h>
+#include <fbgate_k2e_s.h>
+#include <stdio.h>
+int main() { printf("s=%d\n", fbg_k2e_s); return 0; }
+EOF
+ke_snap=$ke_dir/k2e.msnap
+timeout 600 "$BIN" --std=gnu++17 --freeze="$ke_snap" -I "$ke_dir" "$ke_dir/producer.cpp" \
+    >"$ke_dir/freeze.log" 2>&1 || fail "[k2e] the --freeze FAILED: $(tail -n 3 "$ke_dir/freeze.log")"
+ke_case() {	# ke_case <name> <expected output>: run it, leave its -v trace in <name>.log
+    if command -v g++ >/dev/null 2>&1; then
+	g++ -std=gnu++17 -I "$ke_dir" -o "$ke_dir/$1.gxx" "$ke_dir/$1.cpp" 2>"$ke_dir/$1.gxx.err" \
+	    || fail "[k2e] $1: g++ compile FAILED: $(head -n 2 "$ke_dir/$1.gxx.err")"
+	[ "$("$ke_dir/$1.gxx")" = "$2" ] || fail "[k2e] $1: g++ output is not '$2' — the reducer is wrong"
+    fi
+    ke_out=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$ke_snap" -I "$ke_dir" "$ke_dir/$1.cpp" 2>&1)
+    [ "$ke_out" = "$2" ] || fail "[k2e] $1: output '$ke_out' != '$2' (g++)"
+    timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$ke_snap" -I "$ke_dir" "$ke_dir/$1.cpp" \
+	>"$ke_dir/$1.log" 2>/dev/null
+}
+ke_case masked "t=4"
+grep -aq "fbgate_k2e_t\.h '#ifndef FBG_K2E_BLOCK2' arm skipped — its guard is live (masked bind)" "$ke_dir/masked.log" \
+    || fail "[k2e] masked: fbgate_k2e_t.h's arm was not masked — $(grep -a -m1 'DECLINE root' "$ke_dir/masked.log")"
+grep -aq "bound to grove unit.*fbgate_k2e_t\.h" "$ke_dir/masked.log" \
+    || fail "[k2e] masked: fbgate_k2e_t.h did not bind — $(grep -a -m1 'DECLINE root' "$ke_dir/masked.log")"
+ke_case expands "s=9"
+grep -aq "DECLINE root.*fbgate_k2e_s\.h.*expands 'FBG_K2E_VAL'" "$ke_dir/expands.log" \
+    || fail "[k2e] expands: fbgate_k2e_s.h did not decline where it expands FBG_K2E_VAL — $(grep -a -m1 'DECLINE root' "$ke_dir/expands.log")"
+rm -rf "$ke_dir"
+echo "forest_bind_gate: [k2e] OK — a masked arm's differing write is checked where frozen content expands it: unexpanded binds, an expansion of the frozen value declines"
+
 # --- case: lexalike (docs/plans/2026-10-18-verified-cxx-bind.md, K2b) ---
 # A run arm whose write differs in SPELLING from the freeze's state but lexes
 # to the same tokens leaves the frozen content as it is. glibc's <wchar.h>

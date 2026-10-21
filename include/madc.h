@@ -7810,7 +7810,7 @@ public:
     int forest_condition_now(CirFrozenForest *f, const ForestUnitItems &it,
 			     const uint32_t *cond);	// 1 taken, 0 skipped, -1 not readable here
     bool forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems &it,
-				 const uint32_t *cond);
+				 const uint32_t *cond, std::vector<madc::dis::istring> &differing);
     void forest_arm_note_differs(const char *frozen, const std::vector<madc::dis::istring> &writes,
 				 ForestWalk &w);
     bool forest_walk_points(ForestWalk &w, uint32_t unit, const ForestUnitItems &it, uint32_t inc,

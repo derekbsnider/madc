@@ -592,6 +592,48 @@ consumer that reaches `wchar.h` first takes the other one.
     2 words, the `name_verdict` arguments). The withdrawing TUs: cxx_stl
     +0.02%, subscript +0.04%.
 
+- Win64 result (2026-10-21):
+  - With K2d the `<iostream>` walk runs mingw `wchar.h`'s `_WSTDIO_DEFINED`
+    arm; its `#include <swprintf.inl>` binds as a walk edge.
+  - A defect in the first cut: that branch returned
+    `include_completed_token()`, whose `bits/value_stream` injection wrote the
+    program's token stream mid-walk. The arm include now completes no serving
+    (gate `[k2d]` `stream`).
+  - The root then declines at `stdio.h`'s own `_WSTDIO_DEFINED` arm, which is
+    K2e.
+
+### K2e — a masked arm's differing write is checked where it is expanded
+
+- Shape:
+  - mingw `stdio.h` and `wchar.h` both `#define getwc(_stm)` in the shared
+    block, and libstdc++'s `<cwchar>` `#undef`s `getwc` after `<wchar.h>`.
+  - The freeze read `stdio.h` first; a consumer reaching `wchar.h` first meets
+    `stdio.h` with `getwc` undefined.
+  - Its taken arm is skipped here, and its guard is live. The masked bind
+    required every other write to hold the arm's final value, so it declined.
+- gcc agrees with the consumer: the block is skipped, so `getwc` stays
+  undefined. What matters is only whether frozen content after the arm
+  expanded `getwc` with the arm's value: the K2c question.
+- Freeze: a taken single arm whose condition spells a name it defines is
+  maskable.
+  - It records its other writes (`arm_writes`), the names its condition does
+    not spell. A guard is never compared, so it needs no points.
+  - The writer watches them like a captured arm's and flags the record
+    `CIR_COND_F_WATCHED`. Container v73.
+  - A unit's own include guard (the include-once prune's shape) is not
+    maskable. Watching it would watch every macro of the header: the C freeze
+    went from 240 points to 1155, and parse-cost went red. With the exclusion
+    it has 350.
+- Walk: `forest_arm_guard_passed` returns an unspelled write that differs
+  here, only for a `WATCHED` record. Otherwise, and for a differing spelled
+  name, it declines as before. The masked branch adds the returned writes to
+  the walk's differs-set, and `forest_walk_points` checks them as it checks a
+  run arm's (K2c).
+- Gate: `forest_bind_gate.sh` `[k2e]`:
+  - `masked`: the getwc shape binds.
+  - `expands`: frozen content expands the differing macro after the masked
+    arm, so the root declines there and the live parse gives gcc's 9.
+
 ## Thread safety
 
 The bind state is per-`Program` (`ForestSide`). The overlay in K2 is a local

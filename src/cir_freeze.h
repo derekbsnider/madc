@@ -208,7 +208,8 @@ enum cir_forest_point_field : uint32_t {
 };
 enum : uint32_t {
 	CIR_COND_F_OUTCOME    = 1u,	// the arm was taken at freeze
-	CIR_COND_F_SINGLE_ARM = 2u	// the group's #endif ended it (no #elif / #else)
+	CIR_COND_F_SINGLE_ARM = 2u,	// the group's #endif ended it (no #elif / #else)
+	CIR_COND_F_WATCHED    = 4u	// v73: the forest keeps the expansion points of the arm's writes
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -745,7 +746,12 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // v72 (K2d): a condition record carries its arm's own tokens, unit-local
 // (CIR_COND_TOK_BEGIN / END — the decl index's slice coordinate): a taken arm
 // the bind walk skips withdraws the declarations it made.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 72 };
+//
+// v73 (K2e): the expansion points also cover every macro a maskable taken
+// arm writes (its condition spells a name it defines): a bind that skips the
+// arm checks a write it leaves unlike the freeze's where frozen content
+// expands it, instead of declining. A v72 container lacks those points.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 73 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies
