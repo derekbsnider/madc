@@ -2062,6 +2062,25 @@ void MIR_finish_module (MIR_context_t ctx) {
   curr_module = NULL;
 }
 
+/* madc fork: an error function that returns control by a longjmp (a failed
+   read or compile) leaves the module being built unfinished, and
+   MIR_new_module / MIR_finish refuse that state.  Discard it -- its items,
+   their names in the item table, the module -- so the context builds or reads
+   the next one.  No effect when no module is unfinished.  */
+void MIR_abandon_module (MIR_context_t ctx) {
+  MIR_module_t module = curr_module;
+  MIR_item_t item;
+
+  curr_func = NULL;
+  curr_module = NULL;
+  if (module == NULL || module == &environment_module) return;
+  for (item = DLIST_HEAD (MIR_item_t, module->items); item != NULL;
+       item = DLIST_NEXT (MIR_item_t, item))
+    item_tab_remove (ctx, item);
+  DLIST_REMOVE (MIR_module_t, all_modules, module);
+  remove_module (ctx, module, TRUE);
+}
+
 static int setup_global (MIR_context_t ctx, const char *name, void *addr, MIR_item_t def) {
   MIR_item_t item, tab_item;
   MIR_module_t saved = curr_module;

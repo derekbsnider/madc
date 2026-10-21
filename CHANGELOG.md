@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### MIR discards the module a failed binary read left unfinished
+
+- `MIR_abandon_module(ctx)` in `third_party/mir/mir.c` (declared in `third_party/mir/mir.h`) discards the module a longjmp out of an error function left unfinished. Its items leave the item table, and the module is freed. Before, `MIR_new_module` and `MIR_finish` refused that state, so the context could not be reused.
+- It has no effect when no module is unfinished, and a second call is a no-op.
+- `tests/unit/test_mir_unwind.cpp` gains "binary module I/O: a failed read's module is abandoned, the context goes on": after the abandon the same names scan again into a new module, and `MIR_finish` succeeds.
+
 ### A native darwin build generates its tables with its own madc
 
 - `make release-macos` on a Mac (`MODE=hosted-<arch>-macos` on the build host) no longer names `../bin/madc` as the generator of the dialect registry. Before, every `cross-%` and `hosted-%` mode did, and a native build, which builds no dev madc, stopped with "No rule to make target '../bin/madc'".

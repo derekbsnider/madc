@@ -524,6 +524,64 @@ TEST_CASE("binary module I/O: a region changing at a labelled insn")
 	MIR_finish(ctx2);
 }
 
+// A read that fails part way leaves the module it began unfinished —
+// MIR_new_module and MIR_finish both refuse that state. MIR_abandon_module
+// discards it: the context builds its next module (the same names again) and
+// finishes. The failure part way: the compressed stream decodes a full 256 KiB
+// buffer before its end's hash is checked, so a module larger than one buffer
+// whose stream lost that hash is begun, then refused.
+static std::string many_functions_module(int n)
+{
+	std::string text = "big: module\n";
+	for (int i = 0; i < n; i++)
+		text += "f" + std::to_string(i) + ": func i64, i64:a\n  local i64:t\n"
+			"  mul t, a, " + std::to_string(i) + "\n  add t, t, 1\n  ret t\n  endfunc\n";
+	return text + "endmodule\n";
+}
+
+TEST_CASE("binary module I/O: a failed read's module is abandoned, the context goes on")
+{
+	MIR_context_t ctx = MIR_init();
+	MIR_scan_string(ctx, many_functions_module(20000).c_str());
+	MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+	io_bytes.clear();
+	MIR_write_module_with_func(ctx, io_put, mod);
+	MIR_finish(ctx);
+	REQUIRE(io_bytes.size() > 9u);
+	io_bytes.resize(io_bytes.size() - 9);	// the end: its zero tag and 8-byte hash
+
+	MIR_context_t ctx2 = MIR_init();
+	MIR_set_error_func(ctx2, io_error);
+	io_pos = 0;
+	volatile bool read_ok = false;
+	if (setjmp(io_error_jmp) == 0) {
+		MIR_read_with_func(ctx2, io_get);
+		read_ok = true;
+	}
+	REQUIRE_FALSE(read_ok);
+	// The read had begun its module.
+	REQUIRE(DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx2)) != nullptr);
+	MIR_abandon_module(ctx2);
+	CHECK(DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx2)) == nullptr);
+	MIR_abandon_module(ctx2);	// nothing unfinished: no effect
+
+	bool built = false;
+	MIR_module_t next = nullptr;
+	if (setjmp(io_error_jmp) == 0) {
+		next = scan_module(ctx2);
+		built = true;
+	}
+	REQUIRE(built);
+	REQUIRE(next != nullptr);
+	CHECK(find_item(ctx2, next, "f") != nullptr);
+	bool finished = false;
+	if (setjmp(io_error_jmp) == 0) {
+		MIR_finish(ctx2);
+		finished = true;
+	}
+	CHECK(finished);
+}
+
 TEST_CASE("the inliner: a region's callee stays a call; an inlined body takes the call's region")
 {
 	static const char *text =

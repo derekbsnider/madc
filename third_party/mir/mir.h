@@ -721,6 +721,8 @@ extern MIR_reg_t MIR_new_global_func_reg (MIR_context_t ctx, MIR_func_t func, MI
                                           const char *name, const char *hard_reg_name);
 extern void MIR_finish_func (MIR_context_t ctx);
 extern void MIR_finish_module (MIR_context_t ctx);
+/* Discard the module an error's longjmp left unfinished (madc fork). */
+extern void MIR_abandon_module (MIR_context_t ctx);
 
 extern MIR_error_func_t MIR_get_error_func (MIR_context_t ctx);
 extern void MIR_set_error_func (MIR_context_t ctx, MIR_error_func_t func);
