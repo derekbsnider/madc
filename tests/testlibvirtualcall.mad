@@ -4,7 +4,9 @@
 // override — the library's own (bad_array_new_length, runtime_error) and a
 // user class's — and through a handler's `const std::exception &` bound to a
 // thrown object. A call by the static type's symbol ran exception::what for
-// every exception. g++ 13 and clang++ 18 print the .expect.
+// every exception. g++ 13 and clang++ 18 print the .expect; against libc++
+// (Apple clang 16, macOS) the library's what() strings carry no "std::"
+// prefix — the .libcxx_expect.
 #include <cstdio>
 #include <new>
 #include <stdexcept>

@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### testlibvirtualcall has a libc++ expect twin
+
+- `tests/testlibvirtualcall.libcxx_expect` holds the output for the libc++ domain. Against libc++ the library's `what()` strings carry no `std::` prefix (for example `bad_array_new_length`), so the libstdc++ `.expect` does not match there.
+- The test's header comment names the twin. The runner selects `.libcxx_expect` when `MADC_SKIP_EXT` includes `libcxx`.
+
 ### The fault reporter covers SIGTRAP
 
 - A trap that raises SIGTRAP (AArch64 `brk`, including the arm64e libunwind pointer-authentication trap) now prints the "madc: caught" report. Before, the process died silently. The exit status is unchanged: the handler re-raises with the default action.

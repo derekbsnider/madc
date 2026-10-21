@@ -1,0 +1,9 @@
+direct bad_array_new_length
+via bad_alloc& bad_array_new_length
+via exception& bad_array_new_length
+via bad_alloc* bad_array_new_length
+runtime_error via probe boom
+user override via probe MyErr::what
+user override via exception* MyErr::what
+caught library thrown
+caught user MyErr::what
