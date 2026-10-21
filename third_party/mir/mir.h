@@ -175,6 +175,10 @@ typedef enum {
   /* 1 operand insn: */
   INSN_EL (ALLOCA),             /* 2 operands: result address and size  */
   REP2 (INSN_EL, BSTART, BEND), /* block start: result addr; block end: addr from block start */
+  /* The function's own frame address and return address, as the target's ABI
+     defines them (__builtin_frame_address (0), __builtin_return_address (0)):
+     the result operand only. */
+  REP2 (INSN_EL, FRAME_ADDR, RET_ADDR),
   /* Special insns: */
   INSN_EL (VA_ARG),       /* result is arg address, operands: va_list addr and memory */
   INSN_EL (VA_BLOCK_ARG), /* result is arg address, operands: va_list addr, integer (size), and
@@ -428,6 +432,7 @@ typedef struct MIR_func {
   char expr_p;                    /* flag of that the func can be used as a linker expression */
   char jret_p;                    /* flag of jcall/jret func, set up after MIR_func_finish */
   char noinline_p;                /* flag of a func never inlined: MIR_set_func_noinline */
+  char frame_query_p;             /* flag of a func with MIR_FRAME_ADDR or MIR_RET_ADDR */
   VARR (MIR_var_t) * vars;        /* args and locals but temps */
   VARR (MIR_var_t) * global_vars; /* can be NULL */
   void *machine_code;             /* address of generated machine code or NULL */

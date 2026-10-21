@@ -297,7 +297,6 @@ const Entry signatures[] = {
 	{ "__madc_builtin_object_size", LibcRet::ULong },
 	{ "__madc_builtin_uabs", LibcRet::UInt32 },
 	{ "__madc_builtin_umaxabs", LibcRet::UInt64 },
-	{ "__madc_builtin_frame_address", LibcRet::VoidPtr },
 	{ "__madc_builtin_longjmp", LibcRet::Void },
 	{ "__madc_builtin_longjmp_val", LibcRet::Void },
 	{ "__madc_builtin_strcpy_chk", LibcRet::CharPtr },

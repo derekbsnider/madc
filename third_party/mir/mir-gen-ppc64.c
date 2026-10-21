@@ -845,6 +845,8 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       && saved_iregs_num == 0 && saved_fregs_num == 0 && stack_slots_num == 0) {
     /* no frame: r1 stays at the CFA */
     gen_unwind_frame (gen_ctx, 0, PPC64_STACK_HEADER_SIZE + param_save_area_size);
+    /* the frame address is r1 (the back chain word), the return address still in lr */
+    gen_lower_frame_queries (gen_ctx, R1_HARD_REG, 0, LR_HARD_REG, 0, TRUE);
     return;
   }
   saved_iregs_num++; /* for fp (R31) ??? only alloca_p */
@@ -898,6 +900,10 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
      header and the parameter save area it keeps at the new r1 (ALLOCA_END). */
   gen_unwind_frame (gen_ctx, -(int64_t) frame_size,
                     PPC64_STACK_HEADER_SIZE + param_save_area_size);
+  /* The frame address is r1 after the prologue, r31 (the back chain word); the
+     return address the lr saved in the caller's frame, at the CFA + 16: */
+  gen_lower_frame_queries (gen_ctx, R31_HARD_REG, 0, R31_HARD_REG, (int64_t) frame_size + 16,
+                           FALSE);
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))

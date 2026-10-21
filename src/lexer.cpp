@@ -4538,14 +4538,6 @@ void Program::_tokenizer_init()
 	m.body = "((__cond) ? (__true_expr) : (__false_expr))";
 	macro_map["__builtin_choose_expr"] = m;
     }
-    // __builtin_return_address(level) — unsupported, but many GCC
-    // torture tests only need a stable sentinel value.
-    {
-	MacroDef m;
-	m.params = {"__level"};
-	m.body = "0";
-	macro_map["__builtin_return_address"] = m;
-    }
     // __builtin_unreachable() — map to abort()
     define_map["__builtin_unreachable"] = "abort";
     // __builtin_signbit(x) — check sign bit with 1/x trick.
@@ -4737,7 +4729,6 @@ void Program::_tokenizer_init()
     define_map["__builtin___memmove_chk"] = "__madc_builtin_memmove_chk";
     define_map["__builtin___mempcpy_chk"] = "__madc_builtin_mempcpy_chk";
     define_map["__builtin___memset_chk"] = "__madc_builtin_memset_chk";
-    define_map["__builtin_frame_address"] = "__madc_builtin_frame_address";
     define_map["__builtin_setjmp"] = "__madc_builtin_setjmp";
     define_map["__builtin_longjmp"] = "__madc_builtin_longjmp_val";
     define_map["__builtin_uabs"] = "__madc_builtin_uabs";

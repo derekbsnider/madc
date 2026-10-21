@@ -932,6 +932,8 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   alloca_bias = S390X_STACK_HEADER_SIZE + param_save_area_size + blk_ld_value_save_area_size;
   if (leaf_p && !stack_param_p && !alloca_p && saved_regs_p == 0 && stack_slots_num == 0) {
     gen_unwind_frame (gen_ctx, -S390X_STACK_HEADER_SIZE, alloca_bias); /* no frame */
+    /* the frame address is r15 at entry, the return address still in r14 */
+    gen_lower_frame_queries (gen_ctx, R15_HARD_REG, 0, R14_HARD_REG, 0, TRUE);
     return;
   }
   r0_reg_op = _MIR_new_var_op (ctx, R0_HARD_REG);
@@ -996,6 +998,11 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
                       sp + start_saved_fregs_offset + (n++) * 8);
     gen_unwind_frame (gen_ctx, sp, alloca_bias);
   }
+  /* The frame address is r15 at entry, r11 + frame_size; the return address
+     the r14 saved in the caller's register save area: */
+  gen_lower_frame_queries (gen_ctx, R11_HARD_REG, (int64_t) frame_size, R11_HARD_REG,
+                           (int64_t) frame_size + S390X_GP_REG_RSAVE_AREA_START + (14 - 2) * 8,
+                           FALSE);
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))

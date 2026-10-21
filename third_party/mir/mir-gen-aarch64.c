@@ -1204,6 +1204,9 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   if (leaf_p && !alloca_p && saved_iregs_num == 0 && saved_fregs_num == 0 && !func->vararg_p
       && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0) {
     gen_unwind_frame (gen_ctx, 0, 0); /* no frame: SP stays at the CFA */
+    /* the frame address where a frame record would sit (gcc builds one at
+       CFA - 16), the return address still in lr */
+    gen_lower_frame_queries (gen_ctx, SP_HARD_REG, -16, LINK_HARD_REG, 0, TRUE);
     return;
   }
   sp_reg_op = _MIR_new_var_op (ctx, SP_HARD_REG);
@@ -1333,6 +1336,9 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   /* For a stack walk (MIR_unwind_info_t): after the prologue sp = CFA -
      frame_size - the small aggregate save area; an ALLOCA's result is the new sp. */
   gen_unwind_frame (gen_ctx, -(int64_t) (frame_size + small_aggregate_save_area), 0);
+  /* The frame address is fp, the frame record {caller's fp, lr} AAPCS64 chains;
+     the return address its lr: */
+  gen_lower_frame_queries (gen_ctx, FP_HARD_REG, 0, FP_HARD_REG, 8, FALSE);
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))

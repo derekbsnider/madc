@@ -1,0 +1,1 @@
+PE images and COFF objects carry no .pdata/.xdata until B205 step 6.3's PE/COFF slice; _Unwind_Backtrace cannot walk the generated frames there, so the caller-IP line needs the JIT (RtlAddFunctionTable).

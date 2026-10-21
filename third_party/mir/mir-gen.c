@@ -127,6 +127,8 @@ static void create_new_bb_insns (gen_ctx_t gen_ctx, MIR_insn_t before, MIR_insn_
 static void gen_delete_insn (gen_ctx_t gen_ctx, MIR_insn_t insn);
 static void gen_add_insn_before (gen_ctx_t gen_ctx, MIR_insn_t before, MIR_insn_t insn);
 static void gen_add_insn_after (gen_ctx_t gen_ctx, MIR_insn_t after, MIR_insn_t insn);
+static void gen_lower_frame_queries (gen_ctx_t gen_ctx, MIR_reg_t fa_base, int64_t fa_disp,
+                                     MIR_reg_t ra_base, int64_t ra_disp, int ra_reg_p);
 static void setup_call_hard_reg_args (gen_ctx_t gen_ctx, MIR_insn_t call_insn, MIR_reg_t hard_reg);
 static uint64_t get_ref_value (gen_ctx_t gen_ctx, const MIR_op_t *ref_op);
 static void gen_setup_lrefs (gen_ctx_t gen_ctx, uint8_t *func_code);
@@ -792,6 +794,59 @@ static void gen_index_patterns (gen_ctx_t gen_ctx, const MIR_insn_code_t *first_
 #else
 #error "undefined or unsupported generation target"
 #endif
+
+/* Each target's prologue, its frame known (frameless or not): the function's
+   MIR_FRAME_ADDR insns become FA_BASE + FA_DISP, the frame address its ABI
+   defines, and its MIR_RET_ADDR insns the return address -- a load from
+   RA_DISP (RA_BASE), or with RA_REG_P the register RA_BASE itself (a frameless
+   leaf's link register).  Their results are hard registers: the RA reloads an
+   operand of an insn the target has no pattern for, never leaves it memory. */
+static void gen_lower_frame_queries (gen_ctx_t gen_ctx, MIR_reg_t fa_base, int64_t fa_disp,
+                                     MIR_reg_t ra_base, int64_t ra_disp, int ra_reg_p) {
+  MIR_context_t ctx = gen_ctx->ctx;
+  MIR_insn_t insn, next_insn, new_insn;
+
+  if (!curr_func_item->u.func->frame_query_p) return;
+  for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
+       insn = next_insn) {
+    int fa_p = insn->code == MIR_FRAME_ADDR;
+    MIR_op_t dst = insn->ops[0];
+
+    next_insn = DLIST_NEXT (MIR_insn_t, insn);
+    if (!fa_p && insn->code != MIR_RET_ADDR) continue;
+    gen_assert (dst.mode == MIR_OP_VAR && dst.u.var <= MAX_HARD_REG);
+    MIR_reg_t base = fa_p ? fa_base : ra_base;
+    int64_t disp = fa_p ? fa_disp : ra_disp;
+
+    if (!fa_p && ra_reg_p) {
+      gen_mov (gen_ctx, insn, MIR_MOV, dst, _MIR_new_var_op (ctx, base));
+      gen_delete_insn (gen_ctx, insn);
+      continue;
+    }
+    if (!fa_p) { /* dst = mem[base + disp], when the target holds the displacement */
+      new_insn = MIR_new_insn (ctx, MIR_MOV, dst,
+                               _MIR_new_var_mem_op (ctx, MIR_T_I64, disp, base, MIR_NON_VAR, 1));
+      if (target_insn_ok_p (gen_ctx, new_insn)) {
+        gen_add_insn_before (gen_ctx, insn, new_insn);
+        gen_delete_insn (gen_ctx, insn);
+        continue;
+      }
+      _MIR_free_insn (ctx, new_insn);
+    }
+    /* dst = base + disp (through dst when the add cannot hold it) [; dst = mem[dst]] */
+    new_insn = MIR_new_insn (ctx, MIR_ADD, dst, _MIR_new_var_op (ctx, base),
+                             MIR_new_int_op (ctx, disp));
+    if (!target_insn_ok_p (gen_ctx, new_insn)) {
+      gen_mov (gen_ctx, insn, MIR_MOV, dst, new_insn->ops[2]);
+      new_insn->ops[2] = dst;
+    }
+    gen_add_insn_before (gen_ctx, insn, new_insn);
+    if (!fa_p)
+      gen_mov (gen_ctx, insn, MIR_MOV, dst,
+               _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, dst.u.var, MIR_NON_VAR, 1));
+    gen_delete_insn (gen_ctx, insn);
+  }
+}
 
 #ifndef TARGET_HAS_OBJECT_CAPTURE
 /* (A capture returns the function's .text offset.)
@@ -4378,7 +4433,8 @@ static int fixed_place_insn_p (MIR_insn_t insn) {
           || insn->code == MIR_LABEL || MIR_call_code_p (insn->code) || insn->code == MIR_ALLOCA
           || insn->code == MIR_BSTART || insn->code == MIR_BEND || insn->code == MIR_VA_START
           || insn->code == MIR_VA_ARG || insn->code == MIR_VA_BLOCK_ARG
-          || insn->code == MIR_VA_END);
+          || insn->code == MIR_VA_END || insn->code == MIR_FRAME_ADDR
+          || insn->code == MIR_RET_ADDR);
 }
 
 static int gvn_insn_p (MIR_insn_t insn) { return !fixed_place_insn_p (insn); }

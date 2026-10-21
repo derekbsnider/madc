@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### `__builtin_frame_address` and `__builtin_return_address` return the function's own frame and return address
+
+- `__builtin_return_address(0)` yields the address the function returns to, and `__builtin_frame_address(0)` yields an address inside the function's own frame, on every target. Before, the lexer turned `__builtin_return_address` into `0`, and `__builtin_frame_address` became a host helper's own frame address.
+- Both are c2mir builtins that lower to the MIR insns `MIR_FRAME_ADDR` and `MIR_RET_ADDR` (`third_party/mir/mir.h`). Each target fills them from its ABI in `gen_lower_frame_queries` (`third_party/mir/mir-gen.c`): x86-64 SysV uses `rbp` and `[CFA-8]`, x86-64 Windows the establisher frame, aarch64 `x29`/`x30` (LR in a frameless leaf), ppc64 `r1`/LR, riscv64 `s0`/`ra`, s390x `r15`/`r14`. A function using either insn is never inlined.
+- A nonzero level yields a null pointer. The argument must be an unsigned integer constant.
+- `tests/testbuiltin_frame_return_address.mad` (`--std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testbuiltin_frame_return_address.expect`: six lines of `1`. The win64 native `.exe` pass is skipped (`tests/testbuiltin_frame_return_address.win64_exe_skip`): PE output carries no `.pdata`/`.xdata` yet, so the unwinder cannot walk the frames.
+- `gcc.c-torture/execute/frame-address.c` passes and is removed from `docs/parity/torture-skip-manifest.txt`.
+
 ### Windows module DLLs export their namespace symbols again
 
 - `git.dll` and `markdown.dll` export the `git::` and `markdown::` publics madc resolves by mangled name (`_ZN3git...`, `_ZN8markdown...`). Before, each DLL exported only its entry point `madc_module_<name>`, so an `import git;` or `import markdown;` under Windows failed with `is not exported by ... GetProcAddress ... (error 127)`.

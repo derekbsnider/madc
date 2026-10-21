@@ -1,0 +1,86 @@
+/* __builtin_return_address (0) is the address the function returns to -- the
+ * IP the unwinder reports for its caller's frame -- and
+ * __builtin_frame_address (0) lies in the function's own frame: above a
+ * callee's local and below its caller's, the same everywhere in the
+ * function, below its caller's frame address.  A leaf without a frame gets
+ * both too.  A nonzero level is not printed: its value is unspecified (gcc's
+ * x86-64 walks the rbp chain, aarch64 gcc returns 0).  madc's lexer turned
+ * __builtin_return_address into 0 and __builtin_frame_address into a host
+ * helper's own frame address.
+ * Oracle: gcc 13 and clang 18 at -O0 and -O2 (Linux x86-64) and
+ * x86_64-w64-mingw32 gcc 13 -O2 under wine: the lines below. */
+#include <stdint.h>
+#include <stdio.h>
+
+struct _Unwind_Context;
+typedef int (*trace_fn) (struct _Unwind_Context *, void *);
+extern int _Unwind_Backtrace (trace_fn, void *);
+extern uintptr_t _Unwind_GetIP (struct _Unwind_Context *);
+
+/* the IP of the frame WANT walks up: frame 1 is frame_ip itself */
+struct up { int n, want; uintptr_t ip; };
+static int up_trace (struct _Unwind_Context *ctx, void *arg) {
+	struct up *u = arg;
+	if (++u->n < u->want) return 0;
+	u->ip = _Unwind_GetIP (ctx);
+	return 5; /* _URC_END_OF_STACK: stop */
+}
+static uintptr_t frame_ip (int want) {
+	struct up u = {0, want, 0};
+	_Unwind_Backtrace (up_trace, &u);
+	return u.ip;
+}
+static uintptr_t (*volatile frame_ip_p) (int) = frame_ip;
+
+static char *callee_local;
+static void callee (void) {
+	char here = 0;
+	callee_local = &here;
+}
+static void (*volatile callee_p) (void) = callee;
+
+/* leaves: no frame of their own where the ABI allows it */
+static void *leaf_ra (void) { return __builtin_return_address (0); }
+static void *(*volatile leaf_ra_p) (void) = leaf_ra;
+static void *leaf_fa (void) { return __builtin_frame_address (0); }
+static void *(*volatile leaf_fa_p) (void) = leaf_fa;
+/* one call site, whatever unrolls a loop around it; not a tail call */
+static volatile int after;
+static void *one_site (void) {
+	void *r = leaf_ra_p ();
+	after++;
+	return r;
+}
+static void *(*volatile one_site_p) (void) = one_site;
+
+static void *ra, *fa_first, *fa_last, *fa_leaf, *same_site[2], *other_site;
+static uintptr_t caller_ip;
+
+static int f (char *caller_local) {
+	fa_first = __builtin_frame_address (0);
+	ra = __builtin_return_address (0);
+	callee_p ();
+	caller_ip = frame_ip_p (3); /* frame_ip, f, f's caller */
+	fa_leaf = leaf_fa_p ();
+	same_site[0] = one_site_p ();
+	same_site[1] = one_site_p ();
+	other_site = leaf_ra_p ();
+	fa_last = __builtin_frame_address (0);
+	return callee_local < (char *) fa_first && (char *) fa_first < caller_local;
+}
+static int (*volatile f_p) (char *) = f;
+
+int main (void) {
+	char here = 0;
+	int within = f_p (&here);
+	void *main_fa = __builtin_frame_address (0);
+
+	printf ("return address is the caller's IP: %d\n", ra != NULL && (uintptr_t) ra == caller_ip);
+	printf ("frame address within the frame: %d\n", within);
+	printf ("frame address stable: %d\n", fa_first == fa_last);
+	printf ("below the caller's frame address: %d\n", (char *) fa_first < (char *) main_fa);
+	printf ("leaf frame address below: %d\n", fa_leaf != NULL && (char *) fa_leaf < (char *) fa_first);
+	printf ("leaf return address per call site: %d\n",
+		same_site[0] != NULL && same_site[0] == same_site[1] && same_site[0] != other_site);
+	return 0;
+}

@@ -3770,6 +3770,8 @@ static macro_call_t try_param_macro_call (c2m_ctx_t c2m_ctx, macro_t m, token_t 
 #define JRET "__builtin_jret"
 #define PROP_SET "__builtin_prop_set"
 #define CLEANUP_ARM "__builtin_cleanup_arm"
+#define FRAME_ADDRESS "__builtin_frame_address"
+#define RETURN_ADDRESS "__builtin_return_address"
 #define PROP_EQ "__builtin_prop_eq"
 #define PROP_NE "__builtin_prop_ne"
 
@@ -3916,7 +3918,9 @@ static void processing (c2m_ctx_t c2m_ctx, int ignore_directive_p) {
                        || strcmp (t->repr, SHUFFLE_VECTOR) == 0
                        || strcmp (t->repr, JCALL) == 0 || strcmp (t->repr, JRET) == 0
                        || strcmp (t->repr, PROP_SET) == 0 || strcmp (t->repr, PROP_EQ) == 0
-                       || strcmp (t->repr, PROP_NE) == 0 || strcmp (t->repr, CLEANUP_ARM) == 0);
+                       || strcmp (t->repr, PROP_NE) == 0 || strcmp (t->repr, CLEANUP_ARM) == 0
+                       || strcmp (t->repr, FRAME_ADDRESS) == 0
+                       || strcmp (t->repr, RETURN_ADDRESS) == 0);
             }
           }
           m->ignore_p = TRUE;
@@ -11516,6 +11520,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     int convertvector_p = FALSE, shuffle_p = FALSE, shufflevector_p = FALSE;
     int jcall_p = FALSE, jret_p = FALSE, prop_set_p = FALSE, prop_eq_p = FALSE, prop_ne_p = FALSE;
     int vectorelements_p = FALSE, cleanup_arm_p = FALSE;
+    int frame_address_p = FALSE, return_address_p = FALSE;
     mir_size_t vectorelements_count = 0;
 
     op1 = NL_HEAD (r->u.ops);
@@ -11539,6 +11544,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       prop_eq_p = strcmp (op1->u.s.s, PROP_EQ) == 0;
       prop_ne_p = strcmp (op1->u.s.s, PROP_NE) == 0;
       cleanup_arm_p = strcmp (op1->u.s.s, CLEANUP_ARM) == 0;
+      frame_address_p = strcmp (op1->u.s.s, FRAME_ADDRESS) == 0;
+      return_address_p = strcmp (op1->u.s.s, RETURN_ADDRESS) == 0;
     }
     if (op1->code == N_ID && find_def (c2m_ctx, S_REGULAR, op1, curr_scope, NULL) == NULL) {
       va_arg_p = str_eq_p (op1->u.s.s, BUILTIN_VA_ARG);
@@ -11569,7 +11576,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                      || mul_overflow_p || expect_p || abort_p || memcmp_p || copysignf_p || nan_p
                      || convertvector_p || shuffle_p || shufflevector_p || vectorelements_p
                      || jcall_p || jret_p || prop_set_p || prop_eq_p || prop_ne_p
-                     || cleanup_arm_p;
+                     || cleanup_arm_p || frame_address_p || return_address_p;
     if (!builtin_call_p || jcall_p) VARR_PUSH (node_t, call_nodes, r);
     arg_list = NL_NEXT (op1);
     if (builtin_call_p) {
@@ -11578,7 +11585,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       for (arg = NL_HEAD (arg_list->u.ops); arg != NULL; arg = NL_NEXT (arg))
         check (c2m_ctx, arg, r);
       init_type (&res_type);
-      if (alloca_p) {
+      if (alloca_p || frame_address_p || return_address_p) {
         res_type.mode = TM_PTR;
         res_type.u.ptr_type = &VOID_TYPE;
       } else {
@@ -11612,7 +11619,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
               || (va_arg_p && NL_LENGTH (arg_list->u.ops) != 2)
               || (prop_set_p && NL_LENGTH (arg_list->u.ops) != 2)
               || ((prop_eq_p || prop_ne_p) && NL_LENGTH (arg_list->u.ops) != 2)
-              || (cleanup_arm_p && NL_LENGTH (arg_list->u.ops) != 1))) {
+              || (cleanup_arm_p && NL_LENGTH (arg_list->u.ops) != 1)
+              || ((frame_address_p || return_address_p) && NL_LENGTH (arg_list->u.ops) != 1))) {
         error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", op1->u.s.s);
       } else {
         /* first argument type ??? */
@@ -11813,6 +11821,13 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
             error (c2m_ctx, POS (arg),
                    "property value in 2nd arg of %s call should be an integer constant",
                    op1->u.s.s);
+        } else if (frame_address_p || return_address_p) {
+          arg = NL_HEAD (arg_list->u.ops);
+          e2 = arg->attr;
+          /* the level: an unsigned integer constant (gcc: "invalid argument") */
+          if (!e2->const_p || !integer_type_p (e2->type)
+              || (signed_integer_type_p (e2->type) && e2->c.i_val < 0))
+            error (c2m_ctx, POS (arg), "invalid argument to %s", op1->u.s.s);
         } else if (cleanup_arm_p) {
           decl_t armed = cleanup_arm_decl (c2m_ctx, NL_HEAD (arg_list->u.ops));
 
@@ -12114,7 +12129,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         || strcmp (id->u.s.s, BUILTIN_MEMCMP) == 0
         || strcmp (id->u.s.s, BUILTIN_COPYSIGNF) == 0
         || strcmp (id->u.s.s, BUILTIN_NAN) == 0 || strcmp (id->u.s.s, JCALL) == 0
-        || strcmp (id->u.s.s, JRET) == 0) {
+        || strcmp (id->u.s.s, JRET) == 0 || strcmp (id->u.s.s, FRAME_ADDRESS) == 0
+        || strcmp (id->u.s.s, RETURN_ADDRESS) == 0) {
       error (c2m_ctx, POS (id), "%s is a builtin function", id->u.s.s);
       break;
     }
@@ -19766,6 +19782,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     int prop_eq_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_EQ) == 0;
     int prop_ne_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_NE) == 0;
     int cleanup_arm_p = call_expr->builtin_call_p && strcmp (func->u.s.s, CLEANUP_ARM) == 0;
+    int frame_address_p = call_expr->builtin_call_p && strcmp (func->u.s.s, FRAME_ADDRESS) == 0;
+    int return_address_p = call_expr->builtin_call_p && strcmp (func->u.s.s, RETURN_ADDRESS) == 0;
     int builtin_call_p = alloca_p || va_arg_p || va_start_p, inline_p = FALSE;
     node_t block = NL_EL (curr_func_def->u.ops, 3);
     struct node_scope *ns = block->attr;
@@ -19795,6 +19813,17 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     }
     if (nan_p) {
       res = gen_builtin_nan (c2m_ctx, args);
+      break;
+    }
+    if (frame_address_p || return_address_p) {
+      /* level 0: this function's own (MIR_FRAME_ADDR / MIR_RET_ADDR); a nonzero
+         level: the null pointer -- the GCC manual's unspecified value, aarch64
+         gcc's answer for every nonzero return-address level */
+      res = get_new_temp (c2m_ctx, MIR_T_I64);
+      if (((struct expr *) NL_HEAD (args->u.ops)->attr)->c.u_val == 0)
+        emit1 (c2m_ctx, frame_address_p ? MIR_FRAME_ADDR : MIR_RET_ADDR, res.mir_op);
+      else
+        emit2 (c2m_ctx, MIR_MOV, res.mir_op, MIR_new_int_op (ctx, 0));
       break;
     }
     if (convertvector_p) {

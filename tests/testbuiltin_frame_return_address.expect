@@ -1,0 +1,6 @@
+return address is the caller's IP: 1
+frame address within the frame: 1
+frame address stable: 1
+below the caller's frame address: 1
+leaf frame address below: 1
+leaf return address per call site: 1

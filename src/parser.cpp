@@ -26375,14 +26375,12 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("putf",	 datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
     builtin_registry.add_core_function("putchar", datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
-    builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{ptr_of(ddCHAR), DataType::dtINT}, (fVOIDFUNC)NULL);
-    // The lexer rewrites `__builtin_frame_address` -> `__madc_builtin_frame_address`
-    // (the real va_helpers symbol, returning void*) via define_map, so the parser
-    // only ever sees the renamed name. Register THAT name too with its real void*
-    // return; otherwise the call is an unknown function defaulting to a `long`
-    // return, and the emitted `extern long __madc_builtin_frame_address()` assigns
-    // a long to a pointer ("using integer without cast for pointer type parameter").
-    builtin_registry.add_core_function("__madc_builtin_frame_address", datatype_vec_t{ptr_of(ddVOID), DataType::dtINT}, (fVOIDFUNC)NULL);
+    // __builtin_frame_address / __builtin_return_address (unsigned level):
+    // c2mir builtins (MIR_FRAME_ADDR / MIR_RET_ADDR, each target's ABI value),
+    // no real symbol -- registered with a NULL pointer like __builtin_va_start
+    // so the call parses and reaches c2mir as N_CALL.
+    builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{ptr_of(ddVOID), DataType::dtUINT32}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__builtin_return_address", datatype_vec_t{ptr_of(ddVOID), DataType::dtUINT32}, (fVOIDFUNC)NULL);
     // The GCC __atomic_* family (include/atomic_builtins.h): gcc/clang-inlined,
     // no real symbols. ZERO declared params (variadic convention) so each
     // operand reaches the CIR call with its own type; an object-yielding call

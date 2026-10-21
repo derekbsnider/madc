@@ -396,6 +396,8 @@ static const struct insn_desc insn_descs[] = {
   {MIR_ALLOCA, "alloca", {MIR_OP_INT | OUT_FLAG, MIR_OP_INT, MIR_OP_BOUND}},
   {MIR_BSTART, "bstart", {MIR_OP_INT | OUT_FLAG, MIR_OP_BOUND}},
   {MIR_BEND, "bend", {MIR_OP_INT, MIR_OP_BOUND}},
+  {MIR_FRAME_ADDR, "frame_addr", {MIR_OP_INT | OUT_FLAG, MIR_OP_BOUND}},
+  {MIR_RET_ADDR, "ret_addr", {MIR_OP_INT | OUT_FLAG, MIR_OP_BOUND}},
   {MIR_VA_ARG, "va_arg", {MIR_OP_INT | OUT_FLAG, MIR_OP_INT, MIR_OP_UNDEF, MIR_OP_BOUND}},
   {MIR_VA_BLOCK_ARG,
    "va_block_arg",
@@ -1671,7 +1673,7 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->nargs = (uint32_t) nargs;
   func->last_temp_num = 0;
   func->vararg_p = vararg_p != 0;
-  func->expr_p = func->jret_p = func->noinline_p = FALSE;
+  func->expr_p = func->jret_p = func->noinline_p = func->frame_query_p = FALSE;
   func->n_inlines = 0;
   func->machine_code = func->call_addr = NULL;
   func->code_len = 0;
@@ -1852,6 +1854,9 @@ void MIR_finish_func (MIR_context_t ctx) {
     code = insn->code;
     if (code == MIR_RET) ret_p = TRUE;
     if (code == MIR_JRET) jret_p = TRUE;
+    /* its own frame and return address: an inlined body would name the caller's */
+    if (code == MIR_FRAME_ADDR || code == MIR_RET_ADDR)
+      curr_func->noinline_p = curr_func->frame_query_p = TRUE;
     if (code == MIR_PHI || code == MIR_USE) {
       curr_func = NULL;
       MIR_get_error_func (ctx) (MIR_vararg_func_error, "use or phi can be used only internally");

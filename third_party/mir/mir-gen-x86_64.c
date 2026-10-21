@@ -941,9 +941,12 @@ DEF_VARR (label_ref_t);
 
 #define MOVDQA_CODE 0
 #ifdef _WIN32
+#define WIN64_ABI_P 1 /* the Windows x64 ABI, as a value */
 #define PUSH_CODE 1  /* push bp: the Windows prologue (target_make_prolog_epilog) */
 #define POP_CODE 2   /* pop bp: its epilogue */
 #define PROBE_CODE 3 /* the prologue's stack probe (win64_probe_frame) */
+#else
+#define WIN64_ABI_P 0
 #endif
 
 struct call_ref {
@@ -1744,6 +1747,9 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   if (leaf_p && !alloca_p && !block_arg_func_p && saved_hard_regs_size == 0 && !func->vararg_p
       && stack_slots_num == 0) {
     gen_unwind_frame (gen_ctx, -8, 0); /* no frame: SP stays at the return address */
+    /* the frame address its ABI names (SysV: bp as a push would set it;
+       Windows: the establisher frame) and the return address, at SP */
+    gen_lower_frame_queries (gen_ctx, SP_HARD_REG, WIN64_ABI_P ? 0 : -8, SP_HARD_REG, 0, FALSE);
     return;
   }
   service_area_size = func->vararg_p ? reg_save_area_size : 0;
@@ -1766,13 +1772,15 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
 #else
   const int win64_frame_p = FALSE;
 #endif
-  int64_t win64_fp_delta = 0; /* how far bp sits below the frame's top */
+  int64_t win64_fp_delta = 0;  /* how far bp sits below the frame's top */
+  int64_t win64_fp_offset = 0; /* how far above the establisher frame (FO) */
 #ifdef _WIN32
   if (win64_frame_p) {
     const int64_t win64_frame_size /* below the pushed bp */
       = (int64_t) (block_size + service_area_size) - 8;
     const int64_t fp_offset = win64_frame_size < 240 ? win64_frame_size : 240;
     win64_fp_delta = win64_frame_size - fp_offset;
+    win64_fp_offset = fp_offset;
     win64_rebase_fp (gen_ctx, win64_fp_delta);
     fp_reg_op = _MIR_new_var_op (ctx, FP_HARD_REG);
     if (func->vararg_p) /* filling the home area, above the return address */
@@ -1915,6 +1923,18 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       offset += 8;
     }
   gen_cfi_mark_at (gen_ctx, body_mark, DLIST_PREV (MIR_insn_t, anchor));
+  /* The frame address its ABI names -- SysV: bp, CFA - 16; Windows: the
+     establisher frame, bp - FO or an SP frame's SP -- and the return address
+     at CFA - 8 (an SP frame's CFA is SP + block_size + service_area_size + 8): */
+  if (win64_frame_p)
+    gen_lower_frame_queries (gen_ctx, FP_HARD_REG, -win64_fp_offset, FP_HARD_REG,
+                             win64_fp_delta + 8, FALSE);
+  else if (keep_fp_p)
+    gen_lower_frame_queries (gen_ctx, FP_HARD_REG, 0, FP_HARD_REG, 8, FALSE);
+  else
+    gen_lower_frame_queries (gen_ctx, SP_HARD_REG,
+                             WIN64_ABI_P ? 0 : (int64_t) (block_size + service_area_size) - 8,
+                             SP_HARD_REG, (int64_t) (block_size + service_area_size), FALSE);
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))
