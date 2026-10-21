@@ -159,7 +159,8 @@ enum : uint32_t
 	// events; the condition count, then CIR_COND_WORDS words per condition
 	// (cir_forest_cond_field); v69: the inclusion count, then per inclusion
 	// its end (CIR_INCL_WORDS words: events, edges, conditions); then the
-	// consult word count and the #if / #elif consults (CIR_CONSULT_WORDS each).
+	// consult word count and the #if / #elif consults (CIR_CONSULT_WORDS each);
+	// v71: the expansion point count, then CIR_POINT_WORDS words per point.
 	SNAP_KIND_CIR_UNIT_CONDS       = madc::dis::SNAP_KIND_CONSUMER + 32,
 	// B1 (docs/plans/2026-10-20-front-end-speed-plan.md): every name a
 	// frozen unit spells, with its units (ForestDeclNames layout).
@@ -194,6 +195,15 @@ enum : uint32_t { CIR_INCL_WORDS = 3 };
 // v69: one macro an #if / #elif consulted: its name (pool id) and the freeze's
 // state hash (forest_macro_state_hash, low then high 32 bits).
 enum : uint32_t { CIR_CONSULT_WORDS = 3 };
+// v71 (K2c): one expansion point of a macro a captured arm writes — where the
+// freeze expanded it (Program::PackExpansionPoint) and the state it held.
+enum cir_forest_point_field : uint32_t {
+	CIR_POINT_NAME = 0,	// pool id: the macro
+	CIR_POINT_INCLUSION,	// the unit inclusion it expanded in
+	CIR_POINT_EV, CIR_POINT_ED, CIR_POINT_REC,	// the unit's events, edges, records ahead of it
+	CIR_POINT_STATE,	// pool id: its state there (forest_macro_state_spelling)
+	CIR_POINT_WORDS
+};
 enum : uint32_t {
 	CIR_COND_F_OUTCOME    = 1u,	// the arm was taken at freeze
 	CIR_COND_F_SINGLE_ARM = 2u	// the group's #endif ended it (no #elif / #else)
@@ -724,7 +734,12 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // branch dependencies (slot +8, the v55 PP_ARM and v67 ARM_REPLAYS tuples
 // with them), the container-global branch macro names (seg 6), and a
 // condition record's token positions and arm-purity flag (dump-only).
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 70 };
+//
+// v71: the conditions slot ends with the unit's EXPANSION POINTS of every
+// macro a captured arm writes (CIR_POINT_WORDS each) — K2c's checks — and a
+// captured arm's CIR_COND_ARM_STATE is the plain state again (no v69 "?" /
+// K2b "^" marks).
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 71 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies

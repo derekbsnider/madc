@@ -6033,8 +6033,7 @@ public:
 	std::string arm;
 	uint32_t rec_end = 0;		// v69: the unit's record count at the arm's end
 	std::string arm_state;		// v69: the arm's written macros as the freeze held them (forest_macro_state_spelling)
-	uint64_t expansions_at_begin = 0;	// K2b: pack_expansion_clock at the directive
-	uint64_t expansions_at_end = 0;	// v69: pack_expansion_clock at the arm's end
+	std::vector<madc::dis::istring> arm_writes;	// v71: ... and their names (the forest keeps their expansion points)
 	// v69: an #if / #elif's consulted macros and their state hashes at the
 	// evaluation — the bind takes the frozen outcome when every one matches.
 	std::vector<std::pair<madc::dis::istring, uint64_t> > consults;
@@ -6043,13 +6042,23 @@ public:
     // pack_note_branch_consult collects while pack_if_collect is set).
     bool pack_if_collect = false;
     std::vector<madc::dis::istring> pack_if_consulted;
-    // v69: when each macro was last expanded into the token stream while
-    // freezing (pack_expansion_clock ticks per expansion) — an arm's frozen
-    // state matters only for names expanded after the arm (pack_arm_state).
-    uint64_t pack_expansion_clock = 0;
-    std::map<madc::dis::istring, uint64_t> pack_macro_expanded_at;
-    void pack_note_expansion(const madc::dis::istring &name);
-    std::string pack_arm_state(const std::vector<PackCondRecord> &recs, size_t k);
+    // v71 (K2c): an EXPANSION POINT — a macro the freeze expanded into the
+    // token stream, at its first expansion since the last point EPOCH: every
+    // include edge, recorded conditional, recorded arm's end and inclusion end
+    // starts one, so between two points of a name in a unit inclusion the
+    // bind's walk replays the same events the freeze read. Where it expanded
+    // (the unit inclusion, and the unit's events, edges and records ahead of
+    // it) and the state it held (forest_macro_state_spelling, interned). The
+    // bind checks a name a run arm left unlike the freeze's at each one; the
+    // forest keeps the points of names a captured arm writes.
+    struct PackExpansionPoint {
+	uint32_t sid, inclusion, ev, ed, rec;
+	madc::dis::istring state;
+    };
+    std::map<const char *, std::vector<PackExpansionPoint> > pack_unit_points;
+    uint32_t pack_point_epoch = 1;
+    std::unordered_map<uint32_t, uint32_t> pack_point_seen;	// spelling id -> its last point's epoch
+    void pack_note_expansion(uint32_t sid);
     std::map<const char *, std::vector<PackCondRecord> > pack_unit_conds;
     std::map<const char *, std::vector<uint32_t> > pack_unit_edge_events;	// v68: per edge, the unit's events ahead of it
     // v69: where each of a unit's inclusions ended — its event, edge and
@@ -7487,6 +7496,7 @@ public:
 	    size_t chain_size = 0;
 	    size_t restored_chain_size = 0;
 	    std::set<uint32_t> live_present;
+	    std::set<uint32_t> macro_differs;
 	    bool bind_stopped = false;
 	    std::vector<unsigned char> type_registered;
 	    std::vector<bool> global_registered, func_registered, tmpl_registered;
@@ -7524,6 +7534,10 @@ public:
 	std::vector<uint32_t> chain;		// bound units, include order (bind-order record)
 	std::set<uint32_t> chain_set;		// membership + DAG-walk prune
 	std::set<uint32_t> live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
+	// K2c: the macros (spelling ids) a walk's run arm left unlike the
+	// freeze's (its root bound, or declined and parsed live) — every later
+	// walk checks them at the expansion points.
+	std::set<uint32_t> macro_differs;
 	// K1a (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ / madc TU's
 	// system content is all-bound or all-live — a decline with nothing bound
 	// yet stops every later bind, so the TU parses live from there; K1b: so
@@ -7786,8 +7800,10 @@ public:
 			     const uint32_t *cond);	// 1 taken, 0 skipped, -1 not readable here
     bool forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems &it,
 				 const uint32_t *cond);
-    bool forest_arm_state_matches(const char *frozen, const std::vector<madc::dis::istring> &writes,
-				  ForestWalk &w, uint32_t unit, uint32_t next_record);
+    void forest_arm_note_differs(const char *frozen, const std::vector<madc::dis::istring> &writes,
+				 ForestWalk &w);
+    bool forest_walk_points(ForestWalk &w, uint32_t unit, const ForestUnitItems &it, uint32_t inc,
+			    size_t &i_p, uint32_t i_ev, uint32_t i_ed, uint32_t i_c);
     bool forest_state_holds(const std::string &entry, const madc::dis::istring &name);
     bool forest_object_states_lex_alike(const std::string &frozen, const std::string &now);
     bool run_frozen_arm(const char *unit_name, const std::string &text,

@@ -1417,6 +1417,150 @@ kw_case undo "saw=1 s=20" "-" "fbgate_kw_r.h"
 rm -rf "$kw_dir"
 echo "forest_bind_gate: [k2walk] OK — the bind re-evaluates each frozen conditional at its position: an equal outcome binds, a skipped arm runs (directives in place, declarations kept), a decline undoes the walk"
 
+# --- case: k2c (docs/plans/2026-10-18-verified-cxx-bind.md, K2c) ---
+# A run arm that leaves a macro unlike the freeze's no longer declines by
+# itself: the name joins the TU's differs-set and is checked wherever frozen
+# content expands it, in this root and every later one.
+#   restore  — k2c_own.h's `#ifndef FBG_K2C_N` arm was skipped (k2c_def.h's
+#            FBG_K2C_N 7 came first); reached through k2c_top.h the walk runs
+#            it (5), then k2c_top.h's next edge binds k2c_def.h's first
+#            inclusion, which sets 7 again before k2c_top.h's frozen token
+#            expands it (mingw wchar.h's `NULL 0LL`, then stddef.h). Binds.
+#   carry    — k2c_arm.h's arm leaves FBG_K2C_M 5 and nothing restores it:
+#            the root binds (nothing it froze expands the name); the next
+#            root, k2c_user.h, froze an expansion of 7, so it declines.
+#   declined — k2c_early.h's frozen token expands FBG_K2C_E right after its
+#            arm: the root declines and parses live (5); k2c_user2.h froze
+#            an expansion of 7 and declines too (k2c_plain.h bound first, so
+#            binding goes on after the decline).
+# g++ and clang++: top=7 / user=5 / early=5 user2=5.
+kc_dir=tmp/fbgate_k2c
+rm -rf "$kc_dir"
+mkdir -p "$kc_dir"
+cat > "$kc_dir/fbgate_k2c_def.h" <<'EOF'
+#ifndef FBGATE_K2C_DEF_H
+#define FBGATE_K2C_DEF_H
+#undef FBG_K2C_N
+#define FBG_K2C_N 7
+#define FBG_K2C_M 7
+#define FBG_K2C_E 7
+#endif
+EOF
+cat > "$kc_dir/fbgate_k2c_own.h" <<'EOF'
+#ifndef FBGATE_K2C_OWN_H
+#define FBGATE_K2C_OWN_H
+struct fbg_k2c_own { int v; };
+#ifndef FBG_K2C_N
+# define FBG_K2C_N 5
+#endif
+#endif
+EOF
+cat > "$kc_dir/fbgate_k2c_top.h" <<'EOF'
+#ifndef FBGATE_K2C_TOP_H
+#define FBGATE_K2C_TOP_H
+#include <fbgate_k2c_own.h>
+#include <fbgate_k2c_def.h>
+static const int fbg_k2c_top = FBG_K2C_N;
+#endif
+EOF
+cat > "$kc_dir/fbgate_k2c_arm.h" <<'EOF'
+#ifndef FBGATE_K2C_ARM_H
+#define FBGATE_K2C_ARM_H
+struct fbg_k2c_arm { int v; };
+#ifndef FBG_K2C_M
+# define FBG_K2C_M 5
+#endif
+#endif
+EOF
+cat > "$kc_dir/fbgate_k2c_user.h" <<'EOF'
+#ifndef FBGATE_K2C_USER_H
+#define FBGATE_K2C_USER_H
+static const int fbg_k2c_user = FBG_K2C_M;
+#endif
+EOF
+cat > "$kc_dir/fbgate_k2c_plain.h" <<'EOF'
+#ifndef FBGATE_K2C_PLAIN_H
+#define FBGATE_K2C_PLAIN_H
+struct fbg_k2c_plain { int v; };
+#endif
+EOF
+cat > "$kc_dir/fbgate_k2c_early.h" <<'EOF'
+#ifndef FBGATE_K2C_EARLY_H
+#define FBGATE_K2C_EARLY_H
+#ifndef FBG_K2C_E
+# define FBG_K2C_E 5
+#endif
+static const int fbg_k2c_early = FBG_K2C_E;
+#endif
+EOF
+cat > "$kc_dir/fbgate_k2c_user2.h" <<'EOF'
+#ifndef FBGATE_K2C_USER2_H
+#define FBGATE_K2C_USER2_H
+static const int fbg_k2c_user2 = FBG_K2C_E;
+#endif
+EOF
+cat > "$kc_dir/producer.cpp" <<'EOF'
+#include <fbgate_k2c_def.h>
+#include <fbgate_k2c_top.h>
+#include <fbgate_k2c_arm.h>
+#include <fbgate_k2c_user.h>
+#include <fbgate_k2c_plain.h>
+#include <fbgate_k2c_early.h>
+#include <fbgate_k2c_user2.h>
+int main() { return 0; }
+EOF
+cat > "$kc_dir/restore.cpp" <<'EOF'
+#include <fbgate_k2c_top.h>
+#include <stdio.h>
+int main() { printf("top=%d\n", fbg_k2c_top); return 0; }
+EOF
+cat > "$kc_dir/carry.cpp" <<'EOF'
+#include <fbgate_k2c_arm.h>
+#include <fbgate_k2c_user.h>
+#include <stdio.h>
+int main() { printf("user=%d\n", fbg_k2c_user); return 0; }
+EOF
+cat > "$kc_dir/declined.cpp" <<'EOF'
+#include <fbgate_k2c_plain.h>
+#include <fbgate_k2c_early.h>
+#include <fbgate_k2c_user2.h>
+#include <stdio.h>
+int main() { printf("early=%d user2=%d\n", fbg_k2c_early, fbg_k2c_user2); return 0; }
+EOF
+kc_snap=$kc_dir/k2c.msnap
+timeout 600 "$BIN" --std=gnu++17 --freeze="$kc_snap" -I "$kc_dir" "$kc_dir/producer.cpp" \
+    >"$kc_dir/freeze.log" 2>&1 || fail "[k2c] the --freeze FAILED: $(tail -n 3 "$kc_dir/freeze.log")"
+kc_case() {	# kc_case <name> <expected output>: run it, leave its -v trace in <name>.log
+    if command -v g++ >/dev/null 2>&1; then
+	g++ -std=gnu++17 -I "$kc_dir" -o "$kc_dir/$1.gxx" "$kc_dir/$1.cpp" 2>"$kc_dir/$1.gxx.err" \
+	    || fail "[k2c] $1: g++ compile FAILED: $(head -n 2 "$kc_dir/$1.gxx.err")"
+	[ "$("$kc_dir/$1.gxx")" = "$2" ] || fail "[k2c] $1: g++ output is not '$2' — the reducer is wrong"
+    fi
+    kc_out=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$kc_snap" -I "$kc_dir" "$kc_dir/$1.cpp" 2>&1)
+    [ "$kc_out" = "$2" ] || fail "[k2c] $1: output '$kc_out' != '$2' (g++)"
+    timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$kc_snap" -I "$kc_dir" "$kc_dir/$1.cpp" \
+	>"$kc_dir/$1.log" 2>/dev/null
+}
+kc_bound() {	# kc_bound <case> <header>
+    grep -aq "bound to grove unit.*$2" "$kc_dir/$1.log" \
+	|| fail "[k2c] $1: $2 did not bind — $(grep -a -m1 'DECLINE root' "$kc_dir/$1.log")"
+}
+kc_declined() {	# kc_declined <case> <header> <macro>
+    grep -aq "DECLINE root.*$2.*expands '$3'" "$kc_dir/$1.log" \
+	|| fail "[k2c] $1: $2 did not decline where it expands $3"
+}
+kc_case restore "top=7"
+kc_bound restore "fbgate_k2c_top\.h"
+kc_case carry "user=5"
+kc_bound carry "fbgate_k2c_arm\.h"
+kc_declined carry "fbgate_k2c_user\.h" FBG_K2C_M
+kc_case declined "early=5 user2=5"
+kc_bound declined "fbgate_k2c_plain\.h"
+kc_declined declined "fbgate_k2c_early\.h" FBG_K2C_E
+kc_declined declined "fbgate_k2c_user2\.h" FBG_K2C_E
+rm -rf "$kc_dir"
+echo "forest_bind_gate: [k2c] OK — a run arm's differing macro is checked where frozen content expands it: restored first binds, an expansion of the frozen value declines, in this root and every later one"
+
 # --- case: lexalike (docs/plans/2026-10-18-verified-cxx-bind.md, K2b) ---
 # A run arm whose write differs in SPELLING from the freeze's state but lexes
 # to the same tokens leaves the frozen content as it is. glibc's <wchar.h>

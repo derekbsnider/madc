@@ -28368,6 +28368,7 @@ static void forest_side_mark(const Program::ForestSide &s, Program::ForestBindMa
     m.chain_size = s.chain.size();
     m.restored_chain_size = s.restored_chain_size;
     m.live_present = s.live_present;
+    m.macro_differs = s.macro_differs;
     m.bind_stopped = s.bind_stopped;
     m.type_registered = s.type_registered;
     m.global_registered = s.global_registered;
@@ -28384,6 +28385,7 @@ static void forest_side_rewind(Program::ForestSide &s, const Program::ForestBind
     }
     s.restored_chain_size = m.restored_chain_size;
     s.live_present = m.live_present;
+    s.macro_differs = m.macro_differs;
     s.bind_stopped = m.bind_stopped;
     s.type_registered = m.type_registered;
     s.global_registered = m.global_registered;

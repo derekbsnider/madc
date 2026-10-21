@@ -171,7 +171,10 @@ struct MadcSharedPreludeCache
 
     // one_mutation_per_name: the cache's final-state replay needs a single
     // textual write per name; the pack freeze's arm state (skip_capturing_arm)
-    // and the bind's arm run only need the names written.
+    // and the bind's arm run only need the names written — and take a
+    // #pragma push_macro / pop_macro pair that the text closes itself (each
+    // pop restores a push of the same text, none is left behind), whose
+    // name is a write.
     static bool embedded_fragment_is_pure(
 	const madc::dis::istring &text, std::vector<madc::dis::istring> *mutations = NULL,
 	bool one_mutation_per_name = true)
@@ -182,6 +185,7 @@ struct MadcSharedPreludeCache
 	if ( text.find("_Pragma") != madc::dis::istring::npos )
 	    return false;
 	std::set<madc::dis::istring> seen_mutations;
+	std::map<madc::dis::istring, int> pushed;	// open push_macro saves per name
 	if ( mutations )
 	    mutations->clear();
 	for ( size_t pos = 0; pos < text.size(); )
@@ -201,6 +205,43 @@ struct MadcSharedPreludeCache
 		while ( p < end && (isalpha((unsigned char)text[p]) || text[p] == '_') )
 		    ++p;
 		madc::dis::istring directive = text.substr(word_at, p - word_at);
+		if ( directive == "pragma" && !one_mutation_per_name )
+		{
+		    // #pragma push_macro("NAME") / pop_macro("NAME"), nothing else.
+		    while ( p < end && (text[p] == ' ' || text[p] == '\t') )
+			++p;
+		    size_t op_at = p;
+		    while ( p < end && (isalpha((unsigned char)text[p]) || text[p] == '_') )
+			++p;
+		    const madc::dis::istring op = text.substr(op_at, p - op_at);
+		    if ( op != "push_macro" && op != "pop_macro" )
+			return false;
+		    while ( p < end && (text[p] == ' ' || text[p] == '\t') )
+			++p;
+		    if ( p == end || text[p] != '(' )
+			return false;
+		    ++p;
+		    while ( p < end && (text[p] == ' ' || text[p] == '\t') )
+			++p;
+		    if ( p == end || text[p] != '"' )
+			return false;
+		    size_t name_at = ++p;
+		    while ( p < end && text[p] != '"' )
+			++p;
+		    if ( p == end || p == name_at )
+			return false;
+		    madc::dis::istring name = text.substr(name_at, p - name_at);
+		    if ( op == "push_macro" )
+		    {
+			++pushed[name];
+			if ( seen_mutations.insert(name).second && mutations )
+			    mutations->push_back(name);
+		    }
+		    else if ( pushed[name]-- <= 0 )
+			return false;	// restores a save made outside the text
+		    pos = end < text.size() ? end + 1 : end;
+		    continue;
+		}
 		if ( directive != "define" && directive != "undef"
 		  && directive != "if" && directive != "ifdef"
 		  && directive != "ifndef" && directive != "elif"
@@ -232,6 +273,10 @@ struct MadcSharedPreludeCache
 	    }
 	    pos = end < text.size() ? end + 1 : end;
 	}
+	for ( std::map<madc::dis::istring, int>::const_iterator pi = pushed.begin();
+	      pi != pushed.end(); ++pi )
+	    if ( pi->second )
+		return false;	// leaves a save behind
 	return true;
     }
 
@@ -786,9 +831,7 @@ static std::string forest_macro_state_spelling(Program &pgm,
     return out;
 }
 
-// A forest_macro_state_spelling's entries ("\x1e"-separated), and an entry's
-// macro name (after its kind character — or the freeze's "?" / "^" marks —
-// up to the first "\x1f").
+// A forest_macro_state_spelling's entries ("\x1e"-separated).
 static std::vector<std::string> forest_state_entries(const std::string &state)
 {
     std::vector<std::string> entries;
@@ -803,16 +846,6 @@ static std::vector<std::string> forest_state_entries(const std::string &state)
 	at = end + 1;
     }
     return entries;
-}
-
-static madc::dis::istring forest_state_entry_name(const std::string &e)
-{
-    if ( e.empty() )
-	return madc::dis::istring();
-    const size_t skip = e[0] == '^' ? 2 : 1;
-    const size_t name_end = e.find('\x1f');
-    return madc::dis::istring(e, skip, name_end == std::string::npos ? std::string::npos
-								     : name_end - skip);
 }
 
 static bool find_filesystem_precompiled_header(Program &pgm,
@@ -5779,8 +5812,9 @@ static void forest_apply_event(Program &pgm, CirFrozenForest *f,
 }
 
 // One unit's frozen items: its PP events, include edges, and its conditions
-// slot (v68 / v69) read in place — each edge's place among the events, the
-// condition records, where each inclusion ends and the #if / #elif consults.
+// slot (v68 / v69 / v71) read in place — each edge's place among the events,
+// the condition records, where each inclusion ends, the #if / #elif consults
+// and the expansion points.
 struct ForestUnitItems
 {
     bool read = false;
@@ -5792,6 +5826,7 @@ struct ForestUnitItems
     size_t conds_at = 0, nconds = 0;
     size_t incl_at = 0, nincl_recorded = 0;
     size_t consults_at = 0, nconsult_words = 0;
+    size_t points_at = 0, npoints = 0;
     // An edge with no recorded place goes ahead of the events — the pre-v68
     // children-first order.
     uint32_t edge_pos(size_t e) const { return e < nedge_pos ? words[edge_pos_at + e] : 0; }
@@ -5813,6 +5848,7 @@ struct ForestUnitItems
 	return (k + 1) * CIR_CONSULT_WORDS <= nconsult_words
 	    ? &words[consults_at + k * CIR_CONSULT_WORDS] : NULL;
     }
+    const uint32_t *point(size_t k) const { return &words[points_at + k * CIR_POINT_WORDS]; }
 };
 
 // A forward cursor over a unit's PP events: the word offset of event `index`.
@@ -5855,6 +5891,7 @@ static void forest_unit_items(CirFrozenForest *f, uint32_t unit, ForestUnitItems
     section(CIR_COND_WORDS, it.conds_at, it.nconds);
     section(CIR_INCL_WORDS, it.incl_at, it.nincl_recorded);
     section(1, it.consults_at, it.nconsult_words);
+    section(CIR_POINT_WORDS, it.points_at, it.npoints);
 }
 
 // One root's walk.
@@ -5870,11 +5907,9 @@ struct ForestWalk
     std::vector<uint32_t> bound;	// post-order: the chain's (and the decl restore's) order
     std::vector<double> bound_cost;	// each bound unit's own walk seconds (--show-stats)
     std::vector<TokenBase *> arm_tokens;	// a run arm's tokens, pushed when the walk commits
-    // K2b: a run arm's write whose check the freeze deferred ("^" entry) to
-    // the unit's conditional `record` — checked after it, or at the unit's end.
-    struct Deferred { uint32_t unit, record; std::string entry; };
-    std::vector<Deferred> deferred;
-    std::set<std::pair<uint32_t, uint32_t> > ran;	// (unit, record): the arms run
+    // K2c: the macros (spelling ids) a run arm of this walk left unlike the
+    // freeze's — ForestSide::macro_differs when the walk ends.
+    std::set<uint32_t> differs;
 };
 
 // A condition text whose answer depends on WHERE it is read — the including
@@ -6004,7 +6039,12 @@ bool Program::run_frozen_arm(const char *unit_name, const std::string &text,
 			     std::vector<madc::dis::istring> &writes)
 {
     if ( !MadcSharedPreludeCache::embedded_fragment_is_pure(text, &writes, false) )
+    {
+	DBG(std::cout << "forest bind: the " << text.size() << "-byte arm holds a directive"
+	    << " the walk cannot run; it ends '"
+	    << text.substr(text.size() > 160 ? text.size() - 160 : 0) << "'" << std::endl);
 	return false;
+    }
     const bool recording = pack_recording;
     pack_recording = false;
     Source saved = std::move(source);
@@ -6033,29 +6073,49 @@ bool Program::run_frozen_arm(const char *unit_name, const std::string &text,
     return true;
 }
 
-// After a run arm: does every macro it wrote that the freeze held DEFINED, and
-// expanded into a token after the arm, hold the frozen state
-// (CIR_COND_ARM_STATE — pack_arm_state's entries, in `writes` order)? Any
-// other name carries no value into a frozen token, and a later conditional on
-// it is recorded and re-evaluated.
-bool Program::forest_arm_state_matches(const char *frozen,
-				       const std::vector<madc::dis::istring> &writes,
-				       ForestWalk &w, uint32_t unit, uint32_t next_record)
+// K2c: after a run arm, every macro it wrote that is unlike the freeze's state
+// there (CIR_COND_ARM_STATE, in `writes` order) joins the walk's differs-set:
+// the frozen content was expanded with the freeze's state, so where it expands
+// the name (forest_walk_points) the name must hold that state again.
+void Program::forest_arm_note_differs(const char *frozen,
+				      const std::vector<madc::dis::istring> &writes, ForestWalk &w)
 {
     const std::vector<std::string> want = forest_state_entries(frozen ? frozen : "");
-    for ( size_t i = 0; i < writes.size() && i < want.size(); ++i )
+    for ( size_t i = 0; i < writes.size(); ++i )
+	if ( i >= want.size() || !forest_state_holds(want[i], writes[i]) )
+	    w.differs.insert(strpool.intern(writes[i].str()));
+}
+
+// K2c: the expansion points of inclusion `inc` the walk has reached — the
+// freeze expanded the name there after (ev, ed, rec) of the unit's events,
+// edges and records. A name in a differs-set (this walk's, or a committed
+// walk's) must hold the frozen state at each one. False: the root declines.
+bool Program::forest_walk_points(ForestWalk &w, uint32_t unit, const ForestUnitItems &it,
+				 uint32_t inc, size_t &i_p, uint32_t i_ev, uint32_t i_ed, uint32_t i_c)
+{
+    CirFrozenForest *f = w.s.forest;
+    for ( ; i_p < it.npoints; ++i_p )
     {
-	const std::string &entry = want[i];
-	if ( entry.empty() || entry[0] == '-' || entry[0] == '?' )
+	const uint32_t *p = it.point(i_p);
+	if ( p[CIR_POINT_INCLUSION] < inc )
 	    continue;
-	if ( entry[0] == '^' )
-	{
-	    // K2b: the next conditional's arm writes it before any expansion.
-	    w.deferred.push_back(ForestWalk::Deferred{ unit, next_record, entry.substr(1) });
+	if ( p[CIR_POINT_INCLUSION] > inc || p[CIR_POINT_EV] > i_ev || p[CIR_POINT_ED] > i_ed
+	  || p[CIR_POINT_REC] > i_c )
+	    return true;
+	if ( w.differs.empty() && w.s.macro_differs.empty() )
 	    continue;
-	}
-	if ( !forest_state_holds(entry, writes[i]) )
-	    return false;
+	const char *name = f->pool_str(p[CIR_POINT_NAME]);
+	const uint32_t sid = name ? strpool.find(name) : 0;
+	if ( !sid || (!w.differs.count(sid) && !w.s.macro_differs.count(sid)) )
+	    continue;
+	const char *state = f->pool_str(p[CIR_POINT_STATE]);
+	if ( forest_state_holds(state ? state : "", strpool.name(sid)) )
+	    continue;
+	const char *rname = f->unit_name(w.root), *uname = f->unit_name(unit);
+	DBG(std::cout << "forest bind: DECLINE root " << (rname ? rname : "?") << " — unit "
+	    << (uname ? uname : "?") << " expands '" << name
+	    << "' where a run arm left it unlike the freeze's" << std::endl);
+	return false;
     }
     return true;
 }
@@ -6070,29 +6130,6 @@ bool Program::forest_state_holds(const std::string &entry, const madc::dis::istr
     DBG(std::cout << "forest bind: arm state differs — frozen '" << entry
 	<< "', here '" << now << "'" << std::endl);
     return false;
-}
-
-// K2b: settle the deferred checks of `unit` whose conditional the walk has
-// passed (record < upto): an arm that ran there checked the name itself;
-// otherwise the name must hold the frozen state now. False: the root declines.
-static bool forest_walk_resolve_deferred(Program &pgm, ForestWalk &w, uint32_t unit,
-					 uint32_t upto)
-{
-    for ( size_t i = 0; i < w.deferred.size(); )
-    {
-	const ForestWalk::Deferred d = w.deferred[i];
-	if ( d.unit != unit || d.record >= upto )
-	{
-	    ++i;
-	    continue;
-	}
-	w.deferred.erase(w.deferred.begin() + (std::ptrdiff_t)i);
-	if ( w.ran.count(std::make_pair(unit, d.record)) )
-	    continue;
-	if ( !pgm.forest_state_holds(d.entry, forest_state_entry_name(d.entry)) )
-	    return false;
-    }
-    return true;
 }
 
 // Two object-like states of one macro (forest_macro_state_spelling's
@@ -6130,7 +6167,6 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 				    uint32_t &i_c, uint32_t &i_ev, uint32_t &i_ed)
 {
     CirFrozenForest *f = w.s.forest;
-    const uint32_t record = i_c;
     const uint32_t *c = it.cond(i_c);
     ++i_c;
     const bool frozen = (c[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) != 0;
@@ -6166,17 +6202,13 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 	else
 	{
 	    w.arm_tokens.insert(w.arm_tokens.end(), toks.begin(), toks.end());
-	    w.ran.insert(std::make_pair(unit, record));
 	    const char *state = c[CIR_COND_ARM_STATE] ? f->pool_str(c[CIR_COND_ARM_STATE]) : NULL;
-	    if ( forest_arm_state_matches(state, writes, w, unit, c[CIR_COND_REC_END]) )
-	    {
-		DBG(std::cout << "forest bind: unit " << (uname ? uname : "?")
-		    << " replays its skipped '#" << kind_spelling << " " << (text ? text : "?")
-		    << "' arm" << (toks.empty() ? "" : " (its declarations parse live)")
-		    << std::endl);
-		return true;
-	    }
-	    why = "has an arm that leaves a macro unlike the freeze's";
+	    forest_arm_note_differs(state, writes, w);
+	    DBG(std::cout << "forest bind: unit " << (uname ? uname : "?")
+		<< " replays its skipped '#" << kind_spelling << " " << (text ? text : "?")
+		<< "' arm" << (toks.empty() ? "" : " (its declarations parse live)")
+		<< std::endl);
+	    return true;
 	}
     }
     const char *rname = f->unit_name(w.root);
@@ -6215,6 +6247,7 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 	it.inclusion_end(inc - 1, lo);
     uint32_t i_ev = lo[0], i_ed = lo[1], i_c = lo[2];
     const uint32_t ev_hi = hi[0], ed_hi = hi[1], c_hi = hi[2];
+    size_t i_p = 0;	// K2c: the inclusion's next expansion point
     ForestEventCursor cur(it.ev);
     // The include-once prune: the inclusion opens with a recorded `#ifndef`
     // over all of it — the unit's own guard — and it is live because the
@@ -6253,14 +6286,18 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
     double children = 0;
     while ( i_ev < ev_hi || i_ed < ed_hi || i_c < c_hi )
     {
+	if ( i_p < it.npoints && !forest_walk_points(w, unit, it, inc, i_p, i_ev, i_ed, i_c) )
+	{
+	    w.on_stack.erase(unit);
+	    return false;
+	}
 	if ( i_c < c_hi )
 	{
 	    const uint32_t *c = it.cond(i_c);
 	    if ( (i_ed >= ed_hi || c[CIR_COND_ED_BEGIN] <= i_ed)
 	      && (i_ev >= ev_hi || c[CIR_COND_EV_BEGIN] <= i_ev) )
 	    {
-		if ( !forest_walk_condition(w, unit, it, i_c, i_ev, i_ed)
-		  || !forest_walk_resolve_deferred(*this, w, unit, i_c) )
+		if ( !forest_walk_condition(w, unit, it, i_c, i_ev, i_ed) )
 		{
 		    w.on_stack.erase(unit);
 		    return false;
@@ -6284,7 +6321,7 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 	forest_apply_event(*this, s.forest, it.ev, cur.word);
     }
     w.on_stack.erase(unit);
-    if ( !forest_walk_resolve_deferred(*this, w, unit, UINT32_MAX) )
+    if ( !forest_walk_points(w, unit, it, inc, i_p, UINT32_MAX, UINT32_MAX, UINT32_MAX) )
 	return false;
     if ( !reinclude && inc == 0 )
     {
@@ -6408,6 +6445,9 @@ bool Program::forest_walk_root(ForestSide &s, uint32_t root, bool reinclude)
 	throw;
     }
     forest_macro_undo = outer;
+    // K2c: the live parse of a declined root runs the same arms, so later
+    // walks check the names they leave unlike the freeze's either way.
+    s.macro_differs.insert(w.differs.begin(), w.differs.end());
     if ( !ok )
     {
 	w.undo.restore(*this);
@@ -7483,6 +7523,7 @@ void Program::pack_record_edge(const madc::dis::istring &includee)
 	pack_unit_edges[unit].push_back(intern_file(includee));
 	// v68: the edge's place among the unit's events (its item order).
 	pack_unit_edge_events[unit].push_back((uint32_t)pack_pp_exports[unit].size());
+	++pack_point_epoch;
     }
 }
 
@@ -7524,7 +7565,7 @@ void Program::pack_cond_elif(const std::string &text, bool outcome, size_t consu
     r.outcome = outcome;
     r.ev_begin = (uint32_t)pack_pp_exports[f.unit].size();
     r.ed_begin = (uint32_t)pack_unit_edges[f.unit].size();
-    r.expansions_at_begin = pack_expansion_clock;
+    ++pack_point_epoch;
     std::set<madc::dis::istring> seen;
     for ( size_t i = 0; i < consulted.size(); ++i )
 	if ( seen.insert(consulted[i]).second )
@@ -7543,14 +7584,39 @@ static void pack_cond_end_arm(Program &pgm, Program::PackCondFrame &f, bool sing
     r.ed_end = (uint32_t)pgm.pack_unit_edges[f.unit].size();
     r.single_arm = single_arm;
     r.rec_end = (uint32_t)pgm.pack_unit_conds[f.unit].size();
-    r.expansions_at_end = pgm.pack_expansion_clock;
+    ++pgm.pack_point_epoch;
     f.pending = -1;
 }
 
-// v69: a macro was expanded into the token stream while freezing.
-void Program::pack_note_expansion(const madc::dis::istring &name)
+// The size of a unit's per-unit freeze list (0 when it has none yet).
+template <class List>
+static uint32_t pack_unit_count(const std::map<const char *, List> &m, const char *unit)
 {
-    pack_macro_expanded_at[name] = ++pack_expansion_clock;
+    typename std::map<const char *, List>::const_iterator i = m.find(unit);
+    return i == m.end() ? 0 : (uint32_t)i->second.size();
+}
+
+// v71 (K2c): a macro expanded into the token stream while freezing. Its first
+// expansion in the point epoch is an expansion point of the unit inclusion
+// reading it (PackExpansionPoint).
+void Program::pack_note_expansion(uint32_t sid)
+{
+    uint32_t &seen = pack_point_seen[sid];
+    if ( seen == pack_point_epoch )
+	return;
+    seen = pack_point_epoch;
+    const char *unit = pack_current_unit();
+    if ( !unit )
+	return;
+    PackExpansionPoint p;
+    p.sid = sid;
+    p.inclusion = pack_unit_count(pack_unit_inclusions, unit) / CIR_INCL_WORDS;
+    p.ev = pack_unit_count(pack_pp_exports, unit);
+    p.ed = pack_unit_count(pack_unit_edges, unit);
+    p.rec = pack_unit_count(pack_unit_conds, unit);
+    p.state = madc::dis::istring(forest_macro_state_spelling(
+	*this, std::vector<madc::dis::istring>(1, strpool.name(sid))));
+    pack_unit_points[unit].push_back(p);
 }
 
 // v69: one inclusion of a unit ended (its include returned): where its events,
@@ -7561,6 +7627,7 @@ void Program::pack_unit_leave(const char *unit)
     incl.push_back((uint32_t)pack_pp_exports[unit].size());
     incl.push_back((uint32_t)pack_unit_edges[unit].size());
     incl.push_back((uint32_t)pack_unit_conds[unit].size());
+    ++pack_point_epoch;
 }
 
 // An #elif or #else of the open group.
@@ -7658,57 +7725,10 @@ TokenBase *Program::skip_capturing_arm(SkippedArmCapture &cap)
 	// v69: the arm's writes as the freeze holds them here — the content after
 	// the arm was expanded with these values, so an arm the bind runs must
 	// leave the same state (CIR_COND_ARM_STATE).
-	std::vector<madc::dis::istring> writes;
-	if ( MadcSharedPreludeCache::embedded_fragment_is_pure(cap.text, &writes, false) )
-	    r.arm_state = forest_macro_state_spelling(*this, writes);
+	if ( MadcSharedPreludeCache::embedded_fragment_is_pure(cap.text, &r.arm_writes, false) )
+	    r.arm_state = forest_macro_state_spelling(*this, r.arm_writes);
     }
     return next;
-}
-
-// v69: a captured arm's frozen state as the forest records it
-// (CIR_COND_ARM_STATE). A name the freeze held defined but never expanded into
-// the token stream after the arm becomes "?NAME": no frozen token carries its
-// value, so the bind need not match it (WCHAR_MIN — madc's stdint.h spells it
-// INT32_MIN, glibc wchar.h's arm __WCHAR_MIN).
-// K2b: an entry the NEXT recorded conditional's captured arm writes too, with
-// no macro expanded into the token stream in between, is "^" + the entry: the
-// bind checks the name after that conditional instead (glibc's <wchar.h>
-// reads `#ifndef __attr_dealloc_fclose` twice — the first arm may leave it
-// undefined, the second defaults it — and only then expands it).
-std::string Program::pack_arm_state(const std::vector<PackCondRecord> &recs, size_t k)
-{
-    const PackCondRecord &r = recs[k];
-    const PackCondRecord *next = r.rec_end < recs.size() ? &recs[r.rec_end] : NULL;
-    std::set<madc::dis::istring> next_writes;
-    if ( next && next->arm_captured && next->expansions_at_begin == r.expansions_at_end )
-    {
-	const std::vector<std::string> ne = forest_state_entries(next->arm_state);
-	for ( size_t i = 0; i < ne.size(); ++i )
-	    next_writes.insert(forest_state_entry_name(ne[i]));
-    }
-    std::vector<std::string> entries = forest_state_entries(r.arm_state);
-    std::string out;
-    for ( size_t i = 0; i < entries.size(); ++i )
-    {
-	std::string &e = entries[i];
-	if ( !e.empty() && e[0] != '-' )
-	{
-	    const madc::dis::istring name = forest_state_entry_name(e);
-	    std::map<madc::dis::istring, uint64_t>::const_iterator ei =
-		pack_macro_expanded_at.find(name);
-	    if ( ei == pack_macro_expanded_at.end() || ei->second <= r.expansions_at_end )
-	    {
-		e = "?";
-		e.append(name.data(), name.size());
-	    }
-	    else if ( next_writes.count(name) )
-		e.insert(e.begin(), '^');
-	}
-	if ( i )
-	    out += '\x1e';
-	out += e;
-    }
-    return out;
 }
 
 // v68: a recorded condition's skipped arm, captured; any other skip is plain.
@@ -10393,7 +10413,7 @@ TokenBase *Program::_getToken()
 		{
 		    MacroDef &macro = macro_map[sid];
 		    if ( pack_recording )
-			pack_note_expansion(wname);
+			pack_note_expansion(sid);
 		    // Learn what argument paint covers the TEXT this invocation is
 		    // about to consume: a painted argument region of an enclosing
 		    // replacement drains as we read, so the paint must be collected
@@ -10782,7 +10802,7 @@ TokenBase *Program::_getToken()
 			if ( define_map.count(sid) && !source.macro_disabled(wname) )
 			{
 			    if ( pack_recording )
-				pack_note_expansion(wname);
+				pack_note_expansion(sid);
 			    std::string &val = define_map[sid];
 			    if ( !val.empty() )
 			    {

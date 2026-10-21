@@ -4108,6 +4108,35 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     for (size_t k = 0; k < incls_in_order.size(); ++k)
 	if (incls_in_order[k]->second.size() > CIR_INCL_WORDS)
 	    incls_of[ensure_unit(incls_in_order[k]->first)] = &incls_in_order[k]->second;
+    // v71 (K2c): each unit's expansion points of the macros a captured arm
+    // writes — the only names a bind's run arm can leave unlike the freeze's.
+    std::set<uint32_t> watched;
+    for (size_t k = 0; k < conds_in_order.size(); ++k)
+	for (const Program::PackCondRecord &r : conds_in_order[k]->second)
+	    if (r.arm_captured)
+		for (const madc::dis::istring &w : r.arm_writes)
+		    watched.insert(prog->strpool.find(w.str()));
+    std::map<uint32_t, std::vector<uint32_t> > points_of;
+    typedef std::map<const char *, std::vector<Program::PackExpansionPoint> > point_map;
+    const std::vector<point_map::const_iterator> points_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_points, prog->pack_unit_order);
+    for (size_t k = 0; k < points_in_order.size() && !watched.empty(); ++k) {
+	std::vector<uint32_t> pw;
+	for (const Program::PackExpansionPoint &pt : points_in_order[k]->second) {
+	    if (!watched.count(pt.sid))
+		continue;
+	    uint32_t w[CIR_POINT_WORDS];
+	    w[CIR_POINT_NAME] = pool->intern(prog->strpool.c_str(pt.sid));
+	    w[CIR_POINT_INCLUSION] = pt.inclusion;
+	    w[CIR_POINT_EV] = pt.ev;
+	    w[CIR_POINT_ED] = pt.ed;
+	    w[CIR_POINT_REC] = pt.rec;
+	    w[CIR_POINT_STATE] = pool->intern(pt.state.str());
+	    pw.insert(pw.end(), w, w + CIR_POINT_WORDS);
+	}
+	if (!pw.empty())
+	    points_of[ensure_unit(points_in_order[k]->first)].swap(pw);
+    }
     std::set<uint32_t> item_units;
     for (std::map<uint32_t, std::vector<uint32_t> >::const_iterator it = edge_events_of.begin();
 	 it != edge_events_of.end(); ++it)
@@ -4117,6 +4146,9 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	item_units.insert(it->first);
     for (std::map<uint32_t, const std::vector<uint32_t> *>::const_iterator it = incls_of.begin();
 	 it != incls_of.end(); ++it)
+	item_units.insert(it->first);
+    for (std::map<uint32_t, std::vector<uint32_t> >::const_iterator it = points_of.begin();
+	 it != points_of.end(); ++it)
 	item_units.insert(it->first);
     for (std::set<uint32_t>::const_iterator ui = item_units.begin(); ui != item_units.end(); ++ui) {
 	const uint32_t u = *ui;
@@ -4141,7 +4173,7 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    w[CIR_COND_ARM] = r.arm_captured ? pool->intern(r.arm) : 0;
 	    w[CIR_COND_REC_END] = r.rec_end;
 	    w[CIR_COND_ARM_STATE] = r.arm_captured && !r.arm_state.empty()
-				  ? pool->intern(prog->pack_arm_state(*recs, c)) : 0;
+				  ? pool->intern(r.arm_state) : 0;
 	    w[CIR_COND_CONSULT_AT] = (uint32_t)(consult_words.size() / CIR_CONSULT_WORDS);
 	    w[CIR_COND_CONSULT_N] = (uint32_t)r.consults.size();
 	    for (size_t k = 0; k < r.consults.size(); ++k) {
@@ -4157,6 +4189,9 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    words.insert(words.end(), incl->begin(), incl->end());
 	words.push_back((uint32_t)consult_words.size());
 	words.insert(words.end(), consult_words.begin(), consult_words.end());
+	const std::vector<uint32_t> &pts = points_of[u];
+	words.push_back((uint32_t)(pts.size() / CIR_POINT_WORDS));
+	words.insert(words.end(), pts.begin(), pts.end());
 	f.units[u].conditions = words;
     }
 
@@ -8036,6 +8071,16 @@ int madc_cir_dump_forest(const char *container_path)
 		const char *cn = forest.pool_str(cw[at]);
 		printf("consult\t%s\t%u\t%s\n", uname ? uname : "?",
 		       k / CIR_CONSULT_WORDS, cn ? cn : "?");
+	    }
+	    // v71: the expansion points of the macros a captured arm writes (K2c;
+	    // their states elided).
+	    const uint32_t np = at < cw.size() ? cw[at++] : 0;
+	    for (uint32_t k = 0; k < np && at + CIR_POINT_WORDS <= cw.size();
+		 ++k, at += CIR_POINT_WORDS) {
+		const char *pn = forest.pool_str(cw[at + CIR_POINT_NAME]);
+		printf("point\t%s\t%s\tinc=%u\tev=%u\ted=%u\trec=%u\n", uname ? uname : "?",
+		       pn ? pn : "?", cw[at + CIR_POINT_INCLUSION], cw[at + CIR_POINT_EV],
+		       cw[at + CIR_POINT_ED], cw[at + CIR_POINT_REC]);
 	    }
 	}
 	std::vector<uint32_t> ppe;

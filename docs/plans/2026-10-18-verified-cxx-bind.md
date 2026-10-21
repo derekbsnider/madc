@@ -502,22 +502,46 @@ fails `forest_pack_gate`: the load probe (`tests/testfreezerun.mad`,
   conditional of the same unit. Here the restoring write is a different unit
   (`stddef.h`) bound at a later edge of an ancestor.
 
-### K2c — check a name where the frozen content expands it (design)
+### K2c — check a name where the frozen content expands it
 
-- Freeze: for every name a captured arm writes (the watched set), each
-  inclusion records the event position of the name's first expansion after
-  each write, with the freeze's state there (a pooled
-  `forest_macro_state_spelling`). Container v71.
-- Walk: an arm the walk runs that leaves a watched name unlike the arm entry
-  no longer declines; the name joins the TU's differs-set (`ForestSide`). At
-  each recorded expansion point of a name in the set, the name must hold
-  that point's frozen state (`forest_state_holds`, lex-alike included), or
-  the root declines.
-- It subsumes K2b's `^` deferral and the `?` mark (a name never expanded
-  after the arm has no point to check): both go.
-- Gate: `forest_bind_gate.sh` `[k2c]`, a corpus frozen `<cstddef>` first and
-  a consumer of `<iostream>` alone, on the win64 profile (and a Linux analogue
-  with a header that spells its own macro, then a restoring header).
+- Freeze: an EXPANSION POINT is a macro's first expansion into the token
+  stream in a point epoch. Every include edge, recorded conditional, recorded
+  arm's end and inclusion end starts a new epoch, so between two points of a
+  name in one unit inclusion the walk replays the same events the freeze
+  read. A point records the unit inclusion, the unit's events, edges and
+  records ahead of it, and the freeze's state of the name there (a pooled
+  `forest_macro_state_spelling`). The container keeps the points of the
+  names a captured arm writes (the watched set): the conditions slot ends
+  with them (`CIR_POINT_WORDS` each). Container v71.
+- Walk: an arm the walk runs that leaves a written name unlike the freeze's
+  state at the arm no longer declines; the name joins the walk's
+  differs-set. At each point the walk reaches (its inclusion, events, edges
+  and records all passed), a name in the walk's set or the TU's
+  (`ForestSide::macro_differs`) must hold the point's state
+  (`forest_state_holds`, lex-alike included), or the root declines.
+- The walk's set joins the TU's when the walk ends, bound or declined: a
+  declined root's live parse runs the same arms. A later root that froze an
+  expansion of the old value declines instead of binding it (before K2c such
+  a root bound the frozen value — a silent wrong value when the first root
+  declined and parsed live).
+- It subsumes K2b's `^` deferral and the v69 `?` mark (a name never expanded
+  after the arm has no point to check): both are gone, and
+  `CIR_COND_ARM_STATE` is the plain state.
+- Gate: `forest_bind_gate.sh` `[k2c]` — `restore` (the mingw shape: an arm
+  sets the name, an ancestor's later edge restores it before the expansion;
+  binds), `carry` (a bound root's differing name declines a later root that
+  froze an expansion) and `declined` (a declined root's differing name does
+  the same). The win64 profile's `forest_pack_gate` load probe is the
+  release check.
+- An arm may carry a `#pragma push_macro` / `pop_macro` pair that it closes
+  itself (mingw wchar.h's snwprintf); the pragma's restore is a macro write
+  (`set_macro`, the freeze's event), so the walk's undo log covers it.
+- Win64 result (2026-10-21): the load probe no longer declines on `NULL` /
+  `WCHAR_MIN` / `WCHAR_MAX`; it declines next at mingw wchar.h's
+  `#ifndef _WSTDIO_DEFINED`, whose arm (lines 462–1248 — the `#endif`
+  comments at 883 / 885 are mislabelled, the count closes it at 1248, as
+  gcc reads it) holds `#include <swprintf.inl>`. A run arm with an include
+  is K2d.
 
 ## Thread safety
 

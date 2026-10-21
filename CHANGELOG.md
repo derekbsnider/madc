@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### A forest bind checks a macro where frozen content expands it
+
+- A forest root whose run arm leaves a macro unlike the freeze's state no longer declines on that write alone. The walk checks the macro at each recorded expansion point it reaches, and declines only where the frozen content would expand it to a different state.
+- Fixes a silent wrong value: after a declined root was parsed live, a later root that froze an expansion of the old macro value bound that frozen value. `scripts/forest_bind_gate.sh` `[k2c]` `declined` case: `early=5 user2=7` before, `early=5 user2=5` after (g++ prints `early=5 user2=5`).
+- The differing macros of a declined root carry into later roots: the walk's set joins the TU's when the walk ends, bound or declined.
+- The freeze records the expansion points of the macros a captured arm writes; container format v71 (`CIR_POINT_WORDS` per point).
+- A captured arm may hold a `#pragma push_macro` / `pop_macro` pair that it closes itself. The shared-prelude cache still refuses every pragma.
+
 ### `#pragma push_macro` / `pop_macro` save and restore the whole macro definition
 
 - A push saves an object-like body, a function-like definition, or an undefined name. A pop restores that state: a function-like macro comes back function-like, and a name undefined at the push is undefined again. Before, only an object-like body was saved, so `pop_macro` of a function-like macro left a stale or missing definition ("import of undefined item FN" under MIR).
