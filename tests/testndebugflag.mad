@@ -1,0 +1,16 @@
+// -DNDEBUG on the command line: assert(0) expands to ((void)0) (C++17
+// [assertions.assert], C11 7.2p1) and the program prints "ok". On the
+// hosted-darwin build the flattened header umbrella (scripts/
+// gen_darwin_prelude.sh) had frozen <assert.h>'s !NDEBUG arm, so libc++'s
+// <cassert> reached a live assert and the program aborted.
+// Oracles: g++ 13 and clang++ 18 (-std=gnu++17 -DNDEBUG, Linux), Apple
+// clang++ 16 (macOS arm64): "ok", exit 0.
+#include <cstdio>
+#include <cassert>
+
+int main()
+{
+	assert(0);
+	std::puts("ok");
+	return 0;
+}

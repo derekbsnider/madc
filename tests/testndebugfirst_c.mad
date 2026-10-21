@@ -1,0 +1,19 @@
+// NDEBUG defined ahead of the first standard include: every assert() expands
+// to ((void)0) and never evaluates its operand (C11 7.2p1). The hosted-darwin
+// headers are one flattened umbrella (scripts/gen_darwin_prelude.sh), whose
+// flatten resolved <assert.h>'s `#ifdef NDEBUG` with NDEBUG undefined, so
+// there assert stayed live and the operand ran.
+// Oracles: gcc 13 and clang 18 (-std=gnu17, Linux), Apple clang 16 (macOS
+// arm64): `evals=0`.
+#define NDEBUG 1
+#include <stdio.h>
+#include <assert.h>
+
+static int evals;
+
+int main(void)
+{
+	assert((evals++, 0));
+	printf("evals=%d\n", evals);
+	return 0;
+}

@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### The darwin prelude honours NDEBUG
+
+- On the hosted-darwin build, `assert` is disabled when NDEBUG is defined on the command line (`-DNDEBUG`) or with `#define NDEBUG` before the first standard include. Before, the operand was evaluated and a failing assert aborted.
+- `scripts/gen_darwin_prelude.sh` flattens `<assert.h>` a second time with `-DNDEBUG` and wraps the umbrella's `assert` definition in `#ifdef NDEBUG` / `#else` / `#endif`. The generator refuses to install when either flatten lacks `#define assert(`.
+- Not yet honoured: a re-include under a different NDEBUG, or NDEBUG set after another standard header has already included the umbrella.
+- Tests: `testndebugfirst_c` (C, `--std=gnu17`) and `testndebugflag` (C++, `--std=gnu++17 -DNDEBUG`).
+
 ### The generated predefined-macro table covers the darwin capture gaps
 
 - `scripts/gen_predefined_macros.sh` adds `__FLT_EVAL_METHOD__` to a capture whose `-dM` dump omits it. Clang 15+ expands that macro inside the preprocessor, so the dump lacks it; the same compiler expands it with `-E -P`.
