@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### A failed binary module read abandons its module, and the fallback goes on
+
+- A failed `MIR_read_with_func` in madc's MIR module cache (the system pack, a frozen forest's module, a ledger module) abandons the module the read had begun, through `MIR_abandon_module`. Before, the fallback's next `MIR_new_module` or `MIR_finish` stopped with "Creating module when previous module frozen is not finished".
+- `cir_mir_read_module()` in `src/madc_cir.cpp` is the one read owner for the three sites. A read that adds no module returns NULL with "no module in the blob".
+- `tests/unit/test_cir_freeze.cpp` gains "mir cache: a blob whose read fails mid-module falls back to materialization": `build_frozen` falls back and runs `main`, which returns 99.
+
 ### MIR discards the module a failed binary read left unfinished
 
 - `MIR_abandon_module(ctx)` in `third_party/mir/mir.c` (declared in `third_party/mir/mir.h`) discards the module a longjmp out of an error function left unfinished. Its items leave the item table, and the module is freed. Before, `MIR_new_module` and `MIR_finish` refused that state, so the context could not be reused.

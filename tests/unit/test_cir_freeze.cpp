@@ -20,6 +20,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
+#include <csetjmp>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -448,6 +449,99 @@ TEST_CASE("B3: a two-file program partitions into units, thaws identical, and ru
 	cir_finish(c2m);
 	c2mir_finish(mir_ctx);
 	MIR_finish(mir_ctx);
+}
+
+static std::vector<uint8_t> *mir_blob_sink;
+static size_t mir_blob_pos;
+static int mir_blob_put(MIR_context_t, uint8_t b) { mir_blob_sink->push_back(b); return 1; }
+static int mir_blob_get(MIR_context_t)
+{
+	return mir_blob_pos < mir_blob_sink->size() ? (*mir_blob_sink)[mir_blob_pos++] : EOF;
+}
+static jmp_buf mir_blob_error_jmp;
+static void MIR_NO_RETURN mir_blob_error(MIR_error_type_t, const char *, ...)
+{
+	longjmp(mir_blob_error_jmp, 1);
+}
+
+// A forest whose MIR module cache fails to read part way — the reader having
+// begun the module (the writer's region defect once did it: "uregion should
+// have no labels") — falls back to node materialization: build_frozen thaws,
+// compiles and runs the program instead of dying on the unfinished module.
+// The failure part way: a module past one 256 KiB buffer of the compressed
+// stream, the stream's end (its zero tag and hash) cut — the first buffer
+// decodes, the reader begins the module, then the end is missing.
+TEST_CASE("mir cache: a blob whose read fails mid-module falls back to materialization") {
+	std::shared_ptr<Program> prog;
+	std::vector<uint8_t> image;
+	{
+		MIR_context_t mir_ctx = MIR_init();
+		c2mir_init(mir_ctx);
+		c2m_ctx_t c2m = cir_init(mir_ctx);
+		REQUIRE(c2m != nullptr);
+		std::string src;
+		for (int i = 0; i < 10000; i++)
+			src += "long f" + std::to_string(i) + "(long a) { return a * "
+			     + std::to_string(i) + " + 1; }\n";
+		src += "int main() { return (int)f7(14); }\n";
+		prog = std::make_shared<Program>();
+		TokenProgram *tp = prog->tokenize_buffer(src.c_str(), "<mir_cache_cut>");
+		REQUIRE(tp != nullptr);
+		REQUIRE(prog->parse(tp));
+		CirBuilder *builder = new CirBuilder(c2m);
+		node_t tree = builder->translate_module(prog.get());
+		REQUIRE(tree != nullptr);
+		cir_frozen_forest f;
+		REQUIRE(cir_freeze_forest(CIR_NODE(tree), "<mir_cache_cut>", f));
+
+		// The module blob as the producer stages it: the stamp, then the
+		// .bmir stream, its end cut.
+		REQUIRE(cir_compile(mir_ctx, c2m, tree, "frozen", !prog->is_c_mode()) == 1);
+		MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
+		REQUIRE(mod != nullptr);
+		std::vector<uint8_t> bmir;
+		mir_blob_sink = &bmir;
+		MIR_write_module_with_func(mir_ctx, mir_blob_put, mod);
+		REQUIRE(bmir.size() > 9u);
+		bmir.resize(bmir.size() - 9);
+		delete builder;
+		cir_finish(c2m);
+		c2mir_finish(mir_ctx);
+		MIR_finish(mir_ctx);
+
+		// The cut stream's read fails having begun the module.
+		MIR_context_t probe = MIR_init();
+		MIR_set_error_func(probe, mir_blob_error);
+		mir_blob_pos = 0;
+		volatile bool read_ok = false;
+		if (setjmp(mir_blob_error_jmp) == 0) {
+			MIR_read_with_func(probe, mir_blob_get);
+			read_ok = true;
+		}
+		mir_blob_sink = NULL;
+		REQUIRE_FALSE(read_ok);
+		REQUIRE(DLIST_TAIL(MIR_module_t, *MIR_get_module_list(probe)) != nullptr);
+		MIR_abandon_module(probe);
+		MIR_finish(probe);
+
+		cir_forest_mir_header mh;
+		mh.forest_version = CIR_FOREST_FORMAT_VERSION;
+		mh.mir_api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+		std::vector<uint8_t> mblob((const uint8_t *)&mh, (const uint8_t *)&mh + sizeof(mh));
+		mblob.insert(mblob.end(), bmir.begin(), bmir.end());
+		madc::dis::snapshot_writer w;
+		REQUIRE(cir_forest_write(f, w));
+		REQUIRE(w.add_segment(CIR_FOREST_SEG_MIR_MODULE, SNAP_KIND_CIR_MIR_MODULE,
+				      mblob.data(), mblob.size(), PchCompression::None));
+		REQUIRE(w.build(image));
+	}
+	CirJitSession session;
+	REQUIRE(session.build_frozen(image.data(), image.size(), "frozen"));
+	char arg0[] = "frozen";
+	char *argv[] = { arg0, NULL };
+	bool ok = false;
+	CHECK(session.run_main(1, argv, &ok) == 99);
+	CHECK(ok);
 }
 
 TEST_CASE("B3: units load on demand — touching one grove leaves the others cold") {

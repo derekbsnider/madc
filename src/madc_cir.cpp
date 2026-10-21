@@ -529,6 +529,35 @@ static int cir_mir_cache_read_byte(MIR_context_t)
     return (*cir_mir_cache_read_src)[cir_mir_cache_read_pos++];
 }
 
+// Read one .bmir blob into CTX: the one MIR read bracket (the system pack's
+// module cache, a frozen forest's module, a ledger module). Its own frame on
+// purpose: a longjmp leaves automatic variables MODIFIED since the setjmp
+// indeterminate, so the bracket never sits inside a caller's loop. A read that
+// fails (cir_mir_error_text says why) abandons the module it had begun, so CTX
+// builds or reads the next one. NULL when the read failed or added no module.
+static MIR_module_t cir_mir_read_module(MIR_context_t ctx, const std::vector<uint8_t> &bytes)
+{
+    MIR_module_t before = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	cir_mir_cache_read_src = NULL;
+	MIR_abandon_module(ctx);
+	return NULL;
+    }
+    cir_mir_error_armed = true;
+    cir_mir_cache_read_src = &bytes;
+    cir_mir_cache_read_pos = 0;
+    MIR_read_with_func(ctx, cir_mir_cache_read_byte);
+    cir_mir_cache_read_src = NULL;
+    cir_mir_error_armed = false;
+    MIR_module_t got = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    if (got == before) {
+	snprintf(cir_mir_error_text, sizeof(cir_mir_error_text), "no module in the blob");
+	return NULL;
+    }
+    return got;
+}
+
 // Does this item DEFINE its name (a function or a data item)? An import, an
 // export, a forward and a prototype define nothing.
 static bool cir_item_defines(MIR_item_t it)
@@ -713,33 +742,15 @@ static const cir_ledger_module *cir_crt_module(size_t i)
     return it->second.get();
 }
 
-// Read ONE ledger module's .bmir into `ctx` and load it. The MIR error
-// bracket lives in its own frame on purpose: a longjmp leaves automatic
-// variables MODIFIED since the setjmp indeterminate, so arming it inside the
-// caller's selection loop would corrupt that loop's state at -O2. Here the
-// only automatics are the unmodified parameter and `before`, both set before
-// the setjmp. False = nothing new was loaded.
+// Read ONE ledger module's .bmir into `ctx` (cir_mir_read_module) and load it.
+// False = nothing new was loaded.
 static bool cir_ledger_read_module(MIR_context_t ctx,
 				   const cir_ledger_module &m)
 {
-    MIR_module_t before = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
-    if (setjmp(cir_mir_error_jmp)) {
-	cir_mir_error_armed = false;
-	cir_mir_cache_read_src = NULL;
+    MIR_module_t got = cir_mir_read_module(ctx, m.bytes);
+    if (!got) {
 	fprintf(stderr, "madc: ledger: %s: MIR_read failed: %s\n",
 		m.name.c_str(), cir_mir_error_text);
-	return false;
-    }
-    cir_mir_error_armed = true;
-    cir_mir_cache_read_src = &m.bytes;
-    cir_mir_cache_read_pos = 0;
-    MIR_read_with_func(ctx, cir_mir_cache_read_byte);
-    cir_mir_cache_read_src = NULL;
-    cir_mir_error_armed = false;
-    MIR_module_t got = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
-    if (!got || got == before) {
-	fprintf(stderr, "madc: ledger: %s: no module in the blob\n",
-		m.name.c_str());
 	return false;
     }
     MIR_load_module(ctx, got);
@@ -1663,24 +1674,12 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 	};
 	if (prog->forest_system.forest->mir_module_bytes(mblob)) {
 	    mcs_lap("blob segment read");
-	    if (setjmp(cir_mir_error_jmp)) {
-		// bmir version check / corrupt blob — rebuild-path fallback.
-		cir_mir_error_armed = false;
-		cir_mir_cache_read_src = NULL;
-		cache_mod = NULL;
+	    // bmir version check / corrupt blob — rebuild-path fallback.
+	    cache_mod = cir_mir_read_module(ctx, mblob);
+	    if (!cache_mod)
 		fprintf(stderr, "%s: mir cache: MIR_read failed: %s — "
 			"falling back to full emission\n",
 			source_name, cir_mir_error_text);
-	    } else {
-		cir_mir_error_armed = true;
-		cir_mir_cache_read_src = &mblob;
-		cir_mir_cache_read_pos = 0;
-		MIR_read_with_func(ctx, cir_mir_cache_read_byte);
-		cir_mir_cache_read_src = NULL;
-		cir_mir_error_armed = false;
-		cache_mod = DLIST_TAIL(MIR_module_t,
-				       *MIR_get_module_list(ctx));
-	    }
 	    mcs_lap("MIR_read");
 	    if (cache_mod) {
 		// The pack TU's entry points are never shared: the consumer
@@ -1795,27 +1794,17 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
     if (!getenv("MADC_NO_MIR_CACHE")) {
 	std::vector<uint8_t> mblob;
 	if (forest->mir_module_bytes(mblob)) {
-	    if (setjmp(cir_mir_error_jmp)) {
-		// The bmir stream's internal version check (or a corrupt
-		// blob) fataled — fall back to the rebuild below.
-		cir_mir_error_armed = false;
-		cir_mir_cache_read_src = NULL;
-		mod = NULL;
+	    // The bmir stream's internal version check (or a corrupt blob)
+	    // refused it — fall back to the rebuild below.
+	    mod = cir_mir_read_module(ctx, mblob);
+	    if (!mod)
 		fprintf(stderr, "%s: mir cache: MIR_read failed: %s — "
 			"falling back to node materialization\n",
 			module_name, cir_mir_error_text);
-	    } else {
-		cir_mir_error_armed = true;
-		cir_mir_cache_read_src = &mblob;
-		cir_mir_cache_read_pos = 0;
-		MIR_read_with_func(ctx, cir_mir_cache_read_byte);
-		cir_mir_cache_read_src = NULL;
-		cir_mir_error_armed = false;
-		mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+	    else
 		DBG(std::cout << "mir cache: module loaded from container ("
 		    << mblob.size() << " bytes; node rebuild skipped)"
 		    << std::endl);
-	    }
 	}
     }
 
