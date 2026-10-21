@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### A Windows language-specific handler runs a generated frame's cleanups for a madc throw
+
+- On x64 Windows, a generated function with a region table names `__madc_seh_handler` as its SEH language-specific handler (`UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER`). The handler runs the frame's live regions for a madc throw's `longjmp` into its target `try`, and for a host C++ exception crossing the frame. A plain C `longjmp` runs no regions.
+- `madc_run_regions()` in `src/rt/rt_except.c` is the one region walk, shared with `__madc_personality`. The region-table readers are built on every platform.
+- MIR writes the handler's RVA, the region table and a jump to the handler into the UNWIND_INFO of JIT code. Objects and images reach the handler through an in-`.text` stub, and the table's cleanup pointers are PC32 relocations in `.xdata`.
+- Inert until B205 step 7 names a personality for generated functions: no UNWIND_INFO carries a handler yet.
+- Linux: tier1 183 passed, 0 failed (EXE 176, OBJ 176) over the exception and unwind tests and their neighbours; Tier 2 seven lanes 0 outside baseline. Hosted win64 build rc=0 (`-Wall -Werror -O2`, mingw-w64 g++ 13).
+
 ### An operator call's extern decline is decided before anything is emitted
 
 - `CirBuilder::class_operator_external_call()` checks `extern_symbol_can_link()` on the callee's pre-set Itanium symbol at entry, before the operand temporaries, the result temporary or the caller's result slot are emitted. Before, a decline after those emissions left a cleanup-tagged result temporary that was declared but never constructed, so its destructor ran on garbage at scope exit, and the operands' temporaries were emitted twice when the caller fell through to body instantiation.

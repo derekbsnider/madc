@@ -1592,6 +1592,7 @@ enum {
   WIN64_UWOP_SET_FPREG = 3,
   WIN64_UWOP_SAVE_NONVOL = 4, /* + 1: the _FAR form */
   WIN64_UWOP_SAVE_XMM128 = 8, /* + 1: the _FAR form */
+  WIN64_UNW_FLAG_HANDLERS = 3, /* UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER */
 };
 
 typedef struct win64_uwop { /* one operation: its UNWIND_CODE slot, then its operand slots */
@@ -1651,9 +1652,17 @@ static unsigned win64_unwind_reg (unsigned dwarf_reg, int *xmm_p) {
   return 0;
 }
 
-/* After target_translate: append the function's UNWIND_INFO (version 1, no
-   handler) to B; FALSE, appending nothing, when it has no frame to describe. */
-static int target_win64_unwind_info (gen_ctx_t gen_ctx, VARR (uint8_t) * b) {
+/* After target_translate: append the function's UNWIND_INFO (version 1) to B;
+   FALSE, appending nothing, when it has no frame to describe.  HANDLER_P: the
+   function names a language-specific handler for both dispatch phases
+   (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER), whose RVA and data the caller
+   appends next.  *BASE_BIAS: what the region table's frame base, a DWARF
+   breg form of the body's CFA register, adds when it is read from the
+   establisher frame instead -- the frame register's offset (it sits FO bytes
+   above the establisher frame), else 0 (the establisher frame IS the body's
+   SP). */
+static int target_win64_unwind_info (gen_ctx_t gen_ctx, VARR (uint8_t) * b, int handler_p,
+                                     int64_t *base_bias) {
   win64_uwop_t ops[24];
   size_t i, j, rules_num, nops = 0, nslots = 0, prolog = 0;
   gen_cfi_rule_t *rules = gen_cfi_order_rules (gen_ctx, &rules_num);
@@ -1701,7 +1710,8 @@ static int target_win64_unwind_info (gen_ctx_t gen_ctx, VARR (uint8_t) * b) {
   }
   for (i = 0; i < nops; i++) nslots += ops[i].nslots;
   gen_assert (prolog <= 255 && nslots <= 255);
-  VARR_PUSH (uint8_t, b, 1); /* Version 1, Flags 0 */
+  *base_bias = (int64_t) (frame >> 4) * 16;
+  VARR_PUSH (uint8_t, b, (uint8_t) (1 | (handler_p ? WIN64_UNW_FLAG_HANDLERS : 0) << 3));
   VARR_PUSH (uint8_t, b, (uint8_t) prolog);
   VARR_PUSH (uint8_t, b, (uint8_t) nslots);
   VARR_PUSH (uint8_t, b, (uint8_t) frame);
@@ -1714,7 +1724,29 @@ static int target_win64_unwind_info (gen_ctx_t gen_ctx, VARR (uint8_t) * b) {
     VARR_PUSH (uint8_t, b, 0);
     VARR_PUSH (uint8_t, b, 0);
   }
+  /* the table's base register is the frame register when there is one */
+  gen_assert (!handler_p
+              || curr_func_item->u.func->unwind.base_reg
+                   == (frame != 0 ? TARGET_DWARF_FP : TARGET_DWARF_SP));
   return TRUE;
+}
+
+/* The jump through which an UNWIND_INFO reaches its language-specific handler
+   (an RVA, so it sits in the image or the JIT's code allocation), into BUF;
+   its length.  `jmp *disp32(%rip)`: over ADDR, the handler's address, with
+   disp32 0 in the JIT (ADDR non-zero); else to the slot holding the address,
+   disp32 (at TARGET_WIN64_HANDLER_JUMP_DISP) relocated by the caller (PC32,
+   addend - 4). */
+#define TARGET_WIN64_HANDLER_JUMP_MAX 14
+#define TARGET_WIN64_HANDLER_JUMP_DISP 2
+static size_t target_win64_handler_jump (uint8_t buf[TARGET_WIN64_HANDLER_JUMP_MAX],
+                                         uint64_t addr) {
+  static const uint8_t jmp[] = {0xff, 0x25, 0, 0, 0, 0};
+
+  memcpy (buf, jmp, sizeof (jmp));
+  if (addr == 0) return sizeof (jmp);
+  memcpy (buf + sizeof (jmp), &addr, sizeof (addr));
+  return sizeof (jmp) + sizeof (addr);
 }
 #endif
 

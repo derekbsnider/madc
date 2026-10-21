@@ -360,6 +360,7 @@ extern uintptr_t _Unwind_GetIP(struct MadcUnwindContext *);
 extern uintptr_t _Unwind_GetRegionStart(struct MadcUnwindContext *);
 extern uintptr_t _Unwind_GetGR(struct MadcUnwindContext *, int);
 extern void *_Unwind_GetLanguageSpecificData(struct MadcUnwindContext *);
+#endif
 
 // A generated frame's region table, as MIR writes it: the layout is
 // MIR_UNWIND_TABLE_VERSION's in third_party/mir/mir.h. Its header names how
@@ -437,38 +438,37 @@ static void madc_table_region(const uint8_t *p, uint8_t enc, uint64_t region,
     *cleanup = madc_table_pointer(p, enc);
 }
 
-// The personality every generated function with regions names: in the cleanup
-// phase, the region chain live at the frame's call runs innermost first, each
-// cleanup called with its variable's address -- stopping at the throw's target
-// try's guard (the region whose cleanup is __madc_try_leave and whose variable
-// holds that try's context), so what the try body made goes and the rest of
-// the frame stays. A madc try is no search-phase handler: the forced unwind
-// lands it. A foreign exception runs every region, as g++ destroys a frame's
-// objects for any exception.
-int __madc_personality(int version, int actions, uint64_t exception_class,
-		       struct MadcUnwindHeader *header, struct MadcUnwindContext *uc)
+// The value of the frame's register REG (the table's base_reg), which the
+// platform handler reads from its own frame description.
+typedef uintptr_t (*madc_frame_reg_fn)(void *frame, int reg);
+
+// The region walk every platform's handler runs over a generated frame: the
+// region chain live where the frame's call returns to RA (an offset from the
+// function's start) runs innermost first, each cleanup called with its
+// variable's address (the frame base, REG_VALUE (FRAME, base_reg) + the
+// table's base_offset, plus the region's offset) -- stopping at TARGET's guard
+// (the region whose cleanup is __madc_try_leave and whose variable holds that
+// try's context), so what the try body made goes and the rest of the frame
+// stays. TARGET NULL runs every live region.
+static void madc_run_regions(const uint8_t *p, uintptr_t ra, madc_frame_reg_fn reg_value,
+			     void *frame, const struct MadcTryContext *target)
 {
-    const uint8_t *p = (const uint8_t *)_Unwind_GetLanguageSpecificData(uc);
     const uint8_t *regions;
-    struct MadcTryContext *target = NULL;
     uint64_t base_reg, base_align, ncalls, nregions, region = 0, i;
     int64_t base_offset;
-    uintptr_t ra, base;
+    uintptr_t base;
     uint8_t enc;
 
-    if ( version != 1 || !p || !(actions & MADC_UA_CLEANUP_PHASE) )
-	return MADC_URC_CONTINUE_UNWIND;
+    if ( !p )
+	return;
     enc = p[1];
     if ( p[0] != MADC_UNWIND_TABLE_VERSION
 	 || (enc != MADC_DW_EH_PE_absptr && enc != MADC_DW_EH_PE_image) )
-	return MADC_URC_CONTINUE_UNWIND;
+	return;
     p += 2;
-    if ( exception_class == MADC_UNWIND_CLASS )
-	target = ((struct MadcUnwind *)header)->target;
     base_reg = madc_uleb(&p);
     base_offset = madc_sleb(&p);
     base_align = madc_uleb(&p);
-    ra = _Unwind_GetIP(uc) - _Unwind_GetRegionStart(uc);
     ncalls = madc_uleb(&p);
     for ( i = 0; i < ncalls; i++ )
     {
@@ -479,8 +479,8 @@ int __madc_personality(int version, int actions, uint64_t exception_class,
     nregions = madc_uleb(&p);
     regions = p;
     if ( region == 0 || region > nregions )
-	return MADC_URC_CONTINUE_UNWIND;
-    base = _Unwind_GetGR(uc, (int)base_reg) + (uintptr_t)base_offset;
+	return;
+    base = reg_value(frame, (int)base_reg) + (uintptr_t)base_offset;
     if ( base_align > 1 )
 	base = (base + (uintptr_t)base_align - 1) & ~((uintptr_t)base_align - 1);
     while ( region != 0 )
@@ -496,6 +496,30 @@ int __madc_personality(int version, int actions, uint64_t exception_class,
 	((void (*)(void *))cleanup)(var);
 	region = parent;
     }
+}
+
+#ifdef MADC_RT_UNWIND
+static uintptr_t madc_unwind_reg(void *uc, int reg)
+{
+    return _Unwind_GetGR((struct MadcUnwindContext *)uc, reg);
+}
+
+// The personality every generated function with regions names: in the cleanup
+// phase, the frame's live regions (madc_run_regions), down to the throw's
+// target try's guard. A madc try is no search-phase handler: the forced unwind
+// lands it. A foreign exception runs every region, as g++ destroys a frame's
+// objects for any exception.
+int __madc_personality(int version, int actions, uint64_t exception_class,
+		       struct MadcUnwindHeader *header, struct MadcUnwindContext *uc)
+{
+    const struct MadcTryContext *target = NULL;
+
+    if ( version != 1 || !(actions & MADC_UA_CLEANUP_PHASE) )
+	return MADC_URC_CONTINUE_UNWIND;
+    if ( exception_class == MADC_UNWIND_CLASS )
+	target = ((struct MadcUnwind *)header)->target;
+    madc_run_regions((const uint8_t *)_Unwind_GetLanguageSpecificData(uc),
+		     _Unwind_GetIP(uc) - _Unwind_GetRegionStart(uc), madc_unwind_reg, uc, target);
     return MADC_URC_CONTINUE_UNWIND;
 }
 
@@ -518,6 +542,86 @@ static int madc_unwind_stop(int version, int actions, uint64_t exception_class,
 	longjmp(target->jbuf, 1);
     }
     return MADC_URC_NO_REASON;
+}
+#endif
+
+#ifdef _WIN32
+// Windows (x64 SEH): a generated function with regions names
+// __madc_seh_handler as its language-specific handler, with its region table
+// as the handler data (MIR's UNWIND_INFO, EHANDLER | UHANDLER). A madc throw's
+// longjmp is an unwinding one (the try passes its frame to _setjmp), so
+// RtlUnwindEx calls the handler for every frame between the throw and the try,
+// the try's own frame flagged as the target. The ABI's records are declared
+// here under madc's names: this file is strict C11, compiled by c2mir too,
+// with no <windows.h>.
+struct MadcExceptionRecord {
+    uint32_t code;
+    uint32_t flags;
+    struct MadcExceptionRecord *next;
+    void *address;
+    uint32_t nparams;
+    uintptr_t info[15];
+};
+
+struct MadcRuntimeFunction {
+    uint32_t begin, end, unwind;
+};
+
+struct MadcDispatcherContext {
+    uint64_t control_pc;
+    uint64_t image_base;
+    const struct MadcRuntimeFunction *function_entry;
+    uint64_t establisher_frame;
+    uint64_t target_ip;
+    void *context_record;
+    void *language_handler;
+    const void *handler_data;
+};
+
+enum {
+    MADC_EXCEPTION_CONTINUE_SEARCH = 1,
+    MADC_EH_UNWINDING = 0x02,
+    MADC_EH_TARGET_UNWIND = 0x20,
+};
+#define MADC_STATUS_LONGJUMP 0x80000026u
+// libgcc's SEH codes, GCC_EXCEPTION (TYPE): its throw, unwind, forced unwind
+#define MADC_STATUS_GCC_MASK 0xfcffffffu
+#define MADC_STATUS_GCC 0x20474343u
+
+// The try a madc throw's longjmp lands in, set by the raise; the handler
+// runs regions for that longjmp (its jump buffer is the try's) and clears it
+// in the try's own frame.
+static MADC_RT_TLS struct MadcTryContext *madc_seh_target = NULL;
+
+// The frame base on Windows: MIR writes the table's base_offset from the
+// establisher frame, which the dispatcher hands the handler.
+static uintptr_t madc_seh_frame_reg(void *frame, int reg)
+{
+    (void)reg;
+    return (uintptr_t)frame;
+}
+
+int __madc_seh_handler(struct MadcExceptionRecord *rec, uint64_t frame, void *context,
+		       struct MadcDispatcherContext *dc)
+{
+    struct MadcTryContext *target = madc_seh_target;
+    int madc_p;
+    (void)context;
+    if ( !(rec->flags & MADC_EH_UNWINDING) )
+	return MADC_EXCEPTION_CONTINUE_SEARCH;
+    madc_p = rec->code == MADC_STATUS_LONGJUMP && target && rec->nparams >= 1
+	     && rec->info[0] == (uintptr_t)target->jbuf;
+    // A plain longjmp runs no cleanups (gcc's handler ignores
+    // STATUS_LONGJUMP too); a host C++ exception crossing the frame runs
+    // every live region, as g++ destroys a frame's objects for any exception.
+    if ( !madc_p && (rec->code & MADC_STATUS_GCC_MASK) != MADC_STATUS_GCC )
+	return MADC_EXCEPTION_CONTINUE_SEARCH;
+    madc_run_regions((const uint8_t *)dc->handler_data,
+		     (uintptr_t)(dc->control_pc - dc->image_base - dc->function_entry->begin),
+		     madc_seh_frame_reg, (void *)(uintptr_t)frame, madc_p ? target : NULL);
+    if ( madc_p && (rec->flags & MADC_EH_TARGET_UNWIND) )
+	madc_seh_target = NULL;
+    return MADC_EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
 
@@ -567,6 +671,9 @@ static void madc_raise(const char *unhandled)
 	_Unwind_ForcedUnwind(&unwind->header, madc_unwind_stop, ctx);
 	free(unwind);
     }
+#endif
+#ifdef _WIN32
+    madc_seh_target = ctx;
 #endif
     longjmp(ctx->jbuf, 1);
 }

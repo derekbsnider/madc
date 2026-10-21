@@ -1688,11 +1688,12 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       uint32_t v32 = (uint32_t) v;
       memcpy (slot, &v32, 4);
     } else if (r->kind == MIR_OBJ_RELOC_PC32) {
-      /* S + A - P over RVAs (bias-invariant).  The capture only emits
-         PC32 from text (rip-relative pool references). */
-      if (r->sec != MIR_OBJ_SEC_TEXT) goto done;
+      /* S + A - P over RVAs (bias-invariant).  The capture emits PC32
+         from text (rip-relative pool references) and from .xdata (a region
+         table's cleanup pointers, to their pool slots). */
+      if (r->sec != MIR_OBJ_SEC_TEXT && r->sec != MIR_OBJ_SEC_XDATA) goto done;
       uint64_t s_rva = PEX_SEC_RVA (s->sec) + s->value;
-      uint64_t p_rva = text_rva + entry_size + r->offset;
+      uint64_t p_rva = PEX_SEC_RVA (r->sec) + r->offset;
       int64_t d = (int64_t) (s_rva + (uint64_t) r->addend) - (int64_t) p_rva;
       int32_t d32 = (int32_t) d;
       if (d != (int64_t) d32) goto done;

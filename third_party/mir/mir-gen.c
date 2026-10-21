@@ -10142,9 +10142,23 @@ int MIR_gen_cfi_cie (MIR_cfi_cie_t *cie) {
 #else
 #define GEN_EH_OBJECT_P 0
 #endif
+#if defined(TARGET_WIN64_UNWIND_P) && !MIR_CROSS_P
+#define GEN_WIN64_REGISTER_P 1
+#else
+#define GEN_WIN64_REGISTER_P 0
+#endif
+#if defined(TARGET_WIN64_UNWIND_P) && MIR_TARGET_WINDOWS_P
+#define GEN_WIN64_OBJECT_P 1
+#else
+#define GEN_WIN64_OBJECT_P 0
+#endif
+/* Every one of them carries a function's region table: the FDE's LSDA, or
+   the handler data of its UNWIND_INFO. */
+#define GEN_EH_TABLE_P \
+  (GEN_CFI_REGISTER_P || GEN_EH_OBJECT_P || GEN_WIN64_REGISTER_P || GEN_WIN64_OBJECT_P)
 
-#if GEN_CFI_REGISTER_P || GEN_EH_OBJECT_P
-/* ---- The records: ONE encoder for both (gcc's output_call_frame_info).  A
+#if GEN_EH_TABLE_P
+/* ---- The records: ONE encoder for all (gcc's output_call_frame_info).  A
    pointer field holds the JIT's address (absptr) or, in an object, is a
    pc-relative sdata4 field covered by a PC32 relocation -- through the
    .mir.addrpool slot holding the address when the image's relocations
@@ -10159,11 +10173,6 @@ int MIR_gen_cfi_cie (MIR_cfi_cie_t *cie) {
    an object. */
 static uint8_t gen_eh_ptr_enc (gen_ctx_t gen_ctx) {
   return object_mode_p ? GEN_DW_EH_PE_pcrel | GEN_DW_EH_PE_sdata4 : GEN_DW_EH_PE_absptr;
-}
-
-/* Records are 8-byte multiples (every MIR target is 64-bit). */
-static void gen_cfi_align (VARR (uint8_t) * b, size_t start) {
-  while ((VARR_LENGTH (uint8_t, b) - start) % 8 != 0) VARR_PUSH (uint8_t, b, GEN_DW_CFA_nop);
 }
 
 static void gen_cfi_patch_u32 (VARR (uint8_t) * b, size_t pos, uint32_t v) {
@@ -10221,8 +10230,11 @@ static int gen_eh_table_p (MIR_func_t func) {
 }
 
 /* FUNC's region table (MIR_UNWIND_TABLE_VERSION) into B; its header names
-   the encoding of its cleanup pointers. */
-static void gen_unwind_table (gen_ctx_t gen_ctx, VARR (uint8_t) * b, MIR_func_t func) {
+   the encoding of its cleanup pointers.  BASE_BIAS moves the frame base's
+   offset to the register the platform's handler reads it from (Windows: the
+   establisher frame, target_win64_unwind_info); 0 for DWARF's breg. */
+static void gen_unwind_table (gen_ctx_t gen_ctx, VARR (uint8_t) * b, MIR_func_t func,
+                              int64_t base_bias) {
   const MIR_unwind_info_t *u = &func->unwind;
   size_t i, nregions = VARR_LENGTH (MIR_unwind_region_t, func->unwind_regions);
 
@@ -10231,7 +10243,7 @@ static void gen_unwind_table (gen_ctx_t gen_ctx, VARR (uint8_t) * b, MIR_func_t 
              object_mode_p ? GEN_DW_EH_PE_indirect | gen_eh_ptr_enc (gen_ctx)
                            : GEN_DW_EH_PE_absptr);
   gen_cfi_uleb (b, u->base_reg);
-  gen_cfi_sleb (b, u->base_offset);
+  gen_cfi_sleb (b, u->base_offset + base_bias);
   gen_cfi_uleb (b, u->base_align);
   gen_cfi_uleb (b, u->ncalls);
   for (i = 0; i < u->ncalls; i++) {
@@ -10250,6 +10262,13 @@ static void gen_unwind_table (gen_ctx_t gen_ctx, VARR (uint8_t) * b, MIR_func_t 
     else
       gen_eh_ptr (gen_ctx, b, (uint64_t) (uintptr_t) r.cleanup->addr, 0, 0);
   }
+}
+#endif
+
+#if GEN_CFI_REGISTER_P || GEN_EH_OBJECT_P
+/* Records are 8-byte multiples (every MIR target is 64-bit). */
+static void gen_cfi_align (VARR (uint8_t) * b, size_t start) {
+  while ((VARR_LENGTH (uint8_t, b) - start) % 8 != 0) VARR_PUSH (uint8_t, b, GEN_DW_CFA_nop);
 }
 
 /* A CIE into B: "zPLR" naming PERSONALITY, else "zR". */
@@ -10368,7 +10387,7 @@ static void gen_eh_capture (gen_ctx_t gen_ctx, MIR_func_t func, size_t text_off,
   if (func->cfi == NULL || code_len == 0) return;
   if (table_p) {
     VARR_TRUNC (uint8_t, b, 0);
-    gen_unwind_table (gen_ctx, b, func);
+    gen_unwind_table (gen_ctx, b, func, 0);
     table_off = gen_eh_append (gen_ctx, b, MIR_OBJ_SEC_EXCEPT, 1);
   }
   cie_off = gen_eh_object_cie (gen_ctx, table_p ? func->unwind_personality : NULL);
@@ -10404,7 +10423,7 @@ static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, si
   gen_cfi_push_u32 (b, 0); /* terminator */
   if (table_p) {
     table_pos = VARR_LENGTH (uint8_t, b);
-    gen_unwind_table (gen_ctx, b, func);
+    gen_unwind_table (gen_ctx, b, func, 0);
   }
   table = gen_malloc (gen_ctx, VARR_LENGTH (uint8_t, b));
   memcpy (table, VARR_ADDR (uint8_t, b), VARR_LENGTH (uint8_t, b));
@@ -10435,38 +10454,52 @@ static void gen_cfi_deregister_all (gen_ctx_t gen_ctx) {
 }
 #endif
 
-#if defined(TARGET_WIN64_UNWIND_P) && !MIR_CROSS_P
-#define GEN_WIN64_REGISTER_P 1
-#else
-#define GEN_WIN64_REGISTER_P 0
-#endif
-
 #if GEN_WIN64_REGISTER_P
 /* Windows: a generated function's UNWIND_INFO (target_win64_unwind_info) sits
    in its code allocation, after the code at the next 4-byte boundary -- every
    RVA of a dynamic function table is 32 bits from its base, here the code's
-   address -- and RtlAddFunctionTable registers its one RUNTIME_FUNCTION.  The
-   address decides the padding, so it is asked for first and the code placed
-   there (_MIR_get_new_code_addr, as the aarch64 wrappers place theirs; another
-   thread's publish in between means asking again).  A function with no frame
-   to describe is published as it is. */
-static uint8_t *gen_win64_publish (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
+   address -- and RtlAddFunctionTable registers its one RUNTIME_FUNCTION.  A
+   function with a region table (gen_eh_table_p) names its personality as its
+   language-specific handler: the codes are followed by the handler's RVA, the
+   table (the handler data) and the jump that RVA names
+   (target_win64_handler_jump).  The address decides the padding, so it is
+   asked for first and the code placed there (_MIR_get_new_code_addr, as the
+   aarch64 wrappers place theirs; another thread's publish in between means
+   asking again).  A function with no frame to describe is published as it
+   is. */
+static uint8_t *gen_win64_publish (gen_ctx_t gen_ctx, MIR_func_t func, uint8_t *code,
+                                   size_t code_len) {
   MIR_context_t ctx = gen_ctx->ctx;
   VARR (uint8_t) *b = gen_ctx->cfi_insns;
   size_t pad, info_start = code_len + 3, info_len; /* 3: the most padding */
-  uint8_t *addr, *res;
+  size_t handler_pos = 0, jump_pos = 0;             /* from the UNWIND_INFO's start */
+  int table_p = gen_eh_table_p (func);
+  int64_t base_bias;
+  uint8_t *addr, *res, jump[TARGET_WIN64_HANDLER_JUMP_MAX];
   RUNTIME_FUNCTION *rf;
 
   VARR_TRUNC (uint8_t, b, 0);
   VARR_PUSH_ARR (uint8_t, b, code, code_len);
   for (pad = 0; pad < 3; pad++) VARR_PUSH (uint8_t, b, 0xcc); /* int3 */
-  if (!target_win64_unwind_info (gen_ctx, b)) return _MIR_publish_code (ctx, code, code_len);
+  if (!target_win64_unwind_info (gen_ctx, b, table_p, &base_bias))
+    return _MIR_publish_code (ctx, code, code_len);
+  if (table_p) {
+    handler_pos = VARR_LENGTH (uint8_t, b) - info_start;
+    gen_cfi_push_u32 (b, 0); /* the handler's RVA: patched once the padding is known */
+    gen_unwind_table (gen_ctx, b, func, base_bias);
+    jump_pos = VARR_LENGTH (uint8_t, b) - info_start;
+    VARR_PUSH_ARR (uint8_t, b, jump,
+                   target_win64_handler_jump (jump, (uint64_t) (uintptr_t)
+                                                      func->unwind_personality->addr));
+  }
   info_len = VARR_LENGTH (uint8_t, b) - info_start;
   for (;;) {
     if ((addr = _MIR_get_new_code_addr (ctx, VARR_LENGTH (uint8_t, b))) == NULL)
       util_error (gen_ctx, "no memory to publish generated code");
     pad = (4 - (size_t) ((uintptr_t) addr + code_len) % 4) % 4;
     memmove (VARR_ADDR (uint8_t, b) + code_len + pad, VARR_ADDR (uint8_t, b) + info_start, info_len);
+    if (table_p)
+      gen_cfi_patch_u32 (b, code_len + pad + handler_pos, (uint32_t) (code_len + pad + jump_pos));
     res = _MIR_publish_code_by_addr (ctx, addr, VARR_ADDR (uint8_t, b), code_len + pad + info_len);
     if (res != NULL) break;
     memmove (VARR_ADDR (uint8_t, b) + info_start, VARR_ADDR (uint8_t, b) + code_len + pad, info_len);
@@ -10491,32 +10524,70 @@ static void gen_cfi_deregister_all (gen_ctx_t gen_ctx) {
 }
 #endif
 
-#if defined(TARGET_WIN64_UNWIND_P) && MIR_TARGET_WINDOWS_P
-#define GEN_WIN64_OBJECT_P 1
-#else
-#define GEN_WIN64_OBJECT_P 0
-#endif
-
 #if GEN_WIN64_OBJECT_P
-/* Windows: the object's records of a generated function, its code at .text +
-   TEXT_OFF -- its UNWIND_INFO (target_win64_unwind_info) in .xdata and its
-   RUNTIME_FUNCTION {begin, end, unwind info} in .pdata, three RVA32 fields
-   against the .text and .xdata section symbols (gcc's .pdata: ADDR32NB).  A
+/* The object's jump to HANDLER (target_win64_handler_jump) through the
+   .mir.addrpool slot holding its address, in .text -- the language-specific
+   handler an UNWIND_INFO names by RVA, as ld writes a stub for an imported
+   personality: appended on first use, one per handler (eh_cies serves the
+   object's per-personality records on Windows too). */
+static size_t gen_win64_handler_stub (gen_ctx_t gen_ctx, MIR_item_t handler) {
+  int sym = gen_obj_item_sym (gen_ctx, handler);
+  uint8_t jump[TARGET_WIN64_HANDLER_JUMP_MAX];
+  size_t len = target_win64_handler_jump (jump, 0);
+  gen_eh_cie_t c;
+
+  for (size_t i = 0; i < VARR_LENGTH (gen_eh_cie_t, gen_ctx->eh_cies); i++)
+    if (VARR_GET (gen_eh_cie_t, gen_ctx->eh_cies, i).personality_sym == sym)
+      return VARR_GET (gen_eh_cie_t, gen_ctx->eh_cies, i).off;
+  c.personality_sym = sym;
+  c.off = MIR_object_section_append (gen_object, MIR_OBJ_SEC_TEXT, jump, len, 2);
+  MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_TEXT, c.off + TARGET_WIN64_HANDLER_JUMP_DISP,
+                        MIR_object_section_symbol (gen_object, MIR_OBJ_SEC_ADDRPOOL),
+                        gen_obj_eh_slot (gen_ctx, handler) - 4, MIR_OBJ_RELOC_PC32);
+  VARR_PUSH (gen_eh_cie_t, gen_ctx->eh_cies, c);
+  return c.off;
+}
+
+/* Windows: the object's records of FUNC, its code at .text + TEXT_OFF -- its
+   UNWIND_INFO (target_win64_unwind_info) in .xdata and its RUNTIME_FUNCTION
+   {begin, end, unwind info} in .pdata, three RVA32 fields against the .text
+   and .xdata section symbols (gcc's .pdata: ADDR32NB).  With a region table
+   (gen_eh_table_p) the UNWIND_INFO names the handler stub (an RVA32 field)
+   and carries the table, its cleanup pointers PC32 to their pool slots.  A
    function with no frame to describe gets neither, as in the JIT: the
    unwinder's leaf rule is its description. */
-static void gen_win64_capture (gen_ctx_t gen_ctx, size_t text_off, size_t code_len) {
+static void gen_win64_capture (gen_ctx_t gen_ctx, MIR_func_t func, size_t text_off,
+                               size_t code_len) {
   VARR (uint8_t) *b = gen_ctx->cfi_insns;
   static const uint8_t entry[12] = {0}; /* the relocations fill all three fields */
-  size_t info_off, entry_off;
-  int text_sym, xdata_sym;
+  size_t info_off, entry_off, handler_pos = 0, stub_off = 0;
+  int text_sym, xdata_sym, table_p = gen_eh_table_p (func);
+  int64_t base_bias;
 
   VARR_TRUNC (uint8_t, b, 0);
-  if (code_len == 0 || !target_win64_unwind_info (gen_ctx, b)) return;
-  info_off = MIR_object_section_append (gen_object, MIR_OBJ_SEC_XDATA, VARR_ADDR (uint8_t, b),
-                                        VARR_LENGTH (uint8_t, b), 4);
-  entry_off = MIR_object_section_append (gen_object, MIR_OBJ_SEC_PDATA, entry, sizeof (entry), 4);
+  if (code_len == 0 || !target_win64_unwind_info (gen_ctx, b, table_p, &base_bias)) return;
   text_sym = MIR_object_section_symbol (gen_object, MIR_OBJ_SEC_TEXT);
   xdata_sym = MIR_object_section_symbol (gen_object, MIR_OBJ_SEC_XDATA);
+  if (table_p) {
+    stub_off = gen_win64_handler_stub (gen_ctx, func->unwind_personality);
+    handler_pos = VARR_LENGTH (uint8_t, b);
+    gen_cfi_push_u32 (b, 0); /* the RVA32 relocation fills it */
+    gen_unwind_table (gen_ctx, b, func, base_bias);
+  }
+  info_off = MIR_object_section_append (gen_object, MIR_OBJ_SEC_XDATA, VARR_ADDR (uint8_t, b),
+                                        VARR_LENGTH (uint8_t, b), 4);
+  for (size_t i = 0; i < VARR_LENGTH (gen_eh_reloc_t, gen_ctx->eh_relocs); i++) {
+    gen_eh_reloc_t r = VARR_GET (gen_eh_reloc_t, gen_ctx->eh_relocs, i);
+
+    MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_XDATA, info_off + r.pos,
+                          MIR_object_section_symbol (gen_object, r.sec), r.offset,
+                          MIR_OBJ_RELOC_PC32);
+  }
+  VARR_TRUNC (gen_eh_reloc_t, gen_ctx->eh_relocs, 0);
+  if (table_p)
+    MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_XDATA, info_off + handler_pos, text_sym,
+                          (int64_t) stub_off, MIR_OBJ_RELOC_RVA32);
+  entry_off = MIR_object_section_append (gen_object, MIR_OBJ_SEC_PDATA, entry, sizeof (entry), 4);
   MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_PDATA, entry_off, text_sym, (int64_t) text_off,
                         MIR_OBJ_RELOC_RVA32);
   MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_PDATA, entry_off + 4, text_sym,
@@ -10774,14 +10845,15 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
 #if GEN_EH_OBJECT_P
       gen_eh_capture (gen_ctx, func_item->u.func, text_off, code_len);
 #elif GEN_WIN64_OBJECT_P
-      gen_win64_capture (gen_ctx, text_off, code_len);
+      gen_win64_capture (gen_ctx, func_item->u.func, text_off, code_len);
 #else
       (void) text_off;
 #endif
       machine_code = NULL;
     } else {
 #if GEN_WIN64_REGISTER_P
-      machine_code = func_item->u.func->call_addr = gen_win64_publish (gen_ctx, code, code_len);
+      machine_code = func_item->u.func->call_addr
+        = gen_win64_publish (gen_ctx, func_item->u.func, code, code_len);
 #else
       machine_code = func_item->u.func->call_addr = _MIR_publish_code (ctx, code, code_len);
 #endif
