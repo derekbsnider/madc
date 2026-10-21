@@ -102,16 +102,19 @@ void __madc_scope_end(void *scope);
 // consistent (scope_end's own throws bypass C++ frames via longjmp).
 int __madc_scope_end_check(void *scope);
 
-// The MT-5 `scope { ... }` keyword block (the CIR builder emits this pair;
-// no int64 handle). enter = scope_begin + an unwind registration on the
-// exception runtime's cleanup stack, so a throw ESCAPING the block quietly
-// abandons the scope mid-unwind (cancel members + join + pop cur + free;
-// the in-flight error wins) instead of leaving a dead block on the task's
-// chain; a throw caught INSIDE the block never touches it. exit = remove
-// the registration, then scope_end (join + rethrow) — its check failures
-// are engine bugs and throw loud.
+// The MT-5 `scope { ... }` keyword block (the CIR builder emits these; no
+// int64 handle). enter = scope_begin; its result initializes the block's
+// slot, a cleanup variable whose cleanup is __madc_scope_block_leave, so a
+// throw ESCAPING the block quietly abandons the scope mid-unwind (cancel
+// members + join + pop cur + free; the in-flight error wins) instead of
+// leaving a dead block on the task's chain; a throw caught INSIDE the block
+// never touches it. exit, at the block's end, takes the scope out of the
+// slot (the cleanup then does nothing) and runs scope_end (join + rethrow) —
+// its check failures are engine bugs and throw loud. return / break /
+// continue / goto out of the block are refused at parse time.
 void *__madc_scope_block_enter(void);
-void __madc_scope_block_exit(void *scope);
+void __madc_scope_block_exit(void *slot);
+void __madc_scope_block_leave(void *slot);
 
 // Request cancellation of the scope's whole subtree: flag + wake every
 // member (transitively). Returns immediately; any task may call it.

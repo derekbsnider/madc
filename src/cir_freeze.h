@@ -1529,6 +1529,8 @@ uint32_t madc_forest_defines_hash(const Program *prog);
 // the config word's language standard (madc::file_kind_family).
 bool cir_forest_profile_serves_family(uint32_t producer_config,
 				      uint32_t consumer_config);
+// Is the config word's language standard a C one (madc::file_kind_family)?
+bool cir_forest_config_is_c(uint32_t config);
 
 // The frozen CONTENT of the last container in `image`, one digest per
 // segment id: every segment's decoded bytes, the directory with its producer

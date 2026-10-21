@@ -275,9 +275,11 @@ c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p = false);
 // in cir_builder.cpp is the sole tree builder. See madc_cir_execute.)
 
 // Type-check the translated tree and generate MIR.
-// Returns 1 on success, 0 on error.
+// Returns 1 on success, 0 on error. `unwind_p`: the tree's language has
+// exceptions -- C++ and the dialect compile with unwind regions (gcc's
+// -fexceptions), C without.
 int cir_compile(MIR_context_t mir_ctx, c2m_ctx_t c2m, node_t tree,
-		const char *module_name);
+		const char *module_name, bool unwind_p);
 
 // Clean up the c2mir context.
 void cir_finish(c2m_ctx_t c2m);

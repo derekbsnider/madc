@@ -1,0 +1,11 @@
+frame: +1 +2 -2 -1 caught2
+first: +1 -1 caught1
+handler: +1 +2 -2 +3 inner5 -3 ~E5 -1 outer6 ~E6
+loop: +11 -11 +12 -12 caught2
+siblings: +21 -21 +22 -22 caught22
+array: +30 +31 +32 -32 -31 -30 caught30
+template: +43 -43 caught3
+rethrow: +50 +51 -51 -50 caught5
+cv: +60 -60 caught60
+return: +71 +70 -70 -71 caught71
+dtor: +80 -80 caught7

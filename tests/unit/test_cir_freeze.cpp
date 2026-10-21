@@ -361,7 +361,8 @@ TEST_CASE("B2: a thawed module tree is identical AND compiles + runs (the Phase-
 		CHECK(cir_trees_structurally_identical(tree, thawed->as_node()));
 
 		// Compile and run the THAWED tree through the production path.
-		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_mod");
+		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_mod",
+				     !prog->is_c_mode());
 		REQUIRE(ok == 1);
 		MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
 		MIR_load_module(mir_ctx, mod);
@@ -425,7 +426,8 @@ TEST_CASE("B3: a two-file program partitions into units, thaws identical, and ru
 		CHECK(cir_trees_structurally_identical(tree, thawed->as_node()));
 
 		// The thawed multi-unit tree compiles + runs (production path).
-		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_forest");
+		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_forest",
+				     !prog->is_c_mode());
 		REQUIRE(ok == 1);
 		MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
 		MIR_load_module(mir_ctx, mod);
@@ -568,7 +570,8 @@ TEST_CASE("B3: cross-process closure — a FRESH live pool thaws correct strings
 		CHECK(pos_names_inc);
 
 		// And the thawed tree still compiles + runs with the fresh pool.
-		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_fresh");
+		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_fresh",
+				     !prog->is_c_mode());
 		REQUIRE(ok == 1);
 		MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
 		MIR_load_module(mir_ctx, mod);

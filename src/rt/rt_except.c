@@ -36,22 +36,10 @@
 // class handler matches by type NAME through __madc_exception_match; the tag
 // alone never selects one.
 
-// Per-object cleanup entry — linked list, pushed at construction time
-struct MadcCleanupEntry {
-    void **fn_indirect;          // pointer to function pointer (double deref for JIT dtors)
-    void *obj_ptr;               // object (this) pointer
-    uint8_t *guard;              // guard byte on JIT stack (NULL if unguarded)
-    uint8_t is_chain_tail;       // 1 = last in dtor chain for this object, clear guard
-    void *dtor_direct;           // direct dtor fn pointer (used when fn_indirect == NULL)
-    uint8_t heap_alloc;          // 1 = malloc'd by __madc_cleanup_push_dtor, free on remove
-    struct MadcCleanupEntry *prev;  // toward older entries
-};
-
 // Per-try-block context — linked list, one per active try
 struct MadcTryContext {
     jmp_buf jbuf;
     struct MadcTryContext *prev;           // outer try block
-    struct MadcCleanupEntry *cleanup_mark; // cleanup stack depth at try entry
 };
 
 // Current exception value
@@ -79,32 +67,40 @@ struct MadcClassException {
 };
 
 // A handled exception (Itanium __cxa_begin_catch / __cxa_end_catch): one per
-// active handler, innermost on top — what `throw;` rethrows. `cleanup` is the
-// runtime cleanup entry that ends the catch when a throw leaves the handler.
+// active handler, innermost on top — what `throw;` rethrows.
 struct MadcCaught {
     struct MadcException ex;
     struct MadcCaught *prev;
-    struct MadcCleanupEntry *cleanup;
     int rethrown;
 };
 
 // Thread-local exception state
 static MADC_RT_TLS struct MadcTryContext *madc_try_stack = NULL;
 static MADC_RT_TLS struct MadcException madc_current_exception = {0};
-static MADC_RT_TLS struct MadcCleanupEntry *madc_cleanup_stack = NULL;
 static MADC_RT_TLS struct MadcCaught *madc_caught_stack = NULL;
+#ifdef _WIN32
+// The madc unwind in flight on Windows, set before its longjmp: the jump
+// buffer it lands in, and the try whose guard the walk stops at (NULL for a
+// boundary's). __madc_seh_handler runs regions for that longjmp alone.
+static MADC_RT_TLS void *madc_seh_jbuf = NULL;
+static MADC_RT_TLS struct MadcTryContext *madc_seh_target = NULL;
+#endif
 
 // --- Per-execution-context state switch (rt_except.h documents the design
-// decision). The four statics above are per-CONTEXT, not merely per-thread:
-// the cooperative task runtime saves/restores them at every switch so a try
-// held across a yield() keeps its own chain. A zero-filled buffer restores
-// as the empty state (fresh task). Plain memcpy — ledger-safe C11.
+// decision). The statics above are per-CONTEXT, not merely per-thread: the
+// cooperative task runtime saves/restores them at every switch so a try held
+// across a yield() keeps its own chain, and an unwind whose cleanup parks its
+// task (a scope block's join) keeps its own target. A zero-filled buffer
+// restores as the empty state (fresh task). Plain memcpy — ledger-safe C11.
 
 struct MadcExceptState {
     struct MadcTryContext *try_stack;
     struct MadcException exception;
-    struct MadcCleanupEntry *cleanup_stack;
     struct MadcCaught *caught_stack;
+#ifdef _WIN32
+    void *seh_jbuf;
+    struct MadcTryContext *seh_target;
+#endif
 };
 
 unsigned long __madc_except_state_size(void)
@@ -117,8 +113,11 @@ void __madc_except_state_save(void *buf)
     struct MadcExceptState *s = (struct MadcExceptState *)buf;
     s->try_stack = madc_try_stack;
     s->exception = madc_current_exception;
-    s->cleanup_stack = madc_cleanup_stack;
     s->caught_stack = madc_caught_stack;
+#ifdef _WIN32
+    s->seh_jbuf = madc_seh_jbuf;
+    s->seh_target = madc_seh_target;
+#endif
 }
 
 void __madc_except_state_restore(const void *buf)
@@ -126,8 +125,11 @@ void __madc_except_state_restore(const void *buf)
     const struct MadcExceptState *s = (const struct MadcExceptState *)buf;
     madc_try_stack = s->try_stack;
     madc_current_exception = s->exception;
-    madc_cleanup_stack = s->cleanup_stack;
     madc_caught_stack = s->caught_stack;
+#ifdef _WIN32
+    madc_seh_jbuf = s->seh_jbuf;
+    madc_seh_target = s->seh_target;
+#endif
 }
 
 // --- Runtime functions called from JIT code ---
@@ -144,7 +146,6 @@ unsigned long __madc_try_context_size(void)
 void *__madc_try_push(struct MadcTryContext *ctx)
 {
     ctx->prev = madc_try_stack;
-    ctx->cleanup_mark = madc_cleanup_stack;
     madc_try_stack = ctx;
     return (void *)ctx->jbuf;
 }
@@ -156,152 +157,29 @@ void __madc_try_pop(void)
 	madc_try_stack = madc_try_stack->prev;
 }
 
-// Unwind cleanup entries down to mark, calling destructors
-void __madc_cleanup_unwind_to(void *mark)
-{
-    while ( madc_cleanup_stack != (struct MadcCleanupEntry *)mark )
-    {
-	struct MadcCleanupEntry *e = madc_cleanup_stack;
-	madc_cleanup_stack = e->prev;
-	if ( !e->guard || *e->guard )
-	{
-	    void (*fn)(void *) = e->fn_indirect
-		? (void (*)(void *))*e->fn_indirect
-		: (void (*)(void *))e->dtor_direct;
-	    if ( fn )
-		fn(e->obj_ptr);
-	    if ( e->guard && e->is_chain_tail )
-		*e->guard = 0;
-	}
-	if ( e->heap_alloc )
-	    free(e);
-    }
-}
-
-// Discard cleanup entries down to mark WITHOUT calling destructors (freeing any
-// heap-allocated entries — the dtors already ran via the cleanup attribute on
-// the normal scope-exit path).
-void __madc_cleanup_discard_to(void *mark)
-{
-    while ( madc_cleanup_stack != (struct MadcCleanupEntry *)mark )
-    {
-	struct MadcCleanupEntry *e = madc_cleanup_stack;
-	madc_cleanup_stack = e->prev;
-	if ( e->heap_alloc )
-	    free(e);
-    }
-}
-
-// A try block's normal exit — the end of its body, a return, break, continue
-// or goto out of it: the cleanup attribute on the try's frame guard (a local
-// holding the MadcTryContext's address) calls this with the guard's address.
-// Ends that frame and drops any cleanup entry its body left (none, when every
-// object's guard removed its own). A throw never gets here: the raise popped
-// the frame before its longjmp, and a longjmp runs no cleanup attribute.
+// A try block's exit — the end of its body, a return, break, continue or goto
+// out of it, or an unwind passing it (a boundary's): the cleanup attribute on
+// the try's frame guard (a local holding the MadcTryContext's address) calls
+// this with the guard's address, and ends that frame. A throw INTO the try
+// never runs it: the raise popped the frame, and the walk stops at its guard.
 void __madc_try_leave(void *guard)
 {
     struct MadcTryContext *ctx = guard ? *(struct MadcTryContext **)guard : NULL;
     if ( !ctx )
 	return;
-    __madc_cleanup_discard_to(ctx->cleanup_mark);
     madc_try_stack = ctx->prev;
 }
 
-// Current cleanup-stack top — a mark the try lowering captures before the body
-// so it can discard exactly the try-body entries on the NORMAL exit path (the
-// cleanup attribute already ran their dtors at C-block scope exit). On the
-// exception path __madc_throw_* unwinds to the same mark instead. P1.1c.
-void *__madc_cleanup_top(void)
+// A disarmable deferred call: SLOT holds {fn, arg}, and the cleanup attribute
+// on it calls fn(arg) unless the owner cleared fn first -- the work an
+// exception leaving the scope must do and a normal exit must not (a
+// block-scope static's __cxa_guard_abort: g++ calls it from the landing pad of
+// the guarded initialization only).
+void __madc_cleanup_call(void *slot)
 {
-    return (void *)madc_cleanup_stack;
-}
-
-// Push a HEAP-ALLOCATED cleanup entry naming a destructor by VALUE (not via a
-// double-indirect fn slot): the lowering passes `(void*)Cls___dtor` and
-// `(void*)&obj`. Returns the entry — the lowering keeps it in a guard local
-// whose cleanup attribute (__madc_cleanup_leave) removes it when the object's
-// scope exits normally. The entry is freed by unwind/discard/remove.
-// `dtor` has the shape `void (*)(void *this)` — the same single-`this` shape the
-// cleanup attribute and the class dtor symbol use. P1.1c.
-void *__madc_cleanup_push_dtor(void *dtor, void *obj)
-{
-    struct MadcCleanupEntry *entry
-	= (struct MadcCleanupEntry *)malloc(sizeof(struct MadcCleanupEntry));
-    if ( !entry )
-    {
-	fprintf(stderr, "out of memory registering a cleanup\n");
-	abort();
-    }
-    entry->fn_indirect = NULL;
-    entry->obj_ptr = obj;
-    entry->guard = NULL;
-    entry->is_chain_tail = 0;
-    entry->dtor_direct = dtor;   // direct function pointer (fn_indirect == NULL)
-    entry->heap_alloc = 1;
-    entry->prev = madc_cleanup_stack;
-    madc_cleanup_stack = entry;
-    return entry;
-}
-
-// Push a cleanup entry onto the cleanup stack
-void __madc_cleanup_push(struct MadcCleanupEntry *entry, void **fn_indirect,
-			 void *obj, uint8_t *guard, uint8_t is_chain_tail)
-{
-    entry->dtor_direct = NULL;
-    entry->heap_alloc = 0;
-    entry->fn_indirect = fn_indirect;
-    entry->obj_ptr = obj;
-    entry->guard = guard;
-    entry->is_chain_tail = is_chain_tail;
-    entry->prev = madc_cleanup_stack;
-    madc_cleanup_stack = entry;
-}
-
-// Pop the top cleanup entry (no destructor call)
-void __madc_cleanup_pop(void)
-{
-    if ( madc_cleanup_stack )
-    {
-	struct MadcCleanupEntry *e = madc_cleanup_stack;
-	madc_cleanup_stack = e->prev;
-	if ( e->heap_alloc )
-	    free(e);
-    }
-}
-
-// Remove ONE entry wherever it sits in the stack, no destructor call
-// (rt_except.h documents the widening). Top-pop is not enough for a host
-// frame whose registration outlives entries pushed BELOW it and is exited
-// while entries pushed ABOVE it are still live — the MT-5 scope block's
-// normal exit is exactly that shape. O(depth) walk; a scope-bound entry is
-// on top when its scope exits, so the walk is one step there.
-void __madc_cleanup_remove(void *entry)
-{
-    struct MadcCleanupEntry *e = (struct MadcCleanupEntry *)entry;
-    struct MadcCleanupEntry **link = &madc_cleanup_stack;
-    while ( *link )
-    {
-	if ( *link == e )
-	{
-	    *link = e->prev;
-	    if ( e->heap_alloc )
-		free(e);
-	    return;
-	}
-	link = &(*link)->prev;
-    }
-}
-
-// An object's scope exits normally — its end, a return, break, continue or
-// goto: the cleanup attribute on the guard local that holds the object's
-// entry (__madc_cleanup_push_dtor's result) calls this with the guard's
-// address, BEFORE the object's own cleanup destroys it (the guard is declared
-// after the object). The entry goes; a later throw cannot run it again.
-void __madc_cleanup_leave(void *guard)
-{
-    void *entry = guard ? *(void **)guard : NULL;
-    if ( entry )
-	__madc_cleanup_remove(entry);
+    void **s = (void **)slot;
+    if ( s && s[0] )
+	((void (*)(void *))s[0])(s[1]);
 }
 
 // --- The platform unwinder (docs/plans/2026-10-19-table-driven-unwinding.md).
@@ -313,8 +191,9 @@ void __madc_cleanup_leave(void *guard)
 // try once the walk has passed the try's frame. A frame the unwinder cannot
 // describe ends the walk, and the stop function lands there. The Itanium ABI's
 // functions are declared here under their own names and madc's types: this
-// file is strict C11, compiled by c2mir too, with no <unwind.h>. Windows keeps
-// the plain longjmp until generated frames carry its unwind tables.
+// file is strict C11, compiled by c2mir too, with no <unwind.h>. Windows x64
+// unwinds through its unwinding longjmp and the language-specific handler
+// below instead.
 #ifndef _WIN32
 #define MADC_RT_UNWIND 1
 
@@ -332,14 +211,18 @@ struct MadcUnwindHeader {
     uintptr_t private_1, private_2;
 };
 
-// A madc throw's unwind: the header first, so a personality reaches the
-// target try through the header's address. It lives on the heap, never on
-// the stack being unwound: a g++ frame's landing pad resets SP to its own
-// frame, and its _Unwind_Resume reads the header back from storage below
-// (g++ heap-allocates its exception, glibc keeps its in the thread).
+// A madc unwind: the header first, so a personality reaches the target try
+// through the header's address; the landing, a jump buffer in the frame that
+// holds LIMIT (a throw's: its try context; a boundary's: the boundary). It
+// lives on the heap, never on the stack being unwound: a g++ frame's landing
+// pad resets SP to its own frame, and its _Unwind_Resume reads the header
+// back from storage below (g++ heap-allocates its exception, glibc keeps its
+// in the thread).
 struct MadcUnwind {
     struct MadcUnwindHeader header;
     struct MadcTryContext *target;
+    uintptr_t limit;
+    void *jbuf;
 };
 
 // The header's exception_cleanup: a host `catch (...)` consumed the unwind.
@@ -524,22 +407,24 @@ int __madc_personality(int version, int actions, uint64_t exception_class,
 }
 
 // The forced unwind's stop function: called for every frame before its
-// personality, it lands the throw in its try once the walk has passed the
-// try's frame -- the context's CFA is the SP of the frame it describes, above
-// every local of the frames below, the try context among them -- or when the
-// walk ends (glibc's unwind_stop, with the try context's own address in place
-// of the jmp_buf's saved SP).
+// personality, it lands the unwind once the walk has passed the frame holding
+// its limit -- the context's CFA is the SP of the frame it describes, above
+// every local of the frames below, the limit among them -- or when the walk
+// ends (glibc's unwind_stop, with the limit's own address in place of the
+// jmp_buf's saved SP). The limit's frame is the one whose personality ran
+// last: a try's runs the try body's regions; a boundary's frame has none.
 static int madc_unwind_stop(int version, int actions, uint64_t exception_class,
 			    struct MadcUnwindHeader *header, struct MadcUnwindContext *uc,
 			    void *param)
 {
-    struct MadcTryContext *target = (struct MadcTryContext *)param;
+    struct MadcUnwind *unwind = (struct MadcUnwind *)param;
     (void)version;
     (void)exception_class;
-    if ( (actions & MADC_UA_END_OF_STACK) || _Unwind_GetCFA(uc) > (uintptr_t)target )
+    if ( (actions & MADC_UA_END_OF_STACK) || _Unwind_GetCFA(uc) > unwind->limit )
     {
+	void *jbuf = unwind->jbuf;
 	free(header);
-	longjmp(target->jbuf, 1);
+	longjmp(*(jmp_buf *)jbuf, 1);
     }
     return MADC_URC_NO_REASON;
 }
@@ -588,10 +473,9 @@ enum {
 #define MADC_STATUS_GCC_MASK 0xfcffffffu
 #define MADC_STATUS_GCC 0x20474343u
 
-// The try a madc throw's longjmp lands in, set by the raise; the handler
-// runs regions for that longjmp (its jump buffer is the try's) and clears it
-// in the try's own frame.
-static MADC_RT_TLS struct MadcTryContext *madc_seh_target = NULL;
+// The handler clears the unwind in flight (madc_seh_jbuf, madc_seh_target,
+// above) in the target frame; a boundary's frame is a host one, and the next
+// madc unwind overwrites the stale value.
 
 // The frame base on Windows: MIR writes the table's base_offset from the
 // establisher frame, which the dispatcher hands the handler.
@@ -609,8 +493,8 @@ int __madc_seh_handler(struct MadcExceptionRecord *rec, uint64_t frame, void *co
     (void)context;
     if ( !(rec->flags & MADC_EH_UNWINDING) )
 	return MADC_EXCEPTION_CONTINUE_SEARCH;
-    madc_p = rec->code == MADC_STATUS_LONGJUMP && target && rec->nparams >= 1
-	     && rec->info[0] == (uintptr_t)target->jbuf;
+    madc_p = rec->code == MADC_STATUS_LONGJUMP && madc_seh_jbuf && rec->nparams >= 1
+	     && rec->info[0] == (uintptr_t)madc_seh_jbuf;
     // A plain longjmp runs no cleanups (gcc's handler ignores
     // STATUS_LONGJUMP too); a host C++ exception crossing the frame runs
     // every live region, as g++ destroys a frame's objects for any exception.
@@ -620,10 +504,51 @@ int __madc_seh_handler(struct MadcExceptionRecord *rec, uint64_t frame, void *co
 		     (uintptr_t)(dc->control_pc - dc->image_base - dc->function_entry->begin),
 		     madc_seh_frame_reg, (void *)(uintptr_t)frame, madc_p ? target : NULL);
     if ( madc_p && (rec->flags & MADC_EH_TARGET_UNWIND) )
+    {
+	madc_seh_jbuf = NULL;
 	madc_seh_target = NULL;
+    }
     return MADC_EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
+
+// Unwind to the jump buffer JBUF in the frame holding LIMIT and land there:
+// every frame between runs its cleanups -- through the platform unwinder's
+// forced unwind (madc_unwind_stop lands it), or on Windows the unwinding
+// longjmp itself (RtlUnwindEx calls each frame's handler) -- stopping in
+// TARGET's frame at its guard (NULL: every region of every frame passed). A
+// plain longjmp where there is no unwinder, it returned, or the unwind's
+// header could not be allocated.
+static void madc_unwind_to(struct MadcTryContext *target, void *limit, void *jbuf)
+{
+#ifdef MADC_RT_UNWIND
+    struct MadcUnwind *unwind = (struct MadcUnwind *)calloc(1, sizeof(*unwind));
+    if ( unwind )
+    {
+	unwind->header.exception_class = MADC_UNWIND_CLASS;
+	unwind->header.exception_cleanup = madc_unwind_delete;
+	unwind->target = target;
+	unwind->limit = (uintptr_t)limit;
+	unwind->jbuf = jbuf;
+	_Unwind_ForcedUnwind(&unwind->header, madc_unwind_stop, unwind);
+	free(unwind);
+    }
+#else
+    (void)limit;
+#endif
+#ifdef _WIN32
+    madc_seh_jbuf = jbuf;
+    madc_seh_target = target;
+#else
+    (void)target;
+#endif
+    longjmp(*(jmp_buf *)jbuf, 1);
+}
+
+void __madc_unwind_jump(void *limit, void *jbuf)
+{
+    madc_unwind_to(NULL, limit, jbuf);
+}
 
 // Print the unhandled-exception line. The ONE formatting owner is
 // __madc_exception_text (below) — the same renderer MT-3's scope error
@@ -636,22 +561,15 @@ static void madc_print_unhandled(void)
     fprintf(stderr, "Unhandled exception: %s\n", buf);
 }
 
-// THE raise tail every throw shares: unwind the cleanup stack to the
-// innermost try's mark and land in that try -- through the platform
-// unwinder's forced unwind, which runs every frame's cleanups on the way
-// (madc_unwind_stop lands it), or by a plain longjmp where there is no
-// unwinder, it returned, or the unwind's header could not be allocated -- or,
-// with no try active, run every cleanup, print the exception
-// (`unhandled` names the case) and abort.
+// THE raise tail every throw shares: land in the innermost try, every frame
+// between running its cleanups (madc_unwind_to) -- or, with no try active,
+// print the exception (`unhandled` names the case) and abort without
+// unwinding, as g++'s search phase finds no handler and terminates.
 static void madc_raise(const char *unhandled)
 {
     struct MadcTryContext *ctx;
-#ifdef MADC_RT_UNWIND
-    struct MadcUnwind *unwind;
-#endif
     if ( !madc_try_stack )
     {
-	__madc_cleanup_unwind_to(NULL);
 	if ( unhandled )
 	    fprintf(stderr, "%s\n", unhandled);
 	else
@@ -660,22 +578,7 @@ static void madc_raise(const char *unhandled)
     }
     ctx = madc_try_stack;
     madc_try_stack = ctx->prev;
-    __madc_cleanup_unwind_to(ctx->cleanup_mark);
-#ifdef MADC_RT_UNWIND
-    unwind = (struct MadcUnwind *)calloc(1, sizeof(*unwind));
-    if ( unwind )
-    {
-	unwind->header.exception_class = MADC_UNWIND_CLASS;
-	unwind->header.exception_cleanup = madc_unwind_delete;
-	unwind->target = ctx;
-	_Unwind_ForcedUnwind(&unwind->header, madc_unwind_stop, ctx);
-	free(unwind);
-    }
-#endif
-#ifdef _WIN32
-    madc_seh_target = ctx;
-#endif
-    longjmp(ctx->jbuf, 1);
+    madc_unwind_to(ctx, ctx, ctx->jbuf);
 }
 
 // Release what an exception owns: a class exception's object (destroyed,
@@ -803,17 +706,10 @@ static void madc_end_catch(struct MadcCaught *c)
     free(c);
 }
 
-// The runtime cleanup entry's handler: a throw left the handler, so the
-// unwind ends its catch (the entry is consumed by the unwind itself).
-static void madc_end_catch_unwound(void *c)
-{
-    madc_end_catch((struct MadcCaught *)c);
-}
-
 // A handler starts: the in-flight exception becomes the handled one (pushed
-// on the caught stack), and a runtime cleanup entry ends the catch if a throw
-// leaves the handler. The returned handle is the catch's guard; the handler
-// ends it on every other exit through __madc_exception_end_catch.
+// on the caught stack). The returned handle is the catch's guard; its cleanup,
+// __madc_exception_end_catch, ends the catch on every exit of the handler --
+// a throw leaving it included (the guard is a region of its frame).
 void *__madc_exception_begin_catch(void)
 {
     struct MadcCaught *c = (struct MadcCaught *)malloc(sizeof(struct MadcCaught));
@@ -827,20 +723,17 @@ void *__madc_exception_begin_catch(void)
     c->prev = madc_caught_stack;
     madc_caught_stack = c;
     memset(&madc_current_exception, 0, sizeof(madc_current_exception));
-    c->cleanup = (struct MadcCleanupEntry *)
-	__madc_cleanup_push_dtor((void *)madc_end_catch_unwound, c);
     return c;
 }
 
-// A handler's normal exit — the end of its block, a return, break, continue
-// or goto: the cleanup attribute on its guard calls this with the guard's
-// address. Removes the catch's runtime cleanup entry and ends the catch.
+// A handler's exit — the end of its block, a return, break, continue or goto,
+// or a throw leaving it: the cleanup attribute on its guard calls this with
+// the guard's address, and the catch ends.
 void __madc_exception_end_catch(void *guard)
 {
     struct MadcCaught *c = guard ? *(struct MadcCaught **)guard : NULL;
     if ( !c )
 	return;
-    __madc_cleanup_remove(c->cleanup);
     madc_end_catch(c);
 }
 

@@ -10653,8 +10653,8 @@ bool CirBuilder::ensure_runtime_extern_for(const madc::dis::istring &sym)
 		need_output_extern("__madc_try_leave", false, { { {N_VOID}, true } });
 		return true;
 	}
-	if (sym == "__madc_cleanup_leave") {
-		need_output_extern("__madc_cleanup_leave", false, { { {N_VOID}, true } });
+	if (sym == "__madc_cleanup_call") {
+		need_output_extern("__madc_cleanup_call", false, { { {N_VOID}, true } });
 		return true;
 	}
 	if (sym == "__madc_exception_type") {
@@ -10663,11 +10663,6 @@ bool CirBuilder::ensure_runtime_extern_for(const madc::dis::istring &sym)
 	}
 	if (sym == "__madc_rethrow") {
 		need_output_extern("__madc_rethrow", false, {});
-		return true;
-	}
-	if (sym == "__madc_cleanup_push_dtor") {
-		need_output_extern("__madc_cleanup_push_dtor", true,
-				   { { {N_VOID}, true }, { {N_VOID}, true } });
 		return true;
 	}
 	if (sym == "__madc_throw_int") {
@@ -28916,7 +28911,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 
 // throw lowering: `throw <expr>` -> __madc_throw_int/double/cstr(expr) by the
 // operand type; bare `throw;` -> __madc_rethrow(). The runtime sets the
-// exception, unwinds the cleanup stack to the active try's mark, and
+// exception, unwinds every frame's cleanups down to the active try, and
 // longjmp's to the try's setjmp (or aborts if no try is active).
 // Build the throw CALL node — a VALUE-expression: `__madc_throw_int/double/cstr(expr)`
 // by the operand type; bare `throw;` -> `__madc_rethrow()`. Returned bare (NOT
@@ -29206,7 +29201,7 @@ node_t CirBuilder::throw_object_items(TokenTHROW *th)
 	node_t args = list();
 	append(args, node2(N_CAST, void_ptr_type(), id(slot, th), th));
 	append(args, cls && class_needs_dtor(cls)
-		     ? class_dtor_address(cls, 0, th)
+		     ? class_dtor_address(cls, th)
 		     : node2(N_CAST, void_ptr_type(), integer(0, th), th));
 	append(args, integer((int64_t)table.size(), th));
 	append(args, node2(N_CAST, void_ptr_type(), id(names, th), th));
@@ -29259,59 +29254,22 @@ bool CirBuilder::thrown_operand_is_implicitly_movable(DataDefCLASS *cdd,
 	return as_class_instance(v.type) == cdd;
 }
 
-// `(void *)dtor` — the complete-object destructor of `cdd` (or, for a fixed
-// array of `array_elems` elements, the per-(class,N) wrapper that destroys
-// them in reverse — task #56), declared and referenced for the module.
-node_t CirBuilder::class_dtor_address(DataDefCLASS *cdd, size_t array_elems,
-				      TokenBase *origin)
+// `(void *)dtor` — the complete-object destructor of `cdd`, declared and
+// referenced for the module.
+node_t CirBuilder::class_dtor_address(DataDefCLASS *cdd, TokenBase *origin)
 {
-	madc::dis::istring dtor_sym = array_elems
-		? demand_array_dtor(cdd, array_elems)
-		: class_complete_dtor_symbol(cdd);
+	madc::dis::istring dtor_sym = class_complete_dtor_symbol(cdd);
 	// A user-class dtor is a madc-EMITTED function `void Cls___dtor(struct Cls*)`;
 	// referencing it (referenced_funcs) drives its emission and declaration with
 	// the real signature — re-declaring it here as `void f(void*)` would conflict.
 	// An externally-bound C++ dtor (emit_symbol set) has NO madc body, so it
 	// must be declared extern here so `(void*)dtor_sym` is a well-typed function
-	// address (not "undeclared"). The array wrapper is always madc-emitted.
-	bool dtor_is_external = !array_elems
-		&& (dtor_sym != class_madc_dtor_body_symbol(cdd));
+	// address (not "undeclared").
+	bool dtor_is_external = dtor_sym != class_madc_dtor_body_symbol(cdd);
 	if (dtor_is_external)
 		need_output_extern(dtor_sym.c_str(), false, { { {N_VOID}, true } });
 	referenced_funcs.insert(dtor_sym);
 	return node2(N_CAST, void_ptr_type(), id(dtor_sym.c_str(), origin), origin);
-}
-
-// Register a try-body object's destructor on the RUNTIME cleanup stack so it
-// runs when an exception (longjmp) unwinds out of the try body — c2mir cleanup
-// attributes do NOT fire on longjmp. The object keeps its cleanup attribute too;
-// that handles the NORMAL scope-exit path, and the entry's guard local removes
-// the runtime entry on that same exit (a block end, return, break, continue or
-// goto), so each dtor runs exactly once per path. The runtime heap-allocates the
-// entry. (The 2026-05-31 "a try-body local overlaps the try context" fault was
-// c2mir's auto-local layout, fixed at the fork — P1.1b.) P1.1c.
-void CirBuilder::emit_try_body_cleanup_push(const char *varname,
-					    DataDefCLASS *cdd,
-					    node_t items, TokenBase *origin,
-					    size_t array_elems)
-{
-	if (m_try_body_depth <= 0 || !cdd || !class_needs_dtor(cdd))
-		return;
-	// void *__madc_centry_K __attribute__((cleanup(__madc_cleanup_leave)))
-	//	= __madc_cleanup_push_dtor((void*)dtor_sym, (void*)&varname);
-	// Declared after the object, so a normal exit of its scope removes the
-	// entry before the object's own cleanup destroys it.
-	ensure_runtime_extern_for("__madc_cleanup_push_dtor");
-	ensure_runtime_extern_for("__madc_cleanup_leave");
-	node_t args = list();
-	append(args, class_dtor_address(cdd, array_elems, origin));
-	append(args, node2(N_CAST, void_ptr_type(),
-			   node1(N_ADDR, id(varname, origin), origin), origin));
-	node_t call = node2(N_CALL, id("__madc_cleanup_push_dtor", origin), args, origin);
-	CIR_NODE(call)->synth_from_origin = true;
-	char guard[40];
-	snprintf(guard, sizeof(guard), "__madc_centry%d", m_strtmp_counter++);
-	append(items, cleanup_guard_local(guard, call, "__madc_cleanup_leave", origin));
 }
 
 // Take the variable `name` out of a handler body's scope, so translate_block
@@ -29353,9 +29311,9 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	char ctxname[40];
 	snprintf(ctxname, sizeof(ctxname), "__try_ctx_%d", n);
 
-	// Opaque, 8-aligned storage sized to MadcTryContext (jmp_buf + 2 ptrs). The
-	// builder is C++ so it knows the real ABI size; round up to a long[] count.
-	size_t ctx_words = (sizeof(jmp_buf) + 2 * sizeof(void *) + sizeof(long long) - 1)
+	// Opaque, 8-aligned storage sized to MadcTryContext (jmp_buf + its link).
+	// The builder is C++ so it knows the real ABI size; round up to a long[] count.
+	size_t ctx_words = (sizeof(jmp_buf) + sizeof(void *) + sizeof(long long) - 1)
 			   / sizeof(long long);
 	node_t ctx_spec = list();
 	append_i64(ctx_spec, tt);
@@ -29408,15 +29366,13 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 #endif
 	node_t cond = node2(N_EQ, sj_call, integer(0, tt), tt);
 
-	// THEN arm: the try frame's guard, then the try body (object ctors inside
-	// it push runtime cleanup entries — see emit_try_body_cleanup_push). Every
-	// normal exit of the arm — the body's end, a return, break, continue or
-	// goto out of it — runs the guard's cleanup, __madc_try_leave, which ends
-	// the frame (and drops any entry the body left; each object's own guard
-	// removed its entry as its scope exited). On the exception path the arm is
-	// abandoned by longjmp (no cleanup attribute fires), and the raise has
-	// already popped the frame and unwound the entries to its mark — so each
-	// try-body dtor runs exactly once on either path. P1.1c.
+	// THEN arm: the try frame's guard, then the try body. Every normal exit of
+	// the arm — the body's end, a return, break, continue or goto out of it —
+	// runs the guard's cleanup, __madc_try_leave, which ends the frame. A
+	// throw into the try runs the body's objects' cleanups as the unwind's
+	// walk reaches their regions, stopping at this guard (the raise popped the
+	// frame); an unwind passing the whole try (a session boundary's) runs the
+	// guard too. Each try-body dtor runs exactly once on every path (B205).
 	//   void *__try_frame_N __attribute__((cleanup(__madc_try_leave)))
 	//	= (void *)&__try_ctx_N;
 	char framename[40];
@@ -29517,9 +29473,9 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 		}
 		// The catch begins (Itanium __cxa_begin_catch): the exception becomes
 		// the handled one, which `throw;` rethrows. Its guard ends it on every
-		// normal exit of the handler — the end, a return, break, continue or
-		// goto — destroying the exception object unless it was rethrown; a
-		// throw out of the handler ends it through the runtime entry.
+		// exit of the handler — the end, a return, break, continue or goto,
+		// or a throw out of it (the guard is a region) — destroying the
+		// exception object unless it was rethrown.
 		//   void *__madc_catch_N_I __attribute__((cleanup(
 		//	__madc_exception_end_catch))) = __madc_exception_begin_catch();
 		char catchname[48];
@@ -30864,40 +30820,33 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 		return translate_go(tb);
 
 	// madc-dialect structured concurrency (MT-5): `scope { ... }` ->
-	//   { void *__madc_scope_blk = __madc_scope_block_enter();
-	//     <body>  __madc_scope_block_exit(__madc_scope_blk); }
-	// The rt pair owns the semantics (src/rt/rt_task.c): enter registers
-	// the unwind abandon on the exception runtime's cleanup stack; exit
-	// removes it, joins every member, and rethrows the first member
-	// error. Nested blocks shadow the local — exactly the C scoping the
-	// lowering wants.
+	//   { void *__madc_scope_blk __attribute__((cleanup(
+	//	__madc_scope_block_leave))) = __madc_scope_block_enter();
+	//     <body>  __madc_scope_block_exit(&__madc_scope_blk); }
+	// The rt functions own the semantics (src/rt/rt_task.c): the slot is a
+	// region, so a throw escaping the block abandons the scope as the
+	// unwind passes it; exit empties the slot, joins every member, and
+	// rethrows the first member error. Nested blocks shadow the local —
+	// exactly the C scoping the lowering wants.
 	if (tb->id() == TokenID::tkSCOPE) {
 		TokenSCOPE *sc = (TokenSCOPE *)tb;
 		need_output_extern("__madc_scope_block_enter", true, {});
 		need_output_extern("__madc_scope_block_exit", false,
 				   { { {N_VOID}, true } });
+		need_output_extern("__madc_scope_block_leave", false,
+				   { { {N_VOID}, true } });
 		node_t items = list();
 		const char *sv = "__madc_scope_blk";
-		node_t sdecl = simple(N_SPEC_DECL);
-		append(sdecl, node1(N_SHARE, node1(N_LIST, simple(N_VOID))));
-		append(sdecl, node2(N_DECL, id(sv, tb),
-				    node1(N_LIST, pointer())));
-		append(sdecl, ignore());
-		append(sdecl, ignore());
-		append(sdecl, ignore());
-		append(items, sdecl);
-		append(items, node2(N_EXPR, list(),
-			node2(N_ASSIGN, id(sv, tb),
-			      node2(N_CALL,
-				    id("__madc_scope_block_enter", tb),
-				    list(), tb), tb), tb));
+		append(items, cleanup_guard_local(sv,
+			node2(N_CALL, id("__madc_scope_block_enter", tb), list(), tb),
+			"__madc_scope_block_leave", tb));
 		if (sc->body) {
 			node_t body = translate_stmt(sc->body);
 			if (body)
 				append(items, body);
 		}
 		node_t xargs = list();
-		append(xargs, id(sv, tb));
+		append(xargs, node1(N_ADDR, id(sv, tb), tb));
 		append(items, node2(N_EXPR, list(),
 			node2(N_CALL, id("__madc_scope_block_exit", tb),
 			      xargs, tb), tb));
@@ -31122,15 +31071,10 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 {
 	append(items, var_decl(&sdcl->var, sdcl));
 	// A block-scope static (class_decl_stmts serves block scope only —
-	// file scope is global_ctor_call) is constructed once. Its object
-	// outlives every try it sits in, so none of its construction registers
-	// for a try body's unwind (m_try_body_depth reads 0 while it is built).
+	// file scope is global_ctor_call) is constructed once, under its guard.
 	if (sdcl->var.flags & vfSTATIC) {
 		node_t init_items = list();
-		int saved_try_depth = m_try_body_depth;
-		m_try_body_depth = 0;
 		class_decl_construction(sdcl, cdcl, init_items);
-		m_try_body_depth = saved_try_depth;
 		emit_static_local_once(items, init_items, sdcl,
 				       (sdcl->var.flags & vfTHREADLOCAL) != 0,
 				       &sdcl->var);
@@ -31210,24 +31154,41 @@ void CirBuilder::emit_static_local_once(node_t items, node_t init_items,
 			   { { {N_LONG, N_LONG}, true } });
 	need_output_extern("__cxa_guard_abort", false,
 			   { { {N_LONG, N_LONG}, true } });
-	ensure_runtime_extern_for("__madc_cleanup_push_dtor");
-	need_output_extern("__madc_cleanup_remove", false,
-			   { { {N_VOID}, true } });
+	ensure_runtime_extern_for("__madc_cleanup_call");
 	node_t body = list();
-	// void *E = __madc_cleanup_push_dtor((void *)__cxa_guard_abort, (void *)&G);
+	// g++ aborts the guard from the initialization's landing pad alone: a
+	// disarmable deferred call, armed for the initialization, disarmed
+	// after it.
+	//   void *E[2] __attribute__((cleanup(__madc_cleanup_call)));
+	//   E[0] = (void *)__cxa_guard_abort; E[1] = (void *)&G;
+	//   __builtin_cleanup_arm(&E);
+	//   { init_items } E[0] = 0; __cxa_guard_release(&G);
 	{
-		node_t a = list();
-		append(a, node2(N_CAST, void_ptr_type(),
-				id("__cxa_guard_abort", origin), origin));
-		append(a, node2(N_CAST, void_ptr_type(), guard_addr(), origin));
-		append(body, cleanup_guard_local(entry,
-			node2(N_CALL, id("__madc_cleanup_push_dtor", origin), a,
-			      origin), NULL, origin));
+		node_t espec = list();
+		append(espec, simple(N_VOID, origin));
+		node_t edecl = list();
+		append(edecl, node3(N_ARR, ignore(), list(), integer(2, origin)));
+		append(edecl, pointer());
+		node_t esd = simple(N_SPEC_DECL, origin);
+		append(esd, node1(N_SHARE, espec));
+		append(esd, node2(N_DECL, id(entry, origin), edecl));
+		append(esd, cleanup_attrs("__madc_cleanup_call", origin));
+		append(esd, ignore());   // asm
+		append(esd, ignore());   // initializer: the stores below
+		CIR_NODE(esd)->synth_from_origin = true;
+		append(body, esd);
 	}
+	auto entry_slot = [&](int64_t i, node_t value) -> node_t {
+		return node2(N_EXPR, list(),
+			node2(N_ASSIGN, node2(N_IND, id(entry, origin), integer(i, origin)),
+			      value, origin), origin);
+	};
+	append(body, entry_slot(0, node2(N_CAST, void_ptr_type(),
+					 id("__cxa_guard_abort", origin), origin)));
+	append(body, entry_slot(1, node2(N_CAST, void_ptr_type(), guard_addr(), origin)));
+	append(body, cleanup_arm_stmt(entry, origin));
 	append(body, node2(N_BLOCK, list(), init_items, origin));
-	// __madc_cleanup_remove(E); __cxa_guard_release(&G);
-	append(body, node2(N_EXPR, list(),
-		call1("__madc_cleanup_remove", id(entry, origin)), origin));
+	append(body, entry_slot(0, node2(N_CAST, void_ptr_type(), integer(0, origin), origin)));
 	append(body, node2(N_EXPR, list(),
 		call1("__cxa_guard_release", guard_addr()), origin));
 	append(items, node4(N_IF, list(),
@@ -31275,8 +31236,6 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		m_pending_stmts.clear();
 		for (node_t s : stmts)
 			append(items, s);
-		emit_try_body_cleanup_push(aname.c_str(), cdcl, items, sdcl,
-					   (size_t)n);
 		return;
 	}
 	// [dcl.init.aggr] braced list on an OBJECT-member aggregate
@@ -31295,8 +31254,6 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 				append(items, p);
 			m_pending_stmts.clear();
 			append(items, agg);
-			emit_try_body_cleanup_push(sdcl->var.name.c_str(),
-						   cdcl, items, sdcl, 0);
 			return;
 		}
 	}
@@ -31374,9 +31331,6 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 						append(items, p);
 					m_pending_stmts.clear();
 					append(items, agg);
-					emit_try_body_cleanup_push(
-						sdcl->var.name.c_str(),
-						cdcl, items, sdcl, 0);
 					return;
 				}
 			}
@@ -31527,8 +31481,6 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		m_pending_stmts.clear();
 		append(items, node2(N_EXPR, list(),
 				    node2(N_ASSIGN, lhs, rhs, sdcl), sdcl));
-		emit_try_body_cleanup_push(sdcl->var.name.c_str(),
-					   cdcl, items, sdcl, 0);
 		return;
 	}
 	node_t cc = class_ctor_call(&sdcl->var, cdcl,
@@ -31568,14 +31520,6 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 			append(items, node2(N_EXPR, list(), asg, sdcl));
 		}
 	}
-	// In a try body, also register this object's dtor on the runtime
-	// cleanup stack so it runs on the exception (longjmp) unwind path
-	// (the cleanup attribute alone does not — P1.1c). No-op otherwise.
-	emit_try_body_cleanup_push(sdcl->var.name.c_str(),
-				   cdcl, items, sdcl,
-				   (sdcl->var.is_fixed_array()
-				    && !sdcl->var.is_vla())
-				   ? sdcl->var.total_elements() : 0);
 }
 
 node_t CirBuilder::translate_stmt_required(TokenBase *tb)

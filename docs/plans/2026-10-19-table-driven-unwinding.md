@@ -227,14 +227,13 @@ remove on every normal path.
    - lookup: the platform unwinder's own FDE lookup, which hands the
      personality its LSDA (revised 2026-10-20 from a runtime registry + JIT
      resolver: the canon shape needs neither, nor their lock).
-   - an "unwinding" query, so a cleanup that must behave differently during a
-     throw (the scope block) asks, as a destructor asks
-     `std::uncaught_exceptions()`.
+   - (an "unwinding" query proved unnecessary: the scope block's one normal
+     exit empties its slot first -- step 7.)
 6. **Consumers converted (one mechanism, the runtime cleanup stack deleted)**
    - CIR try-body registration (`emit_try_body_cleanup_push`): deleted.
    - catch end on a throw out of a handler: the catch guard's own cleanup.
-   - block-scope static's guard abort: a guard local disarmed on success.
-   - MT-5 scope block: a cleanup local; abandons quietly while unwinding.
+   - block-scope static's guard abort: a deferred call disarmed on success.
+   - MT-5 scope block: a cleanup slot; abandons quietly while unwinding.
    - REPL entry boundary: walks before its longjmp (today it runs dtors AFTER
      the jump, on dead stack).
 
@@ -247,8 +246,11 @@ C++ standard-library convention. CFI and region tables are written during
 code generation or image loading and immutable after; the platform
 unwinder's registry carries its own lock, and the walk reads the region
 tables through it (no runtime index of its own). The walk's state is
-on the throwing thread's stack; the "unwinding" flag is per-context state,
-saved and restored with the rest of the exception state at task switches.
+on the throwing thread's stack (the forced unwind's record is the unwind's
+own); on Windows the in-flight unwind (its jump buffer and target try) is
+per-context state, saved and restored with the rest of the exception state
+at task switches, since a cleanup can park its task mid-unwind (a scope
+block's join).
 
 ## Order (each step its own commit, Tier 1 + Tier 2; inert until step 7)
 
@@ -452,6 +454,38 @@ saved and restored with the rest of the exception state at task switches.
    consumers converted, runtime cleanup stack deleted, REPL boundary.
    `tests/testthrow_through_frame` (11 cases, g++/clang oracle) is the gate,
    plus JIT/exe/obj on every existing exception test.
+   - Prep (2026-10-21): every constructed object is armed after its
+     construction (`__builtin_cleanup_arm`, `pending_construction`), and
+     init-statement / case objects are constructed at all.
+   - The option is per compiled TREE, not per context (`c2mir_set_unwind`,
+     called by `cir_compile`): one context compiles a project's C and C++
+     units, as gcc takes `-fexceptions` per TU. C++ and the dialect on, C
+     off: a Program's `is_c_mode()`, a frozen container's config word
+     (`cir_forest_config_is_c`; the C pack off, the mixed pack on). The
+     personality is `__madc_personality`, on Windows `__madc_seh_handler`.
+   - Consumers: the try-body registration is deleted (objects are regions);
+     the catch guard's own cleanup ends a catch a throw leaves; a
+     block-scope static's guard abort is a disarmable deferred call
+     (`void *E[2] cleanup(__madc_cleanup_call)` = {`__cxa_guard_abort`, &G},
+     armed for the initialization, `E[0] = 0` after it -- g++ aborts from
+     the landing pad alone; the C++ ABI symbol stays in generated code,
+     out of the runtime every C and dialect image pulls); the MT-5 scope
+     block keeps its scope in a cleanup slot (`__madc_scope_block_leave`
+     abandons it), which `__madc_scope_block_exit(&slot)` empties at the
+     block's end -- no "unwinding" query is needed, since return / break /
+     goto out of the block are refused at parse time.
+   - The landing generalizes from a try to any jump buffer in the frame that
+     holds a LIMIT (`madc_unwind_to (target, limit, jbuf)`): a throw's limit
+     is its try context; the session boundary's (`__madc_unwind_jump`) is
+     the boundary record in its own `noinline` frame, which holds no C++
+     handler -- the walk lands once the limit frame's personality has run,
+     so the `catch (...)` the boundary keeps for host C++ exceptions sits in
+     the caller. The boundary's dtors now run BEFORE the jump, on live
+     stack. On Windows the in-flight unwind is named by its jump buffer;
+     host tries (the task trampoline, the boundary) pass their frame
+     (`MADC_TRY_SETJMP`).
+   - No try: print and abort without unwinding (g++'s search phase finds no
+     handler).
 
 ## Known gaps (stated, not hidden)
 

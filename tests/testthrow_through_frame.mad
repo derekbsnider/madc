@@ -1,0 +1,171 @@
+// A throw passing through a function with no try of its own destroys that
+// function's live objects ([except.ctor]/1-2), in reverse order of their
+// construction, interleaved with the end of any handler it leaves (a handler's
+// own objects first, then its catch ends, then the enclosing scope's).
+// Oracles: g++ 13 and clang++ 18 (-std=c++17): the lines below. madc before
+// the fix destroyed only the objects of a function's own try body: "frame:"
+// printed "+1 +2 caught2", and the dtor of every object outside a try body
+// was missing on every line.
+// Shape: clang -fsjlj-exceptions — one function context registered per call
+// (_Unwind_SjLj_Register) and a call-site index naming the live cleanups; the
+// throw runs each frame's live cleanups, newest first, before its handler.
+#include <cstdio>
+
+static char line[512];
+static int len;
+static void out(const char *s, int v)
+{
+	len += std::snprintf(line + len, sizeof line - len, "%s%d ", s, v);
+}
+static void flush(const char *tag)
+{
+	std::printf("%s: %s\n", tag, line);
+	len = 0;
+	line[0] = 0;
+}
+
+struct T {
+	int id;
+	T(int i) : id(i) { out("+", id); }
+	~T() { out("-", id); }
+};
+struct E {
+	int v;
+	E(int x) : v(x) {}
+	E(const E &o) : v(o.v) {}
+	~E() { out("~E", v); }
+};
+
+static void thrower(int n) { if ( n ) throw n; }
+static void throwE(int n) { if ( n ) throw E(n); }
+
+// Two objects; the throw comes after the second (n = 2) or the first (1).
+static void two(int at)
+{
+	T x(1);
+	thrower(at == 1);
+	T y(2);
+	thrower(at == 2 ? 2 : 0);
+}
+
+// A handler's object, then its end, then the enclosing function's object.
+static void handler_order(int n)
+{
+	T a(1);
+	try {
+		T b(2);
+		throwE(n);
+	} catch (E &e) {
+		T c(3);
+		out("inner", e.v);
+		throwE(e.v + 1);
+	}
+	T d(4);
+}
+
+// Only the iteration in flight is live when the throw leaves the loop.
+static void loop(int stop)
+{
+	for ( int i = 1; i <= 3; i++ ) {
+		T it(10 + i);
+		thrower(i == stop ? i : 0);
+	}
+}
+
+// Sibling blocks reuse a pair: the first block's object is gone already.
+static void siblings(void)
+{
+	{ T a(21); }
+	{ T b(22); thrower(22); }
+}
+
+// An array is destroyed element by element, last first.
+static void array(void)
+{
+	T head(30);
+	T arr[2] = { T(31), T(32) };
+	thrower(30);
+}
+
+template<class U> static void templ(int n)
+{
+	U u(40 + n);
+	thrower(n);
+}
+
+// `throw;` from a handler leaves it: its object, then the catch, then the
+// enclosing function's object.
+static void rethrow(void)
+{
+	T outer(50);
+	try {
+		thrower(5);
+	} catch (int) {
+		T inside(51);
+		throw;
+	}
+}
+
+// A const object: its cleanup passes a pointer to the qualified class.
+static void cv_object(void)
+{
+	const T c(60);
+	thrower(60);
+}
+
+// A return leaves a frame normally; the caller's object is still its own.
+static int early(int n)
+{
+	{
+		T e(70);
+		if ( n )
+			return n;
+	}
+	return 0;
+}
+
+static void after_return(void)
+{
+	T keep(71);
+	early(1);
+	thrower(71);
+}
+
+// The only throw after an object is a later object's potentially-throwing
+// destructor, at the end of their scope: the earlier object is destroyed.
+struct Bad {
+	~Bad() noexcept(false) { throw 7; }
+};
+
+static void dtor_throws(void)
+{
+	T first(80);
+	Bad b;
+}
+
+int main()
+{
+	try { two(2); } catch (int v) { out("caught", v); }
+	flush("frame");
+	try { two(1); } catch (int v) { out("caught", v); }
+	flush("first");
+	try { handler_order(5); } catch (E &e) { out("outer", e.v); }
+	flush("handler");
+	try { loop(2); } catch (int v) { out("caught", v); }
+	flush("loop");
+	try { siblings(); } catch (int v) { out("caught", v); }
+	flush("siblings");
+	try { array(); } catch (int v) { out("caught", v); }
+	flush("array");
+	try { templ<T>(3); } catch (int v) { out("caught", v); }
+	flush("template");
+	try { rethrow(); } catch (int v) { out("caught", v); }
+	flush("rethrow");
+	try { cv_object(); } catch (int v) { out("caught", v); }
+	flush("cv");
+	try { after_return(); } catch (int v) { out("caught", v); }
+	flush("return");
+	try { dtor_throws(); } catch (int v) { out("caught", v); }
+	flush("dtor");
+	return 0;
+}

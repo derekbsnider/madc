@@ -3030,13 +3030,14 @@ public:
 	// the Itanium ABI) —
 	//   static long long G;
 	//   if (__cxa_guard_acquire(&G)) {
-	//       <abort-G cleanup entry>; init_items; <remove it>;
+	//       <armed abort-G deferred call>; init_items; <disarm it>;
 	//       __cxa_guard_release(&G); }
 	// THREAD SAFETY: concurrent first passes wait in __cxa_guard_acquire
 	// (libstdc++ / libc++abi) and exactly one constructs. A constructor that
-	// THROWS runs __cxa_guard_abort on the SJLJ unwind (the runtime cleanup
-	// stack), so the next pass tries again instead of waiting on a guard
-	// left pending. Appends the guard and the guarded block to `items`.
+	// THROWS runs __cxa_guard_abort as the unwind passes the deferred call's
+	// region (__madc_cleanup_call), so the next pass tries again instead of
+	// waiting on a guard left pending. Appends the guard and the guarded
+	// block to `items`.
 	// thread_local (`per_thread`): a per-thread guard byte, set after the
 	// initialization, instead of the __cxa_guard protocol.
 	// A builtin binary operator on a carrier operand no carrier row served:
@@ -3097,30 +3098,15 @@ public:
 	void exception_match_subobjects(DataDefCLASS *cls,
 		std::vector<std::pair<DataDefCLASS *, long> > &out);
 	node_t exception_match_guard(class TokenTRY *tt, size_t ci);
-	// `(void *)<complete-object dtor>` of cdd (its per-N array wrapper when
-	// array_elems > 0), declared and referenced.
-	node_t class_dtor_address(DataDefCLASS *cdd, size_t array_elems,
-				  TokenBase *origin);
+	// `(void *)<complete-object dtor>` of cdd, declared and referenced.
+	node_t class_dtor_address(DataDefCLASS *cdd, TokenBase *origin);
 	int m_try_ctx_counter = 0;
 	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in
-	// translate_try). Objects constructed in a try body keep their normal
-	// cleanup-attribute (normal-path scope-exit teardown), but ALSO get a runtime
-	// __madc_cleanup_push so __madc_throw_* unwinds them on the longjmp path
-	// (cleanup attributes do NOT fire on longjmp — P1.1c). A normal exit of the
-	// object's scope removes its entry (the guard emit_try_body_cleanup_push
-	// declares); its cleanup attribute runs the dtor.
+	// translate_try): a throw operand there is copied, never moved
+	// (thrown_operand_is_implicitly_movable). An object constructed anywhere
+	// is a cleanup variable armed after its construction: a region of its
+	// frame, which the unwind runs (B205).
 	int m_try_body_depth = 0;
-	// When in a try body, register a runtime cleanup entry naming `cdd`'s
-	// destructor for the object `varname` (its dtor runs on the exception/
-	// longjmp unwind path), held by a guard local declared after the object
-	// that removes it when the object's scope exits normally. No-op outside a
-	// try body or for a class with no dtor. See P1.1c
-	// (docs/plans/refs/exceptions-sjlj.md).
-	// array_elems > 0 = the object is a fixed array of that many elements;
-	// the pushed dtor is then the per-(class,N) array wrapper.
-	void emit_try_body_cleanup_push(const char *varname, class DataDefCLASS *cdd,
-					node_t items, class TokenBase *origin,
-					size_t array_elems = 0);
 	// Range-based for over a madc array (madc::value): `for (T x : arr) body`. The loop
 	// variable is declared in the enclosing scope by the parser, so this only
 	// emits the index loop + per-iteration element fill (php_array_get /

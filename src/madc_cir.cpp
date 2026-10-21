@@ -94,9 +94,21 @@ c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p)
     return c2mir_init_compile(mir_ctx, opts);
 }
 
+// The routine every generated function with unwind regions names: the DWARF
+// personality, or on Windows x64 the language-specific handler; both run the
+// function's region table (src/rt/rt_except.c). Host == target, as the try
+// lowering's setjmp.
+static const char *const cir_unwind_personality =
+#ifdef _WIN32
+    "__madc_seh_handler";
+#else
+    "__madc_personality";
+#endif
+
 int cir_compile(MIR_context_t mir_ctx, c2m_ctx_t c2m, node_t tree,
-		const char *module_name)
+		const char *module_name, bool unwind_p)
 {
+    c2mir_set_unwind(c2m, unwind_p, cir_unwind_personality);
     return c2mir_compile_tree(mir_ctx, c2m, tree, module_name);
 }
 
@@ -1177,7 +1189,8 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     }
 
     auto _c2m_t0 = std::chrono::steady_clock::now();	// --show-stats: c2mir compile
-    bool _c2m_ok = cir_compile(ctx, c2m, tree, source_name);
+    bool _c2m_ok = cir_compile(ctx, c2m, tree, source_name,
+			       prog && !prog->is_c_mode());
     if (prog)
 	prog->_c2mir_seconds += std::chrono::duration<double>(
 	    std::chrono::steady_clock::now() - _c2m_t0).count();
@@ -1831,7 +1844,8 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
 	    return false;
 	}
 
-	if (!cir_compile(ctx, c2m, root->as_node(), module_name)) {
+	if (!cir_compile(ctx, c2m, root->as_node(), module_name,
+			 !cir_forest_config_is_c(forest->language_std()))) {
 	    fprintf(stderr, "%s: cir_compile failed\n", module_name);
 	    teardown();
 	    return false;
@@ -2000,8 +2014,6 @@ struct CirEntryBoundary
     Program *prog;
     const char *entry_name;
     void *task;			// the task the entry runs on
-    void *cleanup_mark;		// the exception runtime's cleanup stack, and
-    void *except_state;		// its state, as the boundary armed
     CirEntryBoundary *outer;
 };
 static thread_local CirEntryBoundary *cir_entry_boundary = NULL;
@@ -2028,7 +2040,8 @@ extern "C" void *__madc_session_unbound(const char *sym)
 	b->prog->record_frontend_error(Program::DiagnosticPhase::runtime, msg,
 				       b->entry_name, 0, 0);
     }
-    longjmp(b->jb, 1);
+    __madc_unwind_jump(b, b->jb);
+    return NULL;	// not reached: the jump lands at the boundary
 }
 
 // The interrupt (D8, plan madc-repl-thonny §41.12a). Pending is set by a
@@ -2069,7 +2082,7 @@ extern "C" void __madc_session_poll(void)
     cir_interrupt_pending = 0;
     b->prog->record_frontend_error(Program::DiagnosticPhase::runtime,
 				   "interrupted", b->entry_name, 0, 0);
-    longjmp(b->jb, 1);
+    __madc_unwind_jump(b, b->jb);
 }
 
 // D10 (plan §41.4a): the show's hand-off. The value text the generated walk
@@ -2156,42 +2169,55 @@ static void cir_call_main(void *call)
     mc->status = ((int (*)(int, char **))mc->code)(mc->argc, mc->argv);
 }
 
-// Run an entry's code at the entry's boundary. False when a use of an
-// undefined symbol or an interrupt (__madc_session_poll) returned here. The return destroys what the run registered
-// on the exception runtime's cleanup stack, as a throw past it would, and
-// gives that runtime back the state it had when the boundary armed.
-static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
-				      void (*call)(void *), void *code)
+// The boundary's frame: the entry's call under the boundary's setjmp. False
+// when a use of an undefined symbol or an interrupt (__madc_session_poll)
+// returned here, through __madc_unwind_jump with this frame's boundary as its
+// limit: every frame the run left ran its cleanups, as a throw past it would.
+// It holds no C++ handler or destructor (the unwind lands here once this
+// frame's own personality has run), and is never inlined into its caller,
+// which holds one.
+static __attribute__((noinline)) bool
+cir_entry_boundary_call(Program *prog, const char *entry_name,
+			void (*call)(void *), void *code)
 {
     CirEntryBoundary b;
     b.prog = prog;
     b.entry_name = entry_name;
     b.task = __madc_task_current();
-    b.cleanup_mark = __madc_cleanup_top();
-    b.except_state = malloc(__madc_except_state_size());
-    if (!b.except_state)
-	return false;
-    __madc_except_state_save(b.except_state);
     b.outer = cir_entry_boundary;
-
-    if (setjmp(b.jb)) {
-	__madc_cleanup_unwind_to(b.cleanup_mark);
-	__madc_except_state_restore(b.except_state);
+    if (MADC_TRY_SETJMP(b.jb)) {
 	cir_entry_boundary = b.outer;
-	free(b.except_state);
 	return false;
     }
     cir_entry_boundary = &b;
+    call(code);
+    cir_entry_boundary = b.outer;
+    return true;
+}
+
+// Run an entry's code at the entry's boundary (cir_entry_boundary_call), and
+// give the exception runtime back the state it had when the boundary armed
+// when the run returned there.
+static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
+				      void (*call)(void *), void *code)
+{
+    void *except_state = malloc(__madc_except_state_size());
+    if (!except_state)
+	return false;
+    __madc_except_state_save(except_state);
+    CirEntryBoundary *outer = cir_entry_boundary;
+    bool ran;
     try {
-	call(code);
+	ran = cir_entry_boundary_call(prog, entry_name, call, code);
     } catch (...) {
-	cir_entry_boundary = b.outer;
-	free(b.except_state);
+	cir_entry_boundary = outer;
+	free(except_state);
 	throw;
     }
-    cir_entry_boundary = b.outer;
-    free(b.except_state);
-    return true;
+    if (!ran)
+	__madc_except_state_restore(except_state);
+    free(except_state);
+    return ran;
 }
 
 // The stubs for the functions an admitted entry names and nothing defines, in
@@ -7258,7 +7284,8 @@ static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
 		break;
 	    }
 	    cir_mir_error_armed = true;
-	    bool compiled = cir_compile(ctx, c2m, root->as_node(), "frozen");
+	    bool compiled = cir_compile(ctx, c2m, root->as_node(), "frozen",
+					!cir_forest_config_is_c(forest.language_std()));
 	    MIR_module_t mod = compiled
 		? DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)) : NULL;
 	    if (!mod) {

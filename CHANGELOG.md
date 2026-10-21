@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### A throw destroys the live objects of every frame it crosses
+
+- A throw through a function with no `try` of its own destroys that function's live objects, as g++ and clang++ do ([except.ctor]/1-2). Before, only the objects of a `try` body were destroyed, through the runtime cleanup stack; `tests/testthrow_through_frame.mad` printed `+1 +2 caught2` with no destructor output.
+- Generated code is unwound by its region table through `__madc_personality` (`__madc_seh_handler` on Windows). `c2mir_set_unwind()` in `third_party/mir/c2mir/c2mir_api.h` sets the regions and personality per compiled tree; `cir_compile` in `src/madc_cir.cpp` passes the tree's language (C++ and the dialect on, C off).
+- The runtime cleanup stack in `src/rt/rt_except.c` is deleted, and so is `emit_try_body_cleanup_push` in `src/cir_builder.cpp`. `madc_unwind_to()` is the one landing for a throw. A throw with no active `try` prints and aborts without unwinding.
+- The REPL and session entry boundary runs its destructors before the jump, on the live stack.
+- `tests/testthrow_through_frame.mad` (`--std=c++17`, 11 cases) prints the lines of its `.expect`, as g++ 13 and clang++ 18 do.
+
 ### A binary module writes a region change ahead of the labels at its insn
 
 - MIR's binary writer emitted `uregion <region>` immediately before the first non-label insn of a new region, after any labels preceding that insn. The reader holds labels until their insn and refuses a region directive while labels are pending ("uregion should have no labels"), so a module whose region changes at a labelled insn did not read back.

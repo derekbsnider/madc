@@ -127,15 +127,17 @@ uint32_t madc_forest_config_word(const Program *prog)
 	return word;
 }
 
+bool cir_forest_config_is_c(uint32_t config)
+{
+	const int64_t lang_mask = 0x7fff;	// the config word's language_std bits
+	return madc::file_kind_family(config & lang_mask) == madc::fkC;
+}
+
 bool cir_forest_profile_serves_family(uint32_t producer_config,
 				      uint32_t consumer_config)
 {
-	const int64_t lang_mask = 0x7fff;	// the config word's language_std bits
-	const bool producer_c = madc::file_kind_family(producer_config & lang_mask)
-				== madc::fkC;
-	const bool consumer_c = madc::file_kind_family(consumer_config & lang_mask)
-				== madc::fkC;
-	return consumer_c || !producer_c;
+	return cir_forest_config_is_c(consumer_config)
+	       || !cir_forest_config_is_c(producer_config);
 }
 
 uint32_t madc_forest_defines_hash(const Program *prog)

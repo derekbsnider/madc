@@ -35,6 +35,11 @@ typedef struct c2mir_pos {
 
 c2m_ctx_t c2mir_init_compile (MIR_context_t ctx, struct c2mir_options *ops);
 void c2mir_finish_compile (c2m_ctx_t c2m_ctx);
+/* The unwind options (c2mir_options.unwind_regions_p, unwind_personality) for
+   the context's next c2mir_compile_tree: one context compiles trees of
+   different languages (a project's C and C++ units), as gcc takes
+   -fexceptions per translation unit. */
+void c2mir_set_unwind (c2m_ctx_t c2m_ctx, int unwind_regions_p, const char *personality);
 
 /* ---- Node creation ---- */
 

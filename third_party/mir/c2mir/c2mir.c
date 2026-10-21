@@ -22121,6 +22121,12 @@ void c2mir_finish_compile (c2m_ctx_t c2m_ctx) {
   if (c2m_ctx != NULL) compile_finish (c2m_ctx);
 }
 
+void c2mir_set_unwind (c2m_ctx_t c2m_ctx, int unwind_regions_p, const char *personality) {
+  if (c2m_ctx == NULL) return;
+  c2m_options->unwind_regions_p = unwind_regions_p;
+  c2m_options->unwind_personality = unwind_regions_p ? personality : NULL;
+}
+
 /* ---- Node creation ---- */
 
 node_t c2mir_new_node (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc) {
