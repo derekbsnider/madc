@@ -10242,6 +10242,15 @@ public:
     // declarator's: push_declarator_list_tail carries it past the statement
     // reset to the list's tail, as specifier_cleanup carries cleanup(f).
     bool pending_specifier_weak = false;
+    // The function attributes pending above (no_instrument_function,
+    // no_strict_aliasing, weak, noinline), from any position of the
+    // declaration being read, become `func`'s; clear drops them. The
+    // function-declaration parse applies them at a prototype's `;` or `,` (a
+    // leading group is all a prototype may carry; at a `,` they stay for the
+    // list's next declarator) and after a declarator's trailing groups; a
+    // declaration's head clears them (tests/testprotoleadattrs).
+    void apply_pending_function_attributes(FuncDef *func);
+    void clear_pending_function_attributes();
     TokenBase *consume_gnu_asm_label(TokenBase *nt, madc::dis::istring *alias_target);
     // Read a GNU asm STATEMENT and lower it to its operands' observable
     // effect (each operand expression evaluated once; under an empty

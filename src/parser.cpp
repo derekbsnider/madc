@@ -2313,6 +2313,26 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
     return nt;
 }
 
+void Program::apply_pending_function_attributes(FuncDef *func)
+{
+    if ( pending_no_instrument_function )
+	func->no_instrument_function = true;
+    if ( pending_no_strict_aliasing )
+	func->no_strict_aliasing = true;
+    if ( pending_weak_binding )
+	func->weak_binding = true;
+    if ( pending_noinline )
+	func->noinline = true;
+}
+
+void Program::clear_pending_function_attributes()
+{
+    pending_no_instrument_function = false;
+    pending_no_strict_aliasing = false;
+    pending_weak_binding = false;
+    pending_noinline = false;
+}
+
 bool Program::consume_aggregate_attributes(AggregateAttributes &a)
 {
     if ( !is_attribute_identifier_token(peekToken()) )
@@ -75708,6 +75728,11 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	    method = new Method(*var);
 	    var->data = (void *)method;
 	}
+	// A prototype's leading attribute groups are the function's; at a `,`
+	// they are the list's next declarator's too (the head clears them).
+	apply_pending_function_attributes(func);
+	if ( nt->id() == TokenID::tkSemi )
+	    clear_pending_function_attributes();
 	if ( !func_alias_name.empty() )
 	{
 	    var->asm_label = func_alias_name;
@@ -75800,26 +75825,8 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	if ( var->storage_alias_name.empty() )
 	    var->storage_alias_name = func_alias_target;
     }
-    if ( pending_no_instrument_function )
-    {
-	func->no_instrument_function = true;
-	pending_no_instrument_function = false;
-    }
-    if ( pending_no_strict_aliasing )
-    {
-	func->no_strict_aliasing = true;
-	pending_no_strict_aliasing = false;
-    }
-    if ( pending_weak_binding )
-    {
-	func->weak_binding = true;
-	pending_weak_binding = false;
-    }
-    if ( pending_noinline )
-    {
-	func->noinline = true;
-	pending_noinline = false;
-    }
+    apply_pending_function_attributes(func);
+    clear_pending_function_attributes();
     if ( func_align > 0 )
 	func->explicit_alignment = func_align;
     // Check again for forward declaration after __attribute__
@@ -81174,12 +81181,10 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    return NULL;
     }
     size_t attr_vector_bytes = 0;
-    // A `weak`, `noinline` or `no_instrument_function` left pending by the
-    // previous declaration (an object, whose binding is not the function
-    // parse's) never reaches this one.
-    pending_weak_binding = false;
-    pending_noinline = false;
-    pending_no_instrument_function = false;
+    // A function attribute left pending by the previous declaration (an
+    // object's, whose binding is not the function parse's) never reaches
+    // this one.
+    clear_pending_function_attributes();
     // Attribute groups at the head are the declaration's: their alignment is
     // its declarators' (`AL static char g;`).
     if ( is_attribute_identifier_token(tb) )

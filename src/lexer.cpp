@@ -4120,10 +4120,7 @@ void Program::_tokenizer_init()
     dialect_fragments.clear();
     dialect_built.clear();
     dialect_builds = 0;
-    pending_no_strict_aliasing = false;
-    pending_noinline = false;
-    pending_no_instrument_function = false;
-    pending_weak_binding = false;
+    clear_pending_function_attributes();
     pending_specifier_weak = false;
     while ( !_pack_stack.empty() )
 	_pack_stack.pop();

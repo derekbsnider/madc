@@ -1,0 +1,38 @@
+/* A function attribute among the leading declaration specifiers of a
+ * PROTOTYPE -- a declaration that ends at its `;` -- is the function's, as one
+ * after its declarator is: the profiling hooks and quiet are never
+ * instrumented (no_instrument_function; qa and qb share one leading group in
+ * a declarator list), and maybe, defined nowhere, is an
+ * undefined weak reference whose address is null. madc took a function's
+ * attributes only after trailing attribute groups, past the prototype's
+ * early return: the hooks were instrumented and __cyg_profile_func_enter
+ * entered itself until the stack overflowed (SIGSEGV), and maybe was an
+ * ordinary import ("import of undefined item maybe").
+ * Oracle: gcc 13 and clang 18, -std=gnu17 -finstrument-functions: the lines
+ * below. */
+#include <stdio.h>
+
+static int entries;
+__attribute__((no_instrument_function)) void __cyg_profile_func_enter(void *fn, void *site);
+__attribute__((no_instrument_function)) void __cyg_profile_func_exit(void *fn, void *site);
+void __cyg_profile_func_enter(void *fn, void *site) { (void) fn; (void) site; entries++; }
+void __cyg_profile_func_exit(void *fn, void *site) { (void) fn; (void) site; }
+
+__attribute__((no_instrument_function)) static int quiet(int x);
+static int quiet(int x) { return x + 1; }
+
+/* a specifier attribute is every declarator's in the list */
+__attribute__((no_instrument_function)) static int qa(int x), qb(int x);
+static int qa(int x) { return x * 3; }
+static int qb(int x) { return x * 5; }
+
+__attribute__((weak)) int maybe(void);
+
+int main(void)
+{
+	int r = quiet(1) + qa(1) + qb(1);
+	printf("result %d\n", r);
+	printf("entries %d\n", entries);
+	printf("weak null %d\n", maybe == 0);
+	return 0;
+}

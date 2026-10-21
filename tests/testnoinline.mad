@@ -1,9 +1,11 @@
 /* __attribute__((noinline)): a function so marked is never inlined, at any
- * optimization level. leaf, called from middle, called from main -- direct
- * calls, every callee small -- learns its own frame through self_id (the CFA
- * of self_id's caller, one frame up the unwind) and walks the stack with
- * _Unwind_Backtrace. leaf carries the attribute on its prior declaration
- * only, in the reserved spelling; gcc merges it into the definition. madc
+ * optimization level. leaf, called from middle, called from outer, called
+ * from main -- direct calls, every callee small -- learns its own frame
+ * through self_id (the CFA of self_id's caller, one frame up the unwind) and
+ * walks the stack with _Unwind_Backtrace. leaf carries the attribute after
+ * its prior declaration only, in the reserved spelling, and outer among its
+ * prototype's leading specifiers only; gcc merges both into the definition
+ * (madc took the leading form of a prototype nowhere: outer was inlined). madc
  * dropped the attribute and MIR inlined every small direct call, so every
  * caller's frame was main's ("distinct frames: 0"). A frame is told by its
  * CFA, never by _Unwind_FindEnclosingFunction: macOS answers that from
@@ -34,14 +36,15 @@ __attribute__((noinline)) static uintptr_t self_id (void) {
 	return u.cfa;
 }
 
-static uintptr_t ids[3];
-static int seen[3], frames;
+/* leaf, middle, main, outer */
+static uintptr_t ids[4];
+static int seen[4], frames;
 
 static int trace (struct _Unwind_Context *ctx, void *arg) {
 	(void) arg;
 	uintptr_t cfa = _Unwind_GetCFA (ctx);
 	frames++;
-	for (int i = 0; i < 3; i++)
+	for (int i = 0; i < 4; i++)
 		if (cfa != 0 && cfa == ids[i] && seen[i] == 0) seen[i] = frames;
 	return 0; /* _URC_NO_REASON: keep walking */
 }
@@ -58,16 +61,31 @@ static __attribute__((noinline)) int middle (int n) {
 	return leaf (n * 2) + 1;
 }
 
+/* the attribute among the leading specifiers of a prototype, only */
+__attribute__((noinline)) static int outer (int n);
+static int outer (int n) {
+	ids[3] = self_id ();
+	return middle (n) + 1;
+}
+
+static int distinct (void) {
+	for (int i = 0; i < 4; i++) {
+		if (ids[i] == 0) return 0;
+		for (int j = i + 1; j < 4; j++)
+			if (ids[i] == ids[j]) return 0;
+	}
+	return 1;
+}
+
 int main (void) {
-	/* volatile: a constant argument lets clang -O2 fold leaf's and middle's
-	 * results into main and turn middle's call into a tail call (`jmp
-	 * leaf`), which reuses middle's frame -- legal under noinline. */
+	/* volatile: a constant argument lets clang -O2 fold the callees'
+	 * results into main and turn a call into a tail call (`jmp leaf`),
+	 * which reuses the caller's frame -- legal under noinline. */
 	volatile int three = 3;
 	ids[2] = self_id ();
-	int r = middle (three);
+	int r = outer (three);
 	printf ("result %d\n", r);
-	printf ("distinct frames: %d\n", ids[0] != 0 && ids[0] != ids[1] && ids[1] != ids[2]
-		&& ids[0] != ids[2]);
+	printf ("distinct frames: %d\n", distinct ());
 	printf ("main found: %d\n", seen[2] != 0);
 #if __has_attribute (noinline)
 	printf ("has_attribute: 1\n");

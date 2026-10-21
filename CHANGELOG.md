@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### A prototype's leading function attributes are the function's
+
+- A function attribute among a prototype's leading declaration specifiers (`no_instrument_function`, `weak`, `noinline`, `no_strict_aliasing`) now becomes the function's, as one after its declarator already did. Before, only attribute groups after the declarator reached the FuncDef; a prototype returned at its `;` before them.
+- Before the fix, a leading `no_instrument_function` on `__cyg_profile_func_enter` was ignored under `-finstrument-functions` and the hook instrumented itself until the stack overflowed (SIGSEGV). A leading `weak` on an undefined prototype failed with `import of undefined item`, a leading `noinline` was inlined, and `no_strict_aliasing` leaked into the next function parsed.
+- `Program::apply_pending_function_attributes` and `Program::clear_pending_function_attributes` are the one owner each for the four pending flags; the declaration head, the trailing pickup and `_tokenizer_init` use them.
+- `tests/testprotoleadattrs.mad` (`--finstrument-functions --std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testprotoleadattrs.expect`: `result 10`, `entries 1`, `weak null 1`.
+- `tests/testnoinline.mad` puts `outer`'s `noinline` among its prototype's leading specifiers; its expected output is `distinct frames: 1`.
+
 ### One FuncDef rebuild serves every return-type change
 
 - `FuncDef::returns` is a reference, so a return-type change rebuilds the FuncDef. parseFunction's two refreshes (an unprototyped C declaration met by its definition, and a definition that changes its declaration's return type) now call `clone_funcdef_with_return`, the one rebuild, in place of two hand-written field-copy lists.
