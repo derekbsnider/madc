@@ -228,8 +228,11 @@ done <<<"$LEDGER_SOURCES"
 # Default-lane product smoke: the PACKED exe compiles and runs a real
 # C++ test through its forest-served include world, byte-correct.
 out_frozen=$(timeout 300 "$WINE" "$BIN" tests/testfreezerun.mad 2>&1 | tr -d '\r')
-grep -q 'sum=55 count=5' <<<"$out_frozen"
-grep -q 'list=1,4,9,16,25' <<<"$out_frozen"
+if ! grep -q 'sum=55 count=5' <<<"$out_frozen" || ! grep -q 'list=1,4,9,16,25' <<<"$out_frozen"; then
+    printf '%s\n' "$out_frozen" >&2
+    echo "forest_pack_windows: FAILED - the packed exe did not run tests/testfreezerun.mad (output above)" >&2
+    exit 1
+fi
 
 # The Linux pack's rung-3 MIR-cache bind-equivalence leg is DELIBERATELY
 # absent here: the opt-in MADC_MIR_CACHE_BIND=1 lane crashes on win64

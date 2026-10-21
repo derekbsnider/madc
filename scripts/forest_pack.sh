@@ -219,10 +219,17 @@ done <<<"$LEDGER_SOURCES"
 # its container through the DISCOVERY chain, so for a sidecar or a library
 # image this doubles as that carrier's arm smoke.
 v=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" -v tests/testfreezerun.mad 2>&1 | tr -d '\0')
-grep -aq 'mir cache: bind module staged' <<<"$v"
+if ! grep -aq 'mir cache: bind module staged' <<<"$v"; then
+    echo "forest_pack: FAILED - the MIR-cache bind lane staged no module for tests/testfreezerun.mad" >&2
+    exit 1
+fi
 out_cache=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
 out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
-[ "$out_cache" = "$out_nocache" ]
+if [ "$out_cache" != "$out_nocache" ]; then
+    printf 'with the cache bind:\n%s\nwithout:\n%s\n' "$out_cache" "$out_nocache" >&2
+    echo "forest_pack: FAILED - the MIR-cache bind lane's output differs from the default lane's" >&2
+    exit 1
+fi
 
 # Degradation gate (task #63) — the consumer half. A -v run of the PACKED
 # product over a real C++ program (iostream/string/vector: the exact closure
