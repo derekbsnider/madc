@@ -487,6 +487,24 @@ static inline int gen_cfi_rule_after_p (const gen_cfi_rule_t *r1, const gen_cfi_
                                              : r1->mark > r2->mark;
 }
 
+/* After target_translate: the rules, each at its mark's code offset, in code
+   order (an insertion sort: the few rules of one prologue) -- what the frame
+   descriptions are written from (gen_cfi_encode; Windows unwind codes). */
+static gen_cfi_rule_t *gen_cfi_order_rules (gen_ctx_t gen_ctx, size_t *rules_num) {
+  gen_cfi_rule_t *rules = VARR_ADDR (gen_cfi_rule_t, gen_ctx->cfi_rules);
+
+  *rules_num = VARR_LENGTH (gen_cfi_rule_t, gen_ctx->cfi_rules);
+  for (size_t i = 0; i < *rules_num; i++) {
+    gen_cfi_rule_t r = rules[i];
+    size_t j = i;
+
+    r.code_offset = VARR_GET (gen_cfi_mark_t, gen_ctx->cfi_marks, r.mark).offset;
+    for (; j > 0 && gen_cfi_rule_after_p (&rules[j - 1], &r); j--) rules[j] = rules[j - 1];
+    rules[j] = r;
+  }
+  return rules;
+}
+
 /* After target_translate: the body's CFA rule -- the frame rule the FDE states
    last (every mark is in the prologue, before any call) -- as CFA = *REG +
    *OFFSET; FALSE when the target stated none. */
@@ -10008,8 +10026,8 @@ static void gen_cfi_offset (VARR (uint8_t) * b, unsigned dwarf_reg, int64_t cfa_
    CIE's entry row.  A frameless function keeps the entry row throughout. */
 static void gen_cfi_encode (gen_ctx_t gen_ctx, MIR_func_t func) {
   VARR (uint8_t) *b = gen_ctx->cfi_insns;
-  gen_cfi_rule_t *rules = VARR_ADDR (gen_cfi_rule_t, gen_ctx->cfi_rules);
-  size_t i, at = 0, rules_num = VARR_LENGTH (gen_cfi_rule_t, gen_ctx->cfi_rules);
+  gen_cfi_rule_t *rules;
+  size_t i, at = 0, rules_num;
 
   if (func->cfi != NULL) {
     MIR_free (gen_alloc (gen_ctx), func->cfi);
@@ -10019,15 +10037,7 @@ static void gen_cfi_encode (gen_ctx_t gen_ctx, MIR_func_t func) {
 #ifdef TARGET_CFI_CIE_INSNS
   if (func->jret_p) return; /* exits by a jump: no return address to describe */
   VARR_TRUNC (uint8_t, b, 0);
-  /* the few rules into code order: an insertion sort */
-  for (i = 0; i < rules_num; i++) {
-    gen_cfi_rule_t r = rules[i];
-    size_t j = i;
-
-    r.code_offset = VARR_GET (gen_cfi_mark_t, gen_ctx->cfi_marks, r.mark).offset;
-    for (; j > 0 && gen_cfi_rule_after_p (&rules[j - 1], &r); j--) rules[j] = rules[j - 1];
-    rules[j] = r;
-  }
+  rules = gen_cfi_order_rules (gen_ctx, &rules_num);
   for (i = 0; i < rules_num; i++) {
     gen_cfi_advance (b, rules[i].code_offset - at);
     at = rules[i].code_offset;
@@ -10369,6 +10379,62 @@ static void gen_cfi_deregister_all (gen_ctx_t gen_ctx) {
 }
 #endif
 
+#if defined(TARGET_WIN64_UNWIND_P) && !MIR_CROSS_P
+#define GEN_WIN64_REGISTER_P 1
+#else
+#define GEN_WIN64_REGISTER_P 0
+#endif
+
+#if GEN_WIN64_REGISTER_P
+/* Windows: a generated function's UNWIND_INFO (target_win64_unwind_info) sits
+   in its code allocation, after the code at the next 4-byte boundary -- every
+   RVA of a dynamic function table is 32 bits from its base, here the code's
+   address -- and RtlAddFunctionTable registers its one RUNTIME_FUNCTION.  The
+   address decides the padding, so it is asked for first and the code placed
+   there (_MIR_get_new_code_addr, as the aarch64 wrappers place theirs; another
+   thread's publish in between means asking again).  A function with no frame
+   to describe is published as it is. */
+static uint8_t *gen_win64_publish (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
+  MIR_context_t ctx = gen_ctx->ctx;
+  VARR (uint8_t) *b = gen_ctx->cfi_insns;
+  size_t pad, info_start = code_len + 3, info_len; /* 3: the most padding */
+  uint8_t *addr, *res;
+  RUNTIME_FUNCTION *rf;
+
+  VARR_TRUNC (uint8_t, b, 0);
+  VARR_PUSH_ARR (uint8_t, b, code, code_len);
+  for (pad = 0; pad < 3; pad++) VARR_PUSH (uint8_t, b, 0xcc); /* int3 */
+  if (!target_win64_unwind_info (gen_ctx, b)) return _MIR_publish_code (ctx, code, code_len);
+  info_len = VARR_LENGTH (uint8_t, b) - info_start;
+  for (;;) {
+    if ((addr = _MIR_get_new_code_addr (ctx, VARR_LENGTH (uint8_t, b))) == NULL)
+      util_error (gen_ctx, "no memory to publish generated code");
+    pad = (4 - (size_t) ((uintptr_t) addr + code_len) % 4) % 4;
+    memmove (VARR_ADDR (uint8_t, b) + code_len + pad, VARR_ADDR (uint8_t, b) + info_start, info_len);
+    res = _MIR_publish_code_by_addr (ctx, addr, VARR_ADDR (uint8_t, b), code_len + pad + info_len);
+    if (res != NULL) break;
+    memmove (VARR_ADDR (uint8_t, b) + info_start, VARR_ADDR (uint8_t, b) + code_len + pad, info_len);
+  }
+  rf = gen_malloc (gen_ctx, sizeof (RUNTIME_FUNCTION));
+  rf->BeginAddress = 0;
+  rf->EndAddress = (DWORD) code_len;
+  rf->UnwindData = (DWORD) (code_len + pad);
+  if (!RtlAddFunctionTable (rf, 1, (DWORD64) (uintptr_t) res))
+    util_error (gen_ctx, "RtlAddFunctionTable refused a generated function");
+  VARR_PUSH (void_ptr_t, gen_ctx->cfi_registered, rf);
+  return res;
+}
+
+static void gen_cfi_deregister_all (gen_ctx_t gen_ctx) {
+  while (VARR_LENGTH (void_ptr_t, gen_ctx->cfi_registered) != 0) {
+    RUNTIME_FUNCTION *rf = VARR_POP (void_ptr_t, gen_ctx->cfi_registered);
+
+    RtlDeleteFunctionTable (rf);
+    MIR_free (gen_alloc (gen_ctx), rf);
+  }
+}
+#endif
+
 static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int machine_code_p) {
   gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
   uint8_t *code;
@@ -10621,7 +10687,11 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
 #endif
       machine_code = NULL;
     } else {
+#if GEN_WIN64_REGISTER_P
+      machine_code = func_item->u.func->call_addr = gen_win64_publish (gen_ctx, code, code_len);
+#else
       machine_code = func_item->u.func->call_addr = _MIR_publish_code (ctx, code, code_len);
+#endif
       target_rebase (gen_ctx, func_item->u.func->call_addr);
 #if GEN_CFI_REGISTER_P
       gen_cfi_register (gen_ctx, func_item->u.func, machine_code, code_len);
@@ -11149,7 +11219,7 @@ void MIR_gen_finish (MIR_context_t ctx) {
   VARR_DESTROY (MIR_op_t, temp_ops);
   VARR_DESTROY (MIR_line_map_t, gen_line_map);
   VARR_DESTROY (MIR_reg_loc_t, gen_reg_locs);
-#if GEN_CFI_REGISTER_P
+#if GEN_CFI_REGISTER_P || GEN_WIN64_REGISTER_P
   gen_cfi_deregister_all (gen_ctx);
 #endif
   VARR_DESTROY (void_ptr_t, gen_ctx->cfi_registered);

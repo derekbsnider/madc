@@ -941,8 +941,9 @@ DEF_VARR (label_ref_t);
 
 #define MOVDQA_CODE 0
 #ifdef _WIN32
-#define PUSH_CODE 1 /* push bp: the Windows prologue (target_make_prolog_epilog) */
-#define POP_CODE 2  /* pop bp: its epilogue */
+#define PUSH_CODE 1  /* push bp: the Windows prologue (target_make_prolog_epilog) */
+#define POP_CODE 2   /* pop bp: its epilogue */
+#define PROBE_CODE 3 /* the prologue's stack probe (win64_probe_frame) */
 #endif
 
 struct call_ref {
@@ -1523,19 +1524,18 @@ static void vsave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t har
 
 #ifdef _WIN32
 /* Windows commits a thread's stack a guard page at a time: before the prologue
-   moves SP down by SIZE (a page or more), load from every page below SP in
-   order, the last load at SP - SIZE (the pages ___chkstk_ms touches; MIR
-   links nothing, so the loads are inline).  RAX is free at function entry. */
+   moves SP down by SIZE (a page or more), read every page below SP in order,
+   the last read at SP - SIZE (the pages ___chkstk_ms touches; MIR links
+   nothing, so the probe is inline).  One loop of a fixed size (PROBE_CODE,
+   its operand -SIZE), whatever SIZE is: the prologue's unwind codes reach at
+   most 255 bytes into it.  RAX is free at function entry. */
 static void win64_probe_frame (gen_ctx_t gen_ctx, MIR_insn_t anchor, size_t size) {
   MIR_context_t ctx = gen_ctx->ctx;
 
   if (size < 4096) return;
-  for (size_t k = 4096;; k += 4096) {
-    if (k > size) k = size;
-    gen_mov (gen_ctx, anchor, MIR_MOV, _MIR_new_var_op (ctx, AX_HARD_REG),
-             _MIR_new_var_mem_op (ctx, MIR_T_I64, -(MIR_disp_t) k, SP_HARD_REG, MIR_NON_VAR, 1));
-    if (k == size) break;
-  }
+  gen_add_insn_before (gen_ctx, anchor,
+                       _MIR_new_unspec_insn (ctx, 2, MIR_new_int_op (ctx, PROBE_CODE),
+                                             MIR_new_int_op (ctx, -(int64_t) size)));
 }
 
 /* The Windows frame's bp sits DELTA below the frame's top, the base every
@@ -1567,6 +1567,151 @@ static void win64_rebase_fp (gen_ctx_t gen_ctx, int64_t delta) {
   }
   for (size_t i = 0; i < VARR_LENGTH (MIR_reg_loc_t, gen_reg_locs); i++)
     VARR_ADDR (MIR_reg_loc_t, gen_reg_locs)[i].fp_offset += delta;
+}
+
+/* ---- Windows x64 unwind data (UNWIND_INFO of the x64 exception-handling ABI) ----
+   Written from the prologue facts the DWARF CFI is written from (gen_cfi_mark /
+   gen_cfi_frame / gen_cfi_save, in code order): an SP rule whose mark also saves
+   a register at the new SP is that register's push (UWOP_PUSH_NONVOL), any other
+   SP rule an allocation (UWOP_ALLOC_SMALL / _LARGE), the FP rule the frame
+   register at FO = the SP rule's CFA offset minus the FP rule's (UWOP_SET_FPREG),
+   and every other save a move to its distance above the establisher frame -- SP
+   after the fixed allocation (UWOP_SAVE_NONVOL / _SAVE_XMM128, the _FAR forms
+   past 16 bits).  A code's offset is its rule's, the end of the instruction; the
+   codes run in reverse prologue order.  A frameless function has none: the
+   unwinder's leaf rule (the return address at SP) is its description. */
+#define TARGET_WIN64_UNWIND_P 1
+
+enum {
+  WIN64_UWOP_PUSH_NONVOL = 0,
+  WIN64_UWOP_ALLOC_LARGE = 1,
+  WIN64_UWOP_ALLOC_SMALL = 2,
+  WIN64_UWOP_SET_FPREG = 3,
+  WIN64_UWOP_SAVE_NONVOL = 4, /* + 1: the _FAR form */
+  WIN64_UWOP_SAVE_XMM128 = 8, /* + 1: the _FAR form */
+};
+
+typedef struct win64_uwop { /* one operation: its UNWIND_CODE slot, then its operand slots */
+  uint16_t slot[3];
+  uint8_t nslots;
+} win64_uwop_t;
+
+static win64_uwop_t win64_uwop (size_t code_offset, unsigned op, unsigned info) {
+  win64_uwop_t u = {{(uint16_t) (code_offset | (op | info << 4) << 8), 0, 0}, 1};
+
+  return u;
+}
+
+/* An operation with a 32-bit operand VALUE: in one slot scaled by SCALE when
+   that fits, else in two unscaled with NEAR_OP + 1, the far form. */
+static win64_uwop_t win64_uwop_scaled (size_t code_offset, unsigned near_op, unsigned info,
+                                       uint64_t value, unsigned scale) {
+  int far_p = value / scale > 0xffff;
+  win64_uwop_t u = win64_uwop (code_offset, near_op + far_p, info);
+
+  gen_assert (value % scale == 0 && value <= 0xffffffff);
+  if (!far_p) {
+    u.slot[u.nslots++] = (uint16_t) (value / scale);
+  } else {
+    u.slot[u.nslots++] = (uint16_t) value;
+    u.slot[u.nslots++] = (uint16_t) (value >> 16);
+  }
+  return u;
+}
+
+static win64_uwop_t win64_uwop_alloc (size_t code_offset, uint64_t size) {
+  gen_assert (size != 0 && size % 8 == 0 && size <= 0xffffffff);
+  if (size <= 128) return win64_uwop (code_offset, WIN64_UWOP_ALLOC_SMALL, size / 8 - 1);
+  if (size / 8 <= 0xffff) /* OpInfo 0: the size / 8 in one slot */
+    return win64_uwop_scaled (code_offset, WIN64_UWOP_ALLOC_LARGE, 0, size, 8);
+  win64_uwop_t u = win64_uwop (code_offset, WIN64_UWOP_ALLOC_LARGE, 1); /* the size in two */
+
+  u.slot[u.nslots++] = (uint16_t) size;
+  u.slot[u.nslots++] = (uint16_t) (size >> 16);
+  return u;
+}
+
+/* Is SAVE the push of the register FRAME's SP rule moved SP over: made at the
+   same mark, at the new SP. */
+static int win64_push_pair_p (const gen_cfi_rule_t *frame, const gen_cfi_rule_t *save) {
+  return frame->frame_p && frame->dwarf_reg == TARGET_DWARF_SP && !save->frame_p
+         && save->mark == frame->mark && save->offset == -frame->offset;
+}
+
+/* The x64 encoding's number of DWARF register DWARF_REG -- RAX 0 .. R15 15, the
+   hard registers' own order; XMMn n with *XMM_P set. */
+static unsigned win64_unwind_reg (unsigned dwarf_reg, int *xmm_p) {
+  if ((*xmm_p = dwarf_reg >= 17)) return dwarf_reg - 17;
+  for (MIR_reg_t r = 0; r <= R15_HARD_REG; r++)
+    if (target_dwarf_reg (r) == dwarf_reg) return r;
+  gen_assert (FALSE);
+  return 0;
+}
+
+/* After target_translate: append the function's UNWIND_INFO (version 1, no
+   handler) to B; FALSE, appending nothing, when it has no frame to describe. */
+static int target_win64_unwind_info (gen_ctx_t gen_ctx, VARR (uint8_t) * b) {
+  win64_uwop_t ops[24];
+  size_t i, j, rules_num, nops = 0, nslots = 0, prolog = 0;
+  gen_cfi_rule_t *rules = gen_cfi_order_rules (gen_ctx, &rules_num);
+  int64_t sp_cfa = 8, sp_final = 8; /* CFA - SP; at entry the return address */
+  unsigned frame = 0;               /* FrameRegister | FrameOffset / 16 << 4 */
+  int xmm_p;
+
+  /* a jcall/jret frame is not one the codes describe (nor DWARF: gen_cfi_encode) */
+  if (curr_func_item->u.func->jret_p || rules_num == 0) return FALSE;
+  for (i = 0; i < rules_num; i++)
+    if (rules[i].frame_p && rules[i].dwarf_reg == TARGET_DWARF_SP) sp_final = rules[i].offset;
+  for (i = 0; i < rules_num; i++) {
+    const gen_cfi_rule_t *r = &rules[i];
+
+    gen_assert (nops < sizeof (ops) / sizeof (ops[0]));
+    if (r->code_offset > prolog) prolog = r->code_offset;
+    if (r->frame_p && r->dwarf_reg == TARGET_DWARF_SP) {
+      for (j = 0; j < rules_num && !win64_push_pair_p (r, &rules[j]); j++)
+        ;
+      if (j < rules_num) {
+        gen_assert (r->offset - sp_cfa == 8);
+        ops[nops++] = win64_uwop (r->code_offset, WIN64_UWOP_PUSH_NONVOL,
+                                  win64_unwind_reg (rules[j].dwarf_reg, &xmm_p));
+      } else {
+        ops[nops++] = win64_uwop_alloc (r->code_offset, (uint64_t) (r->offset - sp_cfa));
+      }
+      sp_cfa = r->offset;
+    } else if (r->frame_p) {
+      int64_t fo = sp_cfa - r->offset;
+
+      gen_assert (r->dwarf_reg == TARGET_DWARF_FP && 0 <= fo && fo <= 240 && fo % 16 == 0);
+      frame = BP_HARD_REG | (unsigned) (fo / 16) << 4;
+      ops[nops++] = win64_uwop (r->code_offset, WIN64_UWOP_SET_FPREG, 0);
+    } else {
+      for (j = 0; j < rules_num && !win64_push_pair_p (&rules[j], r); j++)
+        ;
+      if (j < rules_num) continue; /* a push: its SP rule's code */
+      unsigned reg = win64_unwind_reg (r->dwarf_reg, &xmm_p);
+
+      gen_assert (r->offset + sp_final >= 0);
+      ops[nops++] = win64_uwop_scaled (r->code_offset,
+                                       xmm_p ? WIN64_UWOP_SAVE_XMM128 : WIN64_UWOP_SAVE_NONVOL,
+                                       reg, (uint64_t) (r->offset + sp_final), xmm_p ? 16 : 8);
+    }
+  }
+  for (i = 0; i < nops; i++) nslots += ops[i].nslots;
+  gen_assert (prolog <= 255 && nslots <= 255);
+  VARR_PUSH (uint8_t, b, 1); /* Version 1, Flags 0 */
+  VARR_PUSH (uint8_t, b, (uint8_t) prolog);
+  VARR_PUSH (uint8_t, b, (uint8_t) nslots);
+  VARR_PUSH (uint8_t, b, (uint8_t) frame);
+  for (i = nops; i-- > 0;)
+    for (j = 0; j < ops[i].nslots; j++) {
+      VARR_PUSH (uint8_t, b, (uint8_t) ops[i].slot[j]);
+      VARR_PUSH (uint8_t, b, (uint8_t) (ops[i].slot[j] >> 8));
+    }
+  if (nslots % 2 != 0) { /* the code array is an even number of slots */
+    VARR_PUSH (uint8_t, b, 0);
+    VARR_PUSH (uint8_t, b, 0);
+  }
+  return TRUE;
 }
 #endif
 
@@ -2134,6 +2279,12 @@ static struct pattern patterns[] = {
 #ifdef _WIN32
   {MIR_UNSPEC, "c" STR_VAL (PUSH_CODE) " h5", "55", 0}, /* push bp */
   {MIR_UNSPEC, "c" STR_VAL (POP_CODE) " h5", "5D", 0},  /* pop bp */
+  /* the frame's stack probe, op1 = -size: mov $-4096,ax; 1: test ax,(sp,ax); sub $4096,ax;
+     cmp $op1,ax; jg 1b; test ax,op1(sp) */
+  {MIR_UNSPEC, "c" STR_VAL (PROBE_CODE) " i2",
+   "X C7 /0 H00 VFFFFF000; X 85 04 04; X 81 /5 H00 V00001000; X 81 /7 H00 I1; 7F EC; "
+   "X 85 84 24 I1",
+   0},
 #endif
 
   {MIR_EXT8, "r r", "X 0F BE r0 R1", 0},    /* movsx r0,r1 */
@@ -3993,6 +4144,8 @@ static void target_init (gen_ctx_t gen_ctx) {
   MIR_var_t bp_args[] = {{MIR_T_I64, "bp", 0}};
   _MIR_register_unspec_insn (gen_ctx->ctx, PUSH_CODE, "push", 0, NULL, 1, FALSE, bp_args);
   _MIR_register_unspec_insn (gen_ctx->ctx, POP_CODE, "pop", 1, &bp_type, 0, FALSE, NULL);
+  MIR_var_t probe_args[] = {{MIR_T_I64, "size", 0}};
+  _MIR_register_unspec_insn (gen_ctx->ctx, PROBE_CODE, "probe", 0, NULL, 1, FALSE, probe_args);
 #endif
   patterns_init (gen_ctx);
   temp_jump = MIR_new_insn (ctx, MIR_JMP, MIR_new_label_op (ctx, NULL));

@@ -1,0 +1,131 @@
+/* The platform unwinder walks a frame of every shape madc generates: one
+ * with no frame pointer where the ABI allows it (sp_small: saved registers
+ * off the stack pointer; a Windows call's home area keeps a frame pointer),
+ * one with a frame pointer and saved xmm registers (fp_small: its local
+ * array is an alloca), a variadic one (vararg), and two whose fixed part is
+ * a page or more -- 600 values live across a call, so on Windows the prologue
+ * probes the stack and the frame pointer sits far from the frame's top -- without
+ * and with a local array (probed_sp, probed_fp).  Each frame's IP is mapped to
+ * its function by _Unwind_FindEnclosingFunction, and each function learns its
+ * own identity the same way, as in testunwind_backtrace.  A frame the unwind
+ * data describes wrongly ends the walk there, or crashes it.
+ * Oracle: gcc 13 -O0 and clang 18 -O0 print the lines below. */
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+
+struct _Unwind_Context;
+typedef int (*trace_fn) (struct _Unwind_Context *, void *);
+extern int _Unwind_Backtrace (trace_fn, void *);
+extern uintptr_t _Unwind_GetIP (struct _Unwind_Context *);
+extern void *_Unwind_FindEnclosingFunction (void *);
+
+static void *enclosing (struct _Unwind_Context *ctx) {
+	return _Unwind_FindEnclosingFunction ((void *) (_Unwind_GetIP (ctx) - 1));
+}
+
+/* frame 1 is self_id itself, frame 2 its caller */
+struct up { int n; void *fn; };
+static int up_trace (struct _Unwind_Context *ctx, void *arg) {
+	struct up *u = arg;
+	if (++u->n < 2) return 0;
+	u->fn = enclosing (ctx);
+	return 5; /* _URC_END_OF_STACK: stop */
+}
+static void *self_id (void) {
+	struct up u = {0, NULL};
+	_Unwind_Backtrace (up_trace, &u);
+	return u.fn;
+}
+static void *(*volatile self_id_p) (void) = self_id;
+
+enum { SP_SMALL, FP_SMALL, VARARG, PROBED_SP, PROBED_FP, LEAF, SHAPES };
+static const char *const names[SHAPES] = {"sp_small", "fp_small", "vararg",
+					  "probed_sp", "probed_fp", "leaf"};
+static void *ids[SHAPES];
+static int seen[SHAPES], frames;
+
+static int trace (struct _Unwind_Context *ctx, void *arg) {
+	(void) arg;
+	void *fn = enclosing (ctx);
+	frames++;
+	for (int i = 0; i < SHAPES; i++)
+		if (fn != NULL && fn == ids[i] && seen[i] == 0) seen[i] = frames;
+	return 0; /* _URC_NO_REASON: keep walking */
+}
+
+static long long leaf (long long x) {
+	ids[LEAF] = self_id_p ();
+	_Unwind_Backtrace (trace, NULL);
+	return x + 1;
+}
+static long long (*volatile leaf_p) (long long) = leaf;
+
+/* 600 values live across the call: a fixed frame of a page or more */
+#define R10(m, p) m(p##0) m(p##1) m(p##2) m(p##3) m(p##4) m(p##5) m(p##6) m(p##7) m(p##8) m(p##9)
+#define R100(m, p) R10(m, p##0) R10(m, p##1) R10(m, p##2) R10(m, p##3) R10(m, p##4) \
+	R10(m, p##5) R10(m, p##6) R10(m, p##7) R10(m, p##8) R10(m, p##9)
+#define R600(m) R100(m, 1) R100(m, 2) R100(m, 3) R100(m, 4) R100(m, 5) R100(m, 6)
+#define DEF(i) long long a##i = x * (i % 7 + 1) + i;
+#define ADD(i) r += a##i;
+
+static long long probed_fp (long long x) {
+	volatile char buf[64];
+	ids[PROBED_FP] = self_id_p ();
+	buf[x & 63] = 1;
+	R600 (DEF)
+	long long r = leaf_p (x + 1) + buf[x & 63];
+	R600 (ADD)
+	return r;
+}
+static long long (*volatile probed_fp_p) (long long) = probed_fp;
+
+static long long probed_sp (long long x) {
+	ids[PROBED_SP] = self_id_p ();
+	R600 (DEF)
+	long long r = probed_fp_p (x + 1);
+	R600 (ADD)
+	return r;
+}
+static long long (*volatile probed_sp_p) (long long) = probed_sp;
+
+static long long vararg (int n, ...) {
+	va_list ap;
+	long long sum = 0;
+	ids[VARARG] = self_id_p ();
+	va_start (ap, n);
+	for (int i = 0; i < n; i++) sum += va_arg (ap, long long);
+	va_end (ap);
+	return probed_sp_p (sum) + n;
+}
+static long long (*volatile vararg_p) (int, ...) = vararg;
+
+static long long fp_small (long long x) {
+	volatile char buf[32];
+	ids[FP_SMALL] = self_id_p ();
+	buf[x & 31] = 2;
+	double p = x * 0.5, q = x * 1.5, s = x * 2.5;
+	long long r = vararg_p (3, x, x + 1, x + 2);
+	return r + buf[x & 31] + (long long) (p + q + s);
+}
+static long long (*volatile fp_small_p) (long long) = fp_small;
+
+static long long sp_small (long long x) {
+	ids[SP_SMALL] = self_id_p ();
+	long long a = x + 1, b = x * 3, c = x ^ 5, d = x - 7, e = x * x, f = x + 11;
+	long long r = fp_small_p (x + 1);
+	return r + a + b + c + d + e + f;
+}
+static long long (*volatile sp_small_p) (long long) = sp_small;
+
+int main (void) {
+	long long r = sp_small_p (3);
+	int ordered = 1;
+	printf ("result %lld\n", r);
+	for (int i = 0; i < SHAPES; i++) {
+		printf ("%s: %d\n", names[i], ids[i] != NULL && seen[i] != 0);
+		if (i > 0 && !(seen[i] != 0 && seen[i] < seen[i - 1])) ordered = 0;
+	}
+	printf ("in order: %d\n", ordered);
+	return 0;
+}
