@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### Windows x86-64 MIR frame register sits at most 240 bytes above the frame bottom
+
+- A Windows frame-pointer function now pushes bp, allocates its frame, and sets bp to `lea min(N, 240)(%rsp)`, the canonical mingw gcc and clang frame. Before, bp was set to the frame's top with the saved bp stored below SP, and the x64 unwind rules describe a frame register at most 240 bytes above the fixed allocation's RSP, so no frame over 240 bytes, and no frame with saved registers, had a valid unwind description.
+- The frame's memory layout is unchanged. In a frame over 240 bytes, bp-relative references (stack slots, incoming arguments, the home area, the `-g` stack homes) move down by N - 240 (`win64_rebase_fp` in `third_party/mir/mir-gen-x86_64.c`). Frames of 240 bytes or less are unchanged in their body.
+- `tests/testframeshapes.mad` (`--std=c17`) prints the gcc 13 and clang 18 answers in `tests/testframeshapes.expect`: `vsum 11.50`, `many 249`, `int 5832215563746428664`, `fp 1510.000`, `variable 1158746`.
+
 ### Windows x86-64 MIR probes the stack a page at a time
 
 - A frame or an alloca of 4096 bytes or more now touches every page between SP and its new value, in order, before the stack pointer reaches the lowest one. Before, MIR moved SP down by the whole size in one step, so the first store past the committed guard page faulted: a 300000-byte local array or VLA through the packed `madc.exe` JIT, or a madc-built `.exe`, exited with an access violation (exit 5).

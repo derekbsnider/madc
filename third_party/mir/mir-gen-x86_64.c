@@ -940,6 +940,10 @@ typedef struct label_ref label_ref_t;
 DEF_VARR (label_ref_t);
 
 #define MOVDQA_CODE 0
+#ifdef _WIN32
+#define PUSH_CODE 1 /* push bp: the Windows prologue (target_make_prolog_epilog) */
+#define POP_CODE 2  /* pop bp: its epilogue */
+#endif
 
 struct call_ref {
   MIR_item_t ref_func_item; /* func where the ref is located and referenced func */
@@ -1533,6 +1537,37 @@ static void win64_probe_frame (gen_ctx_t gen_ctx, MIR_insn_t anchor, size_t size
     if (k == size) break;
   }
 }
+
+/* The Windows frame's bp sits DELTA below the frame's top, the base every
+   bp-relative address in the body was assigned against (the stack slots of
+   target_get_stack_slot_offset, the incoming arguments and the home area of
+   target_machinize): move each by DELTA -- a memory operand's displacement,
+   a bp + imm address's immediate, a stack home recorded for a debugger. */
+static void win64_rebase_fp (gen_ctx_t gen_ctx, int64_t delta) {
+  MIR_context_t ctx = gen_ctx->ctx;
+  MIR_func_t func = curr_func_item->u.func;
+
+  if (delta == 0) return;
+  for (MIR_insn_t insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;
+       insn = DLIST_NEXT (MIR_insn_t, insn)) {
+    size_t nops = MIR_insn_nops (ctx, insn);
+
+    for (size_t i = 0; i < nops; i++) {
+      MIR_op_t *op = &insn->ops[i];
+
+      if (op->mode == MIR_OP_VAR_MEM) {
+        gen_assert (op->u.var_mem.index != FP_HARD_REG);
+        if (op->u.var_mem.base == FP_HARD_REG) op->u.var_mem.disp += delta;
+      } else if (op->mode == MIR_OP_VAR && op->u.var == FP_HARD_REG) {
+        gen_assert (insn->code == MIR_ADD && i == 1 && nops == 3
+                    && (insn->ops[2].mode == MIR_OP_INT || insn->ops[2].mode == MIR_OP_UINT));
+        insn->ops[2].u.i += delta;
+      }
+    }
+  }
+  for (size_t i = 0; i < VARR_LENGTH (MIR_reg_loc_t, gen_reg_locs); i++)
+    VARR_ADDR (MIR_reg_loc_t, gen_reg_locs)[i].fp_offset += delta;
+}
 #endif
 
 static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_regs,
@@ -1566,8 +1601,60 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     gen_unwind_frame (gen_ctx, -8, 0); /* no frame: SP stays at the return address */
     return;
   }
+  service_area_size = func->vararg_p ? reg_save_area_size : 0;
+  if (!func->jret_p) service_area_size += 8; /* return address */
+  stack_slots_size = stack_slots_num * 8;
+  if (!keep_fp_p) stack_slots_size = (stack_slots_size + 15) / 16 * 16;
+  /* stack slots, and saved regs as multiple of 16 bytes: */
+  block_size = (stack_slots_size + saved_hard_regs_size + 15) / 16 * 16;
   anchor = DLIST_HEAD (MIR_insn_t, func->insns);
   sp_reg_op = _MIR_new_var_op (ctx, SP_HARD_REG);
+#ifdef _WIN32
+  /* The Windows frame (the x64 prolog rules, as mingw gcc and clang build it):
+     push bp; [probes;] sub N; lea FO(sp), bp with FO = min (N, 240) -- bp sits
+     above the frame's bottom, so the saves lie above the establisher frame
+     (bp - FO) where unwind codes can describe them; the epilogue is lea
+     (N - FO)(bp), sp; pop bp; ret.  The frame's memory is laid out as before
+     (the saved bp at entry SP - 8, the same final SP): only bp's value moves,
+     down by N - FO from the frame's top. */
+  const int win64_frame_p = keep_fp_p && !func->jret_p;
+#else
+  const int win64_frame_p = FALSE;
+#endif
+  int64_t win64_fp_delta = 0; /* how far bp sits below the frame's top */
+#ifdef _WIN32
+  if (win64_frame_p) {
+    const int64_t win64_frame_size /* below the pushed bp */
+      = (int64_t) (block_size + service_area_size) - 8;
+    const int64_t fp_offset = win64_frame_size < 240 ? win64_frame_size : 240;
+    win64_fp_delta = win64_frame_size - fp_offset;
+    win64_rebase_fp (gen_ctx, win64_fp_delta);
+    fp_reg_op = _MIR_new_var_op (ctx, FP_HARD_REG);
+    if (func->vararg_p) /* filling the home area, above the return address */
+      for (i = 0, offset = 8; i < 4; i++, offset += 8)
+        gen_mov (gen_ctx, anchor, MIR_MOV,
+                 _MIR_new_var_mem_op (ctx, MIR_T_I64, offset, SP_HARD_REG, MIR_NON_VAR, 1),
+                 _MIR_new_var_op (ctx, get_int_arg_reg (i)));
+    new_insn = _MIR_new_unspec_insn (ctx, 2, MIR_new_int_op (ctx, PUSH_CODE), fp_reg_op);
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* push bp */
+    size_t push_mark = gen_cfi_mark (gen_ctx, new_insn);
+    gen_cfi_frame (gen_ctx, push_mark, TARGET_DWARF_SP, 16);
+    gen_cfi_save (gen_ctx, push_mark, TARGET_DWARF_FP, -16);
+    win64_probe_frame (gen_ctx, anchor, (size_t) win64_frame_size);
+    if (win64_frame_size != 0) {
+      new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op,
+                               MIR_new_int_op (ctx, win64_frame_size));
+      gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= N */
+      gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_SP,
+                     win64_frame_size + 16);
+    }
+    /* Use add for matching LEA: */
+    new_insn = MIR_new_insn (ctx, MIR_ADD, fp_reg_op, sp_reg_op, MIR_new_int_op (ctx, fp_offset));
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* bp = sp + FO */
+    gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_FP,
+                   win64_fp_delta + 16);
+  } else
+#endif
   if (keep_fp_p) {
     fp_reg_op = _MIR_new_var_op (ctx, FP_HARD_REG);
 #ifdef MIR_NO_RED_ZONE_ABI
@@ -1588,33 +1675,27 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     bp_set_insn = new_insn;
 #endif
   }
+  if (!win64_frame_p) {
 #ifdef _WIN32
-  if (func->vararg_p) { /* filling spill space */
-    assert (keep_fp_p);
-    for (i = 0, offset = 16 /* ret & bp */; i < 4; i++, offset += 8)
-      gen_mov (gen_ctx, anchor, MIR_MOV,
-               _MIR_new_var_mem_op (ctx, MIR_T_I64, offset, FP_HARD_REG, MIR_NON_VAR, 1),
-               _MIR_new_var_op (ctx, get_int_arg_reg (i)));
+    if (func->vararg_p) { /* filling spill space */
+      assert (keep_fp_p);
+      for (i = 0, offset = 16 /* ret & bp */; i < 4; i++, offset += 8)
+        gen_mov (gen_ctx, anchor, MIR_MOV,
+                 _MIR_new_var_mem_op (ctx, MIR_T_I64, offset, FP_HARD_REG, MIR_NON_VAR, 1),
+                 _MIR_new_var_op (ctx, get_int_arg_reg (i)));
+    }
+    win64_probe_frame (gen_ctx, anchor, block_size + service_area_size);
+#endif
+    new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op,
+                             MIR_new_int_op (ctx, block_size + service_area_size));
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= block size + service_area_size */
+    /* The frame (CFI): after the sp adjustment CFA = sp + the frame + the return
+       address; once bp is set, CFA = bp + 16 with bp saved at CFA - 16.  The
+       saved registers' rules start at the body (body_mark). */
+    if (!keep_fp_p || bp_set_insn == NULL)
+      gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_SP,
+                     (int64_t) (block_size + service_area_size + 8));
   }
-#endif
-  service_area_size = func->vararg_p ? reg_save_area_size : 0;
-  if (!func->jret_p) service_area_size += 8; /* return address */
-  stack_slots_size = stack_slots_num * 8;
-  if (!keep_fp_p) stack_slots_size = (stack_slots_size + 15) / 16 * 16;
-  /* stack slots, and saved regs as multiple of 16 bytes: */
-  block_size = (stack_slots_size + saved_hard_regs_size + 15) / 16 * 16;
-#ifdef _WIN32
-  win64_probe_frame (gen_ctx, anchor, block_size + service_area_size);
-#endif
-  new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op,
-                           MIR_new_int_op (ctx, block_size + service_area_size));
-  gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= block size + service_area_size */
-  /* The frame (CFI): after the sp adjustment CFA = sp + the frame + the return
-     address; once bp is set, CFA = bp + 16 with bp saved at CFA - 16.  The
-     saved registers' rules start at the body (body_mark). */
-  if (!keep_fp_p || bp_set_insn == NULL)
-    gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_SP,
-                   (int64_t) (block_size + service_area_size + 8));
   body_mark = gen_cfi_mark (gen_ctx, NULL);
   bp_saved_reg_offset = block_size;
   /* For a stack walk (MIR_unwind_info_t): an ALLOCA's result is the new sp. */
@@ -1653,15 +1734,16 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   }
 #endif
   /* cfa_bias turns a save slot's bp|sp offset into its CFA offset */
-  int64_t cfa_bias = keep_fp_p ? -16 : -(int64_t) (block_size + service_area_size + 8);
-  if (keep_fp_p) {
+  int64_t cfa_bias
+    = keep_fp_p ? -16 - win64_fp_delta : -(int64_t) (block_size + service_area_size + 8);
+  if (keep_fp_p && !win64_frame_p) {
     size_t bp_mark = gen_cfi_mark (gen_ctx, bp_set_insn);
 
     gen_cfi_frame (gen_ctx, bp_mark, TARGET_DWARF_FP, 16);
     gen_cfi_save (gen_ctx, bp_mark, TARGET_DWARF_FP, -16);
   }
   /* Saving callee saved hard registers: */
-  offset = keep_fp_p ? -bp_saved_reg_offset : (int64_t) stack_slots_size;
+  offset = keep_fp_p ? win64_fp_delta - bp_saved_reg_offset : (int64_t) stack_slots_size;
   base_reg = keep_fp_p ? FP_HARD_REG : SP_HARD_REG;
 #ifdef _WIN32
   for (i = XMM0_HARD_REG; i <= XMM15_HARD_REG; i++)
@@ -1694,7 +1776,7 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     if (anchor->code == MIR_RET || anchor->code == MIR_JRET) break;
   if (anchor == NULL) return;
   /* Restoring hard registers: */
-  offset = keep_fp_p ? -bp_saved_reg_offset : (int64_t) stack_slots_size;
+  offset = keep_fp_p ? win64_fp_delta - bp_saved_reg_offset : (int64_t) stack_slots_size;
 #ifdef _WIN32
   for (i = XMM0_HARD_REG; i <= XMM15_HARD_REG; i++)
     if (!target_call_used_hard_reg_p ((MIR_reg_t) i, MIR_T_UNDEF)
@@ -1720,6 +1802,14 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     new_insn = MIR_new_insn (ctx, MIR_ADD, sp_reg_op, sp_reg_op,
                              MIR_new_int_op (ctx, block_size + service_area_size));
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp += block size + service_area_size */
+#ifdef _WIN32
+  } else if (win64_frame_p) {
+    new_insn
+      = MIR_new_insn (ctx, MIR_ADD, sp_reg_op, fp_reg_op, MIR_new_int_op (ctx, win64_fp_delta));
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp = bp + N - FO: at the saved bp */
+    new_insn = _MIR_new_unspec_insn (ctx, 2, MIR_new_int_op (ctx, POP_CODE), fp_reg_op);
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* pop bp */
+#endif
   } else {
 #ifdef MIR_NO_RED_ZONE_ABI
     new_insn = MIR_new_insn (ctx, MIR_MOV, temp_reg_op, fp_reg_op);
@@ -2041,6 +2131,10 @@ static struct pattern patterns[] = {
   {MIR_UNSPEC, "c" STR_VAL (MOVDQA_CODE) " r r", "66 Y 0F 6F r1 R2", 0},  /* movdqa r0,r1 */
   {MIR_UNSPEC, "c" STR_VAL (MOVDQA_CODE) " r md", "66 Y 0F 6F r1 m2", 0}, /* movdqa r0,m128 */
   {MIR_UNSPEC, "c" STR_VAL (MOVDQA_CODE) " md r", "66 Y 0F 7F r2 m1", 0}, /* movdqa m128,r0 */
+#ifdef _WIN32
+  {MIR_UNSPEC, "c" STR_VAL (PUSH_CODE) " h5", "55", 0}, /* push bp */
+  {MIR_UNSPEC, "c" STR_VAL (POP_CODE) " h5", "5D", 0},  /* pop bp */
+#endif
 
   {MIR_EXT8, "r r", "X 0F BE r0 R1", 0},    /* movsx r0,r1 */
   {MIR_EXT8, "r m0", "X 0F BE r0 m1", 0},   /* movsx r0,m1 */
@@ -3894,6 +3988,12 @@ static void target_init (gen_ctx_t gen_ctx) {
   MIR_type_t res = MIR_T_D;
   MIR_var_t args[] = {{MIR_T_D, "src", 0}};
   _MIR_register_unspec_insn (gen_ctx->ctx, MOVDQA_CODE, "movdqa", 1, &res, 1, FALSE, args);
+#ifdef _WIN32
+  MIR_type_t bp_type = MIR_T_I64;
+  MIR_var_t bp_args[] = {{MIR_T_I64, "bp", 0}};
+  _MIR_register_unspec_insn (gen_ctx->ctx, PUSH_CODE, "push", 0, NULL, 1, FALSE, bp_args);
+  _MIR_register_unspec_insn (gen_ctx->ctx, POP_CODE, "pop", 1, &bp_type, 0, FALSE, NULL);
+#endif
   patterns_init (gen_ctx);
   temp_jump = MIR_new_insn (ctx, MIR_JMP, MIR_new_label_op (ctx, NULL));
   temp_jump_pat_ind = find_insn_pattern (gen_ctx, temp_jump, NULL);
