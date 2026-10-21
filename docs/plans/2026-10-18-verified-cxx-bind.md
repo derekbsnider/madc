@@ -475,6 +475,50 @@ stops binding for the TU; the restart stays designed, not built).
   of the front-end speed plan landed first and pay for it; every row ends
   at or below the old baseline, re-recorded downward.
 
+### Finding — win64 declines `<iostream>` on `NULL` (2026-10-21, measured)
+
+The first win64 release build since K3 (`make release-windows` at 1650fdacd)
+fails `forest_pack_gate`: the load probe (`tests/testfreezerun.mad`,
+`#include <iostream>` first) binds nothing.
+- `forest bind: arm state differs — frozen '=NULL((void *)0)', here '=NULL0LL'`,
+  then `DECLINE root .../iostream — unit .../wchar.h '#ifndef NULL' has an arm
+  that leaves a macro unlike the freeze's`; binding stops for the TU.
+- The freeze TU opens with `<cstddef>`: madc's `stddef.h` defines `NULL`
+  `((void *)0)`, so mingw `wchar.h`'s `#ifndef NULL` arm is skipped. A consumer
+  that opens with `<iostream>` reaches `wchar.h` with `NULL` undefined and runs
+  the arm (`0LL`, mingw's C++ `_WIN64` spelling). `NULL` is expanded later in
+  the freeze, so K2's rule declines.
+- A false difference, by the oracle: mingw g++ 13 `-E -dD` over `#include
+  <iostream>` defines `NULL 0LL` in `wchar.h` (line 3340), expands nothing to
+  `0LL`, then reaches `stddef.h`'s first inclusion (`#undef NULL` / `#define
+  NULL __null`, line 5150) before any use of `NULL`. madc's consumer walk binds
+  `stddef.h`'s first inclusion at the same edge, so `NULL` holds the frozen
+  `((void *)0)` again before any frozen token expands it.
+- Linux never shows it: glibc headers spell no `NULL` of their own
+  (`__need_NULL` defers to `stddef.h`). mingw headers spell their own; darwin's
+  `_null.h` spells `__DARWIN_NULL`.
+- Why K2/K2b cannot see it: the arm's check is due when the name's LAST
+  freeze-time expansion follows the arm, and K2b defers only to the next
+  conditional of the same unit. Here the restoring write is a different unit
+  (`stddef.h`) bound at a later edge of an ancestor.
+
+### K2c — check a name where the frozen content expands it (design)
+
+- Freeze: for every name a captured arm writes (the watched set), each
+  inclusion records the event position of the name's first expansion after
+  each write, with the freeze's state there (a pooled
+  `forest_macro_state_spelling`). Container v71.
+- Walk: an arm the walk runs that leaves a watched name unlike the arm entry
+  no longer declines; the name joins the TU's differs-set (`ForestSide`). At
+  each recorded expansion point of a name in the set, the name must hold
+  that point's frozen state (`forest_state_holds`, lex-alike included), or
+  the root declines.
+- It subsumes K2b's `^` deferral and the `?` mark (a name never expanded
+  after the arm has no point to check): both go.
+- Gate: `forest_bind_gate.sh` `[k2c]`, a corpus frozen `<cstddef>` first and
+  a consumer of `<iostream>` alone, on the win64 profile (and a Linux analogue
+  with a header that spells its own macro, then a restoring header).
+
 ## Thread safety
 
 The bind state is per-`Program` (`ForestSide`). The overlay in K2 is a local
