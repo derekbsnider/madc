@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### The fault reporter covers SIGTRAP
+
+- A trap that raises SIGTRAP (AArch64 `brk`, including the arm64e libunwind pointer-authentication trap) now prints the "madc: caught" report. Before, the process died silently. The exit status is unchanged: the handler re-raises with the default action.
+- `madc_install_crash_handler()` in `src/madc_crash.cpp` installs the reporter for SIGTRAP, named "SIGTRAP (trace/breakpoint trap)" by `crash_handler`.
+- `tests/unit/test_crash.cpp` checks that each fault signal (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP) carries the reporter.
+
 ### -static-libmadc on darwin covers the libSystem directory
 
 - On darwin, `madc -static-libmadc` covers the unwinder's `_Unwind_*` imports and dyld's imports, which the libSystem umbrella re-exports from `/usr/lib/system/`. Before, an iostream program was refused with "-static-libmadc cannot cover 6 runtime symbol(s)".
