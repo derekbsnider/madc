@@ -2632,10 +2632,49 @@ static bool forest_run_meets(const uint32_t *run, uint32_t n,
 	return false;
 }
 
-// Any unit of a declaring-unit run the filter binds.
-static bool forest_run_bound(const uint32_t *run, uint32_t n,
-			     const CirMaterializeFilter &f)
+// K2d: one unit's withdrawn names hold ns::nm (nm when ns is NULL or empty).
+// A stored name is the decl index's qualified spelling, compared in place as
+// ForestDeclNames::probe compares it — no name is built.
+bool CirMaterializeFilter::withdraws(const std::vector<madc::dis::istring> &names,
+				     const char *ns, const char *nm)
 {
+	if (!nm)
+		return false;
+	const size_t ns_len = ns ? strlen(ns) : 0;
+	for (const madc::dis::istring &q : names) {
+		const char *p = q.c_str();
+		if (ns_len) {
+			if (strncmp(p, ns, ns_len) != 0 || p[ns_len] != ':' || p[ns_len + 1] != ':')
+				continue;
+			p += ns_len + 2;
+		}
+		if (strcmp(p, nm) == 0)
+			return true;
+	}
+	return false;
+}
+
+// K2d: forest_run_bound with withdrawals in the filter — out of line, so the
+// common path keeps the plain loop's frame (measured: one function holding
+// both paths cost ~27 Ir a call on every name_verdict).
+__attribute__((noinline)) static bool forest_run_declares(const uint32_t *run, uint32_t n,
+							  const CirMaterializeFilter &f,
+							  const char *ns, const char *nm)
+{
+	for (uint32_t i = 0; i < n; ++i)
+		if (f.declares(run[i], ns, nm))
+			return true;
+	return false;
+}
+
+// Any unit of a declaring-unit run the filter binds and that declares the
+// name there (K2d: not withdrawn by a skipped arm). With nothing withdrawn —
+// every TU but one whose walk skipped a taken frozen arm — the plain loop.
+static inline bool forest_run_bound(const uint32_t *run, uint32_t n,
+				    const CirMaterializeFilter &f, const char *ns, const char *nm)
+{
+	if (!f.withdrawn.empty())
+		return forest_run_declares(run, n, f, ns, nm);
 	for (uint32_t i = 0; i < n; ++i)
 		if (f.binds(run[i]))
 			return true;
@@ -2658,7 +2697,7 @@ int CirFrozenForest::name_verdict(const char *nm, const char *ns,
 		if (!f.exact) {
 			const uint32_t *run = dn.units_of_qualified(ns, nm, n);
 			if (n)
-				return forest_run_bound(run, n, f) ? 1 : -1;
+				return forest_run_bound(run, n, f, ns, nm) ? 1 : -1;
 		}
 	}
 	if (!f.extra_names.empty() && f.extra_names.count(nm))
@@ -2666,7 +2705,7 @@ int CirFrozenForest::name_verdict(const char *nm, const char *ns,
 	if (!f.exact) {
 		const uint32_t *run = dn.units_of(nm, n);
 		if (n)
-			return forest_run_bound(run, n, f) ? 1 : -1;
+			return forest_run_bound(run, n, f, NULL, nm) ? 1 : -1;
 	}
 	return f.exact ? -1 : 0;
 }
@@ -3360,6 +3399,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 				grew = true;
 		_mat_filter.system_units.insert(want.system_units.begin(),
 						want.system_units.end());
+		// K2d: withdrawals accumulate with the walks that skipped arms.
+		for (const auto &uw : want.withdrawn) {
+			std::vector<madc::dis::istring> &have = _mat_filter.withdrawn[uw.first];
+			for (const madc::dis::istring &nm : uw.second)
+				if (std::find(have.begin(), have.end(), nm) == have.end())
+					have.push_back(nm);
+		}
 	}
 	if (grew)
 		materialize_pass();

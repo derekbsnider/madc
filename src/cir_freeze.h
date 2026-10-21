@@ -188,6 +188,8 @@ enum cir_forest_cond_field : uint32_t {
 	CIR_COND_ARM_STATE,	// v69: pool id of the freeze's state of the captured arm's writes (0 = none)
 	CIR_COND_CONSULT_AT,	// v69: an #if / #elif's first consulted macro in the unit's consult words
 	CIR_COND_CONSULT_N,	// v69: ... and how many (CIR_CONSULT_WORDS each)
+	CIR_COND_TOK_BEGIN,	// v72 (K2d): the arm's own tokens, unit-local [begin, end) — the
+	CIR_COND_TOK_END,	// decl index's coordinate (a skipped arm withdraws its declarations)
 	CIR_COND_WORDS
 };
 // v69: one inclusion's end in a unit's events, edges and condition records.
@@ -739,7 +741,11 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // macro a captured arm writes (CIR_POINT_WORDS each) — K2c's checks — and a
 // captured arm's CIR_COND_ARM_STATE is the plain state again (no v69 "?" /
 // K2b "^" marks).
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 71 };
+//
+// v72 (K2d): a condition record carries its arm's own tokens, unit-local
+// (CIR_COND_TOK_BEGIN / END — the decl index's slice coordinate): a taken arm
+// the bind walk skips withdraws the declarations it made.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 72 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies
@@ -1961,11 +1967,30 @@ struct CirMaterializeFilter
 	std::set<uint32_t> system_units;
 	// Names asked for by name, kept whatever declares them.
 	std::set<madc::dis::istring> extra_names;
+	// K2d: per bound unit, the names every declaration of which the unit made
+	// in a frozen arm the bind walk skipped, so the unit does not declare
+	// them here (decl-index names: the exported, qualified form). Few — a
+	// scan, compared in place (withdraws).
+	std::map<uint32_t, std::vector<madc::dis::istring> > withdrawn;
 	// The closure binds `unit`.
 	bool binds(uint32_t unit) const
 	{
 		return bound_units.count(unit) != 0;
 	}
+	// ... and `unit` declares ns::nm (nm when ns is NULL or empty) here.
+	bool declares(uint32_t unit, const char *ns, const char *nm) const
+	{
+		if (!binds(unit))
+			return false;
+		if (withdrawn.empty())
+			return true;
+		std::map<uint32_t, std::vector<madc::dis::istring> >::const_iterator it =
+			withdrawn.find(unit);
+		return it == withdrawn.end() || !withdraws(it->second, ns, nm);
+	}
+	// `names` (one unit's withdrawn) holds ns::nm.
+	static bool withdraws(const std::vector<madc::dis::istring> &names, const char *ns,
+			      const char *nm);
 };
 
 // --show-stats (task #25 slice D): ONE depth-guarded forest-work clock, the

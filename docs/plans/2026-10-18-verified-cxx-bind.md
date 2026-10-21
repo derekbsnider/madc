@@ -543,6 +543,55 @@ fails `forest_pack_gate`: the load probe (`tests/testfreezerun.mad`,
   gcc reads it) holds `#include <swprintf.inl>`. A run arm with an include
   is K2d.
 
+### K2d — a run arm's `#include`, and the frozen arm it replaces
+
+mingw `stdio.h` and `wchar.h` hold the same `#ifndef _WSTDIO_DEFINED` block
+(prototypes, `__mingw_ovr` inlines, `#include <swprintf.inl>`). The freeze
+reads `stdio.h` first: its block is taken and `wchar.h`'s is skipped. A
+consumer that reaches `wchar.h` first takes the other one.
+
+- (a) An `#include` read while the walk runs an arm is an edge of that walk.
+  The header's frozen unit is walked there (`forest_arm_include` →
+  `forest_walk_unit`), so its events replay at that point of the arm and its
+  declarations restore with the root. If the header cannot be bound (not
+  frozen, a quoted, `#include_next` or `__need` include, or a unit whose own
+  walk declines), the run stops (`ForestArmAbort`), and the root declines and
+  parses live. The arm purity test admits `#include` for the run (and the
+  freeze capture), not for one-mutation replay.
+- (b) A taken frozen arm that the walk skips (a masked bind) withdraws the
+  declarations made inside it, because the arm the walk ran has already
+  declared them live.
+  - The freeze stamps each arm's first and last token. The writer stores them
+    as the unit's own token range (`CIR_COND_TOK_BEGIN` / `_END`, the decl
+    index's slice coordinate). Container v72.
+  - The walk records each masked arm's range (`ForestSide::withdrawn_arms`).
+  - At restore, a name whose every declaration in that unit lies inside a
+    withdrawn arm is withdrawn: `CirMaterializeFilter::withdrawn` holds
+    (unit, name), and `name_verdict` treats the unit as not declaring it.
+- Gate: `forest_bind_gate.sh` `[k2d]`:
+  - `withdraw`: the mingw shape. `top.h` binds, the run arm's include binds
+    `inl.h`, and `stdio.h`'s skipped arm withdraws its declarations.
+  - `unbound`: an arm includes a header the freeze never read, so the root
+    declines.
+  - Oracle: g++ prints `inline=41 twice=80` / `extra=3`.
+  - `[redecl]` corpus 1 now asserts the withdrawal: `a.h`'s skipped arm no
+    longer restores `fbg_T` / `fbgT` twins beside `b.h`'s live copies, which
+    is gcc's reading. The twin tolerance (`denotes_same_type`, C11 6.7p3)
+    moves to corpus 3, a twin with no arm: `d.h` declines and parses live,
+    then `e.h` binds and restores its own `typedef fbgU`.
+- Linux shows it too. glibc `stdio.h`'s typedef-guard arms
+  (`__ssize_t_defined`, `__off_t_defined`, `_VA_LIST_DEFINED`,
+  `__off64_t_defined`) are masked in `cxx_stl` / `subscript`, and their
+  typedefs are withdrawn.
+- Cost (parse-cost, callgrind A/B against a packed release of the K2c commit):
+  - A TU with no withdrawal keeps K2c's path. `forest_run_bound`'s plain loop
+    stays inline; the withdrawal path is `noinline`, and a qualified name is
+    compared in place (`CirMaterializeFilter::withdraws`, as
+    `ForestDeclNames::probe` does), never built.
+  - Rows: rung_c8 −51K Ir, c_headers −6K, rung_vector +68K (+0.10%: the slot's
+    2 words, the `name_verdict` arguments). The withdrawing TUs: cxx_stl
+    +0.02%, subscript +0.04%.
+
 ## Thread safety
 
 The bind state is per-`Program` (`ForestSide`). The overlay in K2 is a local

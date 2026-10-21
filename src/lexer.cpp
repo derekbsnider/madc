@@ -174,7 +174,8 @@ struct MadcSharedPreludeCache
     // and the bind's arm run only need the names written — and take a
     // #pragma push_macro / pop_macro pair that the text closes itself (each
     // pop restores a push of the same text, none is left behind), whose
-    // name is a write.
+    // name is a write, and an #include (K2d: the walk binds the header as an
+    // edge where the arm reads it; its writes are that unit's events).
     static bool embedded_fragment_is_pure(
 	const madc::dis::istring &text, std::vector<madc::dis::istring> *mutations = NULL,
 	bool one_mutation_per_name = true)
@@ -241,6 +242,11 @@ struct MadcSharedPreludeCache
 			return false;	// restores a save made outside the text
 		    pos = end < text.size() ? end + 1 : end;
 		    continue;
+		}
+		if ( directive == "include" && !one_mutation_per_name )
+		{
+		    pos = end < text.size() ? end + 1 : end;
+		    continue;	// K2d: the walk binds it as an edge (forest_arm_include)
 		}
 		if ( directive != "define" && directive != "undef"
 		  && directive != "if" && directive != "ifdef"
@@ -5910,7 +5916,16 @@ struct ForestWalk
     // K2c: the macros (spelling ids) a run arm of this walk left unlike the
     // freeze's — ForestSide::macro_differs when the walk ends.
     std::set<uint32_t> differs;
+    // K2d: why an include stopped a run arm (forest_arm_include), or NULL.
+    const char *arm_abort = NULL;
+    // K2d: the taken arms this walk skipped (ForestSide::withdrawn_arms when
+    // it commits).
+    std::vector<Program::ForestSide::WithdrawnArm> withdrawn;
 };
+
+// K2d: thrown by forest_arm_include out of the arm's token reader to stop the
+// run; run_frozen_arm catches it and the root declines.
+struct ForestArmAbort {};
 
 // A condition text whose answer depends on WHERE it is read — the including
 // file's directory (a quoted __has_include) or its place in the search path
@@ -6052,7 +6067,8 @@ bool Program::run_frozen_arm(const char *unit_name, const std::string &text,
     source.fname(unit_name ? unit_name : "");
     source.str(text);
     const char *file = unit_name ? intern_file(unit_name) : NULL;
-    size_t groups_at_entry = cond_groups.size();
+    size_t groups_at_entry = cond_groups.size(), ifdef_at_entry = ifdef_stack.size();
+    bool ran = true;
     try
     {
 	while ( TokenBase *t = getRealToken() )
@@ -6062,6 +6078,15 @@ bool Program::run_frozen_arm(const char *unit_name, const std::string &text,
 	}
 	refuse_open_conditional_groups(groups_at_entry);
     }
+    catch (const ForestArmAbort &)
+    {
+	// The run stopped inside the arm: drop the groups it opened.
+	ran = false;
+	while ( cond_groups.size() > groups_at_entry )
+	    cond_groups.pop();
+	while ( ifdef_stack.size() > ifdef_at_entry )
+	    ifdef_stack.pop();
+    }
     catch (...)
     {
 	source = std::move(saved);
@@ -6070,7 +6095,44 @@ bool Program::run_frozen_arm(const char *unit_name, const std::string &text,
     }
     source = std::move(saved);
     pack_recording = recording;
-    return true;
+    return ran;
+}
+
+// The name an angle include binds by: an embedded name a search dir ahead of
+// madc's slot outranks (libc++'s C wrappers on an Apple target) binds the
+// WRAPPER's unit, never the embedded copy's bare-name unit — the precedence
+// the live path applies (embedded_header_outranked), applied before the bind.
+madc::dis::istring Program::forest_include_bind_name(const madc::dis::istring &incfile,
+						     bool is_include_next)
+{
+    const bool outranked = !is_include_next && find_embedded_header(incfile)
+	&& embedded_header_outranked(incfile);
+    return outranked ? resolve_include_path(incfile, /*is_system=*/true) : incfile;
+}
+
+// K2d: an #include read while the walk runs a frozen arm binds the header's
+// frozen unit as an edge of that walk, at this point of the arm — its events
+// replay here, its declarations restore with the root. A header the walk
+// cannot bind (not frozen, a quoted or #include_next or __need include, or a
+// unit whose own walk declines) stops the run (ForestArmAbort): the root
+// declines and parses live.
+void Program::forest_arm_include(const madc::dis::istring &incfile, bool bindable)
+{
+    ForestWalk &w = *forest_arm_walk;
+    const int fu = bindable ? forest_unit_for_include(forest_include_bind_name(incfile, false)) : -1;
+    if ( fu < 0 )
+	w.arm_abort = "includes a header the walk cannot bind";
+    else if ( !forest_walk_unit(w, (uint32_t)fu, false) )
+	w.arm_abort = "includes a header whose walk declines";
+    else
+    {
+	DBG(std::cout << "forest bind: a run arm's #include <" << incfile
+	    << "> binds unit " << fu << " in the walk" << std::endl);
+	return;
+    }
+    DBG(std::cout << "forest bind: a run arm " << w.arm_abort << " (<" << incfile << ">)"
+	<< std::endl);
+    throw ForestArmAbort();
 }
 
 // K2c: after a run arm, every macro it wrote that is unlike the freeze's state
@@ -6184,6 +6246,10 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 	DBG(std::cout << "forest bind: unit " << (uname ? uname : "?") << " '#" << kind_spelling
 	    << " " << (text ? text : "?") << "' arm skipped — its guard is live (masked bind)"
 	    << std::endl);
+	// K2d: the declarations the arm made are not this consumer's.
+	if ( c[CIR_COND_TOK_BEGIN] < c[CIR_COND_TOK_END] )
+	    w.withdrawn.push_back(ForestSide::WithdrawnArm{ unit, c[CIR_COND_TOK_BEGIN],
+							    c[CIR_COND_TOK_END] });
 	i_ev = std::max(i_ev, c[CIR_COND_EV_END]);
 	i_ed = std::max(i_ed, c[CIR_COND_ED_END]);
 	i_c = std::max(i_c, c[CIR_COND_REC_END]);
@@ -6197,8 +6263,21 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
     {
 	std::vector<TokenBase *> toks;
 	std::vector<madc::dis::istring> writes;
-	if ( !run_frozen_arm(uname, arm, toks, writes) )
-	    why = "has an arm the walk cannot run in place";
+	ForestWalk *const outer = forest_arm_walk;
+	forest_arm_walk = &w;
+	bool ran;
+	try
+	{
+	    ran = run_frozen_arm(uname, arm, toks, writes);
+	}
+	catch (...)
+	{
+	    forest_arm_walk = outer;
+	    throw;
+	}
+	forest_arm_walk = outer;
+	if ( !ran )
+	    why = w.arm_abort ? w.arm_abort : "has an arm the walk cannot run in place";
 	else
 	{
 	    w.arm_tokens.insert(w.arm_tokens.end(), toks.begin(), toks.end());
@@ -6465,6 +6544,7 @@ bool Program::forest_walk_root(ForestSide &s, uint32_t root, bool reinclude)
 	_forest_unit_bind_costs.push_back(
 	    std::make_pair(madc::dis::istring(nm ? nm : "?"), w.bound_cost[i]));
     }
+    s.withdrawn_arms.insert(s.withdrawn_arms.end(), w.withdrawn.begin(), w.withdrawn.end());
     for ( size_t i = 0; i < w.arm_tokens.size(); ++i )
 	push_token_with_literal_concat(w.arm_tokens[i]);
     return true;
@@ -7565,6 +7645,7 @@ void Program::pack_cond_elif(const std::string &text, bool outcome, size_t consu
     r.outcome = outcome;
     r.ev_begin = (uint32_t)pack_pp_exports[f.unit].size();
     r.ed_begin = (uint32_t)pack_unit_edges[f.unit].size();
+    r.tok_open = tokens.size();
     ++pack_point_epoch;
     std::set<madc::dis::istring> seen;
     for ( size_t i = 0; i < consulted.size(); ++i )
@@ -7584,6 +7665,11 @@ static void pack_cond_end_arm(Program &pgm, Program::PackCondFrame &f, bool sing
     r.ed_end = (uint32_t)pgm.pack_unit_edges[f.unit].size();
     r.single_arm = single_arm;
     r.rec_end = (uint32_t)pgm.pack_unit_conds[f.unit].size();
+    if ( pgm.tokens.size() > r.tok_open )
+    {
+	r.tok_first = pgm.tokens.buf_at(r.tok_open);
+	r.tok_last = pgm.tokens.back();
+    }
     ++pgm.pack_point_epoch;
     f.pending = -1;
 }
@@ -9011,6 +9097,13 @@ TokenBase *Program::_getToken()
 		    // belongs to the INCLUDER (pack_protocol_serving_begin;
 		    // both the embedded and the filesystem arm gate on this).
 		    bool protocol_visit = need_protocol_macro_live();
+		    // K2d: an include inside a frozen arm the bind walk runs is an
+		    // edge of that walk, never a live include or a root of its own.
+		    if ( forest_arm_walk )
+		    {
+			forest_arm_include(incfile, is_system && !is_include_next && !protocol_visit);
+			return include_completed_token();
+		    }
 		    // angle-bracket includes: prefer real precompiled headers, then
 		    // text-embedded compatibility headers, then filesystem source.
 		    // #include_next is POSITIONAL (continue the path search after
@@ -9057,19 +9150,8 @@ TokenBase *Program::_getToken()
 			if ( registration_policy.enable_forest_bind
 			  && !protocol_visit )
 			{
-			    // An embedded name a search dir ahead of madc's slot
-			    // outranks (libc++'s C wrappers on an Apple target)
-			    // binds the WRAPPER's unit, never the embedded copy's
-			    // bare-name unit — the precedence the live path below
-			    // applies (embedded_header_outranked), applied before
-			    // the bind.
-			    const bool outranked = !is_include_next
-				&& find_embedded_header(incfile)
-				&& embedded_header_outranked(incfile);
-			    const madc::dis::istring bind_name = outranked
-				? resolve_include_path(incfile, /*is_system=*/true)
-				: madc::dis::istring(incfile);
-			    int fu = forest_unit_for_include(bind_name);
+			    int fu = forest_unit_for_include(
+				forest_include_bind_name(incfile, is_include_next));
 			    // v40 (task #57): a unit whose frozen branch
 			    // decisions assumed a different macro environment
 			    // declines here and live-parses below.

@@ -27546,6 +27546,52 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 }
 
 // The bound forest's restore against its chain, filter and registration state.
+// K2d: a name a bound unit declares only inside a taken frozen arm a walk
+// skipped (ForestSide::withdrawn_arms) — its decl-index entries whose token
+// slice lies in the arm — is not that unit's here: a live parse that skips
+// the arm declares nothing there (CirMaterializeFilter::withdrawn).
+static void forest_withdrawn_declarers(CirFrozenForest &forest, const Program::ForestSide &s,
+				       CirMaterializeFilter &nf)
+{
+    if ( s.withdrawn_arms.empty() )
+	return;
+    typedef Program::ForestSide::WithdrawnArm WithdrawnArm;
+    std::map<uint32_t, std::vector<WithdrawnArm> > arms_of;
+    for ( const WithdrawnArm &a : s.withdrawn_arms )
+	if ( a.tok_begin < a.tok_end && nf.binds(a.unit) )
+	    arms_of[a.unit].push_back(a);
+    std::vector<cir_forest_decl_entry> ents;
+    for ( const auto &ua : arms_of )
+    {
+	if ( !forest.unit_decl_index(ua.first, ents) )
+	    continue;
+	std::set<uint32_t> inside, outside;	// name pool ids
+	for ( const cir_forest_decl_entry &e : ents )
+	{
+	    bool in = false;
+	    for ( const WithdrawnArm &a : ua.second )
+		if ( e.slice_begin >= a.tok_begin && e.slice_end <= a.tok_end )
+		{
+		    in = true;
+		    break;
+		}
+	    (in ? inside : outside).insert(e.name_id);
+	}
+	for ( const uint32_t id : inside )
+	{
+	    const char *nm = outside.count(id) ? NULL : forest.pool_str(id);
+	    if ( !nm )
+		continue;
+	    std::vector<madc::dis::istring> &w = nf.withdrawn[ua.first];
+	    const madc::dis::istring name(nm);
+	    if ( std::find(w.begin(), w.end(), name) == w.end() )
+		w.push_back(name);
+	    DBG(std::cout << "forest restore: unit " << forest.unit_name(ua.first)
+		<< " withdraws '" << nm << "' (declared in an arm the walk skipped)" << std::endl);
+	}
+    }
+}
+
 void Program::forest_restore_side(ForestSide &s, CirFrozenForest &forest)
 {
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
@@ -27600,6 +27646,7 @@ void Program::forest_restore_side(ForestSide &s, CirFrozenForest &forest)
 		if ( upath && is_system_header_path(upath) )
 		    nf.system_units.insert(*it);
 	    }
+	    forest_withdrawn_declarers(forest, s, nf);
 	}
 	s.restore_filter = built;
 	_forest_declidx_seconds += forest_restore_now() - _t_declidx0;
@@ -28369,6 +28416,7 @@ static void forest_side_mark(const Program::ForestSide &s, Program::ForestBindMa
     m.restored_chain_size = s.restored_chain_size;
     m.live_present = s.live_present;
     m.macro_differs = s.macro_differs;
+    m.withdrawn_arms = s.withdrawn_arms.size();
     m.bind_stopped = s.bind_stopped;
     m.type_registered = s.type_registered;
     m.global_registered = s.global_registered;
@@ -28386,6 +28434,7 @@ static void forest_side_rewind(Program::ForestSide &s, const Program::ForestBind
     s.restored_chain_size = m.restored_chain_size;
     s.live_present = m.live_present;
     s.macro_differs = m.macro_differs;
+    s.withdrawn_arms.resize(std::min(s.withdrawn_arms.size(), m.withdrawn_arms));
     s.bind_stopped = m.bind_stopped;
     s.type_registered = m.type_registered;
     s.global_registered = m.global_registered;

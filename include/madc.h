@@ -6034,6 +6034,11 @@ public:
 	uint32_t rec_end = 0;		// v69: the unit's record count at the arm's end
 	std::string arm_state;		// v69: the arm's written macros as the freeze held them (forest_macro_state_spelling)
 	std::vector<madc::dis::istring> arm_writes;	// v71: ... and their names (the forest keeps their expansion points)
+	// v72 (K2d): the arm's tokens — the stream's size at the directive, and
+	// the first and last token lexed in the arm (pointers survive the
+	// stream's later reordering); the writer turns them unit-local.
+	size_t tok_open = 0;
+	TokenBase *tok_first = NULL, *tok_last = NULL;
 	// v69: an #if / #elif's consulted macros and their state hashes at the
 	// evaluation — the bind takes the frozen outcome when every one matches.
 	std::vector<std::pair<madc::dis::istring, uint64_t> > consults;
@@ -7497,6 +7502,7 @@ public:
 	    size_t restored_chain_size = 0;
 	    std::set<uint32_t> live_present;
 	    std::set<uint32_t> macro_differs;
+	    size_t withdrawn_arms = 0;
 	    bool bind_stopped = false;
 	    std::vector<unsigned char> type_registered;
 	    std::vector<bool> global_registered, func_registered, tmpl_registered;
@@ -7538,6 +7544,11 @@ public:
 	// freeze's (its root bound, or declined and parsed live) — every later
 	// walk checks them at the expansion points.
 	std::set<uint32_t> macro_differs;
+	// K2d: a taken frozen arm a committed walk skipped — the unit and the
+	// arm's unit-local tokens [tok_begin, tok_end): the restore withdraws
+	// the declarations made there (CirMaterializeFilter::withdrawn).
+	struct WithdrawnArm { uint32_t unit, tok_begin, tok_end; };
+	std::vector<WithdrawnArm> withdrawn_arms;
 	// K1a (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ / madc TU's
 	// system content is all-bound or all-live — a decline with nothing bound
 	// yet stops every later bind, so the TU parses live from there; K1b: so
@@ -7809,6 +7820,12 @@ public:
     bool run_frozen_arm(const char *unit_name, const std::string &text,
 			std::vector<TokenBase *> &out, std::vector<madc::dis::istring> &writes);
     ForestMacroUndo *forest_macro_undo = NULL;	// the walk in flight's undo log (set_macro notes into it)
+    // K2d: the walk whose frozen arm is running (run_frozen_arm) — an
+    // #include in the arm is an edge of that walk (forest_arm_include).
+    ForestWalk *forest_arm_walk = NULL;
+    void forest_arm_include(const madc::dis::istring &incfile, bool bindable);
+    madc::dis::istring forest_include_bind_name(const madc::dis::istring &incfile,
+						bool is_include_next);
     // B211: the #define / #undef handlers note a program write before it
     // happens; the next root walk reads the notes into ForestSide's per-unit
     // marks, and a marked unit declines its root.

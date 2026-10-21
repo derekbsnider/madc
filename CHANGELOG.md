@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### A forest bind follows a run arm's `#include` and withdraws a skipped frozen arm's declarations
+
+- A forest root whose run arm holds an `#include` no longer declines on that include alone. The included header binds as an edge of the walk, at that point of the arm, and its declarations restore with the root. An include the walk cannot bind (not frozen, quoted, `#include_next`, `__need`, or a unit whose own walk declines) still declines the root, which then parses live.
+- A taken frozen arm that the walk skips no longer restores its declarations beside the live copies. The names declared only inside that arm are withdrawn from the restored unit, so `struct fbg_T` and `typedef fbgT` are declared once (gcc's reading). Before, they restored as twins.
+- mingw's `stdio.h` and `wchar.h` hold the same `#ifndef _WSTDIO_DEFINED` block, including `#include <swprintf.inl>`. A consumer that reaches `wchar.h` first now binds its frozen unit instead of declining.
+- `scripts/forest_bind_gate.sh` `[k2d]` `withdraw` prints `inline=41 twice=80` (g++ prints the same) and `unbound` declines and prints `extra=3`. The `[redecl]` corpus 1 asserts the withdrawal; the typedef-twin tolerance moves to corpus 3.
+- The freeze records each captured arm's token range; container format v72 (`CIR_COND_TOK_BEGIN` / `CIR_COND_TOK_END`). `--dump-forest` condnest lines print `tok=`.
+
 ### A forest bind checks a macro where frozen content expands it
 
 - A forest root whose run arm leaves a macro unlike the freeze's state no longer declines on that write alone. The walk checks the macro at each recorded expansion point it reaches, and declines only where the frozen content would expand it to a different state.

@@ -4137,6 +4137,40 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	if (!pw.empty())
 	    points_of[ensure_unit(points_in_order[k]->first)].swap(pw);
     }
+    // v72 (K2d): each arm's first and last token, found in the final stream
+    // (the lexer's stream may be reordered after it was lexed), then made
+    // the unit's own token range — the decl index's slice coordinate.
+    std::unordered_map<TokenBase *, size_t> tok_at;
+    for (size_t k = 0; k < conds_in_order.size(); ++k)
+	for (const Program::PackCondRecord &r : conds_in_order[k]->second)
+	    if (r.tok_first && r.tok_last) {
+		tok_at[r.tok_first] = n;
+		tok_at[r.tok_last] = n;
+	    }
+    if (!tok_at.empty()) {
+	size_t g = 0;
+	for (TokenStream::const_iterator it = prog->tokens.begin();
+	     it != prog->tokens.end(); ++it, ++g) {
+	    std::unordered_map<TokenBase *, size_t>::iterator ti = tok_at.find(*it);
+	    if (ti != tok_at.end() && ti->second == n)
+		ti->second = g;
+	}
+    }
+    auto arm_tokens = [&](uint32_t u, const Program::PackCondRecord &r, uint32_t &lo,
+			  uint32_t &hi) {
+	lo = hi = 0;
+	if (!r.tok_first || !r.tok_last)
+	    return;
+	const size_t g0 = tok_at[r.tok_first], g1 = tok_at[r.tok_last];
+	bool any = false;
+	for (size_t j = g0; j <= g1 && g1 < n; ++j)
+	    if (unit_of[j] == u) {
+		if (!any)
+		    lo = local_of[j];
+		hi = local_of[j] + 1;
+		any = true;
+	    }
+    };
     std::set<uint32_t> item_units;
     for (std::map<uint32_t, std::vector<uint32_t> >::const_iterator it = edge_events_of.begin();
 	 it != edge_events_of.end(); ++it)
@@ -4176,6 +4210,7 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 				  ? pool->intern(r.arm_state) : 0;
 	    w[CIR_COND_CONSULT_AT] = (uint32_t)(consult_words.size() / CIR_CONSULT_WORDS);
 	    w[CIR_COND_CONSULT_N] = (uint32_t)r.consults.size();
+	    arm_tokens(u, r, w[CIR_COND_TOK_BEGIN], w[CIR_COND_TOK_END]);
 	    for (size_t k = 0; k < r.consults.size(); ++k) {
 		consult_words.push_back(pool->intern(r.consults[k].first));
 		consult_words.push_back((uint32_t)(r.consults[k].second & 0xffffffffu));
@@ -8056,7 +8091,8 @@ int madc_cir_dump_forest(const char *container_path)
 		       w[CIR_COND_ED_BEGIN], w[CIR_COND_ED_END],
 		       w[CIR_COND_ARM] ? "captured" : "none",
 		       txt ? txt : "?");
-		printf("condnest\t%s\t%u\t%u\n", uname ? uname : "?", c, w[CIR_COND_REC_END]);
+		printf("condnest\t%s\t%u\t%u\ttok=%u-%u\n", uname ? uname : "?", c,
+		       w[CIR_COND_REC_END], w[CIR_COND_TOK_BEGIN], w[CIR_COND_TOK_END]);
 	    }
 	    // v69: where each inclusion ended (written only when there are several).
 	    const uint32_t ni = at < cw.size() ? cw[at++] : 0;
