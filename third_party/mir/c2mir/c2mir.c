@@ -3774,6 +3774,93 @@ static macro_call_t try_param_macro_call (c2m_ctx_t c2m_ctx, macro_t m, token_t 
 #define RETURN_ADDRESS "__builtin_return_address"
 #define PROP_EQ "__builtin_prop_eq"
 #define PROP_NE "__builtin_prop_ne"
+#define BUILTIN_ALLOCA "__builtin_alloca"
+#define ALLOCA "alloca"
+#define BUILTIN_VA_START "__builtin_va_start"
+#define BUILTIN_VA_ARG "__builtin_va_arg"
+
+/* The call names c2mir lowers in place (no symbol is called): ONE table, read
+   by every site that asks about a builtin name -- __has_builtin, the checker's
+   call and definition checks, the generator (by the kind the checker stored),
+   and an embedding front end (c2mir_builtin_call_name_p).  The flags keep each
+   site's own answer as data. */
+enum builtin_kind {
+  BI_NONE = 0,
+  BI_ALLOCA,
+  BI_VA_START,
+  BI_VA_ARG,
+  BI_ADD_OVERFLOW,
+  BI_SUB_OVERFLOW,
+  BI_MUL_OVERFLOW,
+  BI_EXPECT,
+  BI_ABORT,
+  BI_MEMCMP,
+  BI_COPYSIGNF,
+  BI_NAN,
+  BI_CONVERT_VECTOR,
+  BI_SHUFFLE,
+  BI_SHUFFLE_VECTOR,
+  BI_VECTOR_ELEMENTS,
+  BI_JCALL,
+  BI_JRET,
+  BI_PROP_SET,
+  BI_PROP_EQ,
+  BI_PROP_NE,
+  BI_CLEANUP_ARM,
+  BI_FRAME_ADDRESS,
+  BI_RETURN_ADDRESS,
+  BI_NUM
+};
+/* struct expr keeps a call's kind in a 5-bit field */
+typedef char builtin_kind_fits_expr_field[BI_NUM <= 32 ? 1 : -1];
+#define BIF_HAS_BUILTIN 1u /* __has_builtin (name) answers 1 */
+#define BIF_RESERVED 2u    /* a function definition of the name is an error */
+static const struct builtin_name {
+  const char *name;
+  unsigned char kind, flags;
+} builtin_names[] = {
+  {ALLOCA, BI_ALLOCA, BIF_RESERVED},
+  {BUILTIN_ALLOCA, BI_ALLOCA, BIF_RESERVED},
+  {BUILTIN_VA_START, BI_VA_START, BIF_RESERVED},
+  {BUILTIN_VA_ARG, BI_VA_ARG, BIF_RESERVED},
+  {ADD_OVERFLOW, BI_ADD_OVERFLOW, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {SUB_OVERFLOW, BI_SUB_OVERFLOW, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {MUL_OVERFLOW, BI_MUL_OVERFLOW, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {EXPECT, BI_EXPECT, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {BUILTIN_ABORT, BI_ABORT, BIF_RESERVED},
+  {BUILTIN_MEMCMP, BI_MEMCMP, BIF_RESERVED},
+  {BUILTIN_COPYSIGNF, BI_COPYSIGNF, BIF_RESERVED},
+  {BUILTIN_NAN, BI_NAN, BIF_RESERVED},
+  {CONVERT_VECTOR, BI_CONVERT_VECTOR, BIF_HAS_BUILTIN},
+  {SHUFFLE, BI_SHUFFLE, BIF_HAS_BUILTIN},
+  {SHUFFLE_VECTOR, BI_SHUFFLE_VECTOR, BIF_HAS_BUILTIN},
+  {VECTOR_ELEMENTS, BI_VECTOR_ELEMENTS, 0},
+  {JCALL, BI_JCALL, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {JRET, BI_JRET, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {PROP_SET, BI_PROP_SET, BIF_HAS_BUILTIN},
+  {PROP_EQ, BI_PROP_EQ, BIF_HAS_BUILTIN},
+  {PROP_NE, BI_PROP_NE, BIF_HAS_BUILTIN},
+  {CLEANUP_ARM, BI_CLEANUP_ARM, BIF_HAS_BUILTIN},
+  {FRAME_ADDRESS, BI_FRAME_ADDRESS, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {RETURN_ADDRESS, BI_RETURN_ADDRESS, BIF_HAS_BUILTIN | BIF_RESERVED},
+};
+
+/* NAME's builtin kind (BI_NONE: an ordinary function) and, through FLAGS when
+   non-NULL, its BIF_* answers.  Every name but alloca starts "__builtin_", so
+   an ordinary call is rejected on its prefix. */
+static enum builtin_kind builtin_kind (const char *name, unsigned *flags) {
+  if (strncmp (name, "__builtin_", 10) != 0 && strcmp (name, ALLOCA) != 0) return BI_NONE;
+  for (size_t i = 0; i < sizeof (builtin_names) / sizeof (builtin_names[0]); i++)
+    if (strcmp (name, builtin_names[i].name) == 0) {
+      if (flags != NULL) *flags = builtin_names[i].flags;
+      return (enum builtin_kind) builtin_names[i].kind;
+    }
+  return BI_NONE;
+}
+
+int c2mir_builtin_call_name_p (const char *name) {
+  return name != NULL && builtin_kind (name, NULL) != BI_NONE;
+}
 
 static void processing (c2m_ctx_t c2m_ctx, int ignore_directive_p) {
   MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
@@ -3911,16 +3998,10 @@ static void processing (c2m_ctx_t c2m_ctx, int ignore_directive_p) {
               if (i < len && VARR_GET (token_t, arg, i)->code == ' ') i++;
               if (i != len)
                 error (c2m_ctx, t->pos, "garbage after identifier in __has_builtin");
-              else
-                res = (strcmp (t->repr, ADD_OVERFLOW) == 0 || strcmp (t->repr, SUB_OVERFLOW) == 0
-                       || strcmp (t->repr, MUL_OVERFLOW) == 0 || strcmp (t->repr, EXPECT) == 0
-                       || strcmp (t->repr, CONVERT_VECTOR) == 0 || strcmp (t->repr, SHUFFLE) == 0
-                       || strcmp (t->repr, SHUFFLE_VECTOR) == 0
-                       || strcmp (t->repr, JCALL) == 0 || strcmp (t->repr, JRET) == 0
-                       || strcmp (t->repr, PROP_SET) == 0 || strcmp (t->repr, PROP_EQ) == 0
-                       || strcmp (t->repr, PROP_NE) == 0 || strcmp (t->repr, CLEANUP_ARM) == 0
-                       || strcmp (t->repr, FRAME_ADDRESS) == 0
-                       || strcmp (t->repr, RETURN_ADDRESS) == 0);
+              else {
+                unsigned flags = 0;
+                res = builtin_kind (t->repr, &flags) != BI_NONE && (flags & BIF_HAS_BUILTIN) != 0;
+              }
             }
           }
           m->ignore_p = TRUE;
@@ -4374,7 +4455,8 @@ DA (post_expr_part) {
       r = NULL;
       code = N_CALL;
       list = new_node (c2m_ctx, N_LIST);
-      if (op->code == N_ID && strcmp (op->u.s.s, CONVERT_VECTOR) == 0) {
+      enum builtin_kind bk = op->code == N_ID ? builtin_kind (op->u.s.s, NULL) : BI_NONE;
+      if (bk == BI_CONVERT_VECTOR) {
         if (!C (')')) {
           P (assign_expr);
           op_append (c2m_ctx, list, r);
@@ -4382,7 +4464,7 @@ DA (post_expr_part) {
           P (type_name);
           op_append (c2m_ctx, list, r);
         }
-      } else if (op->code == N_ID && strcmp (op->u.s.s, VECTOR_ELEMENTS) == 0) {
+      } else if (bk == BI_VECTOR_ELEMENTS) {
         if (!C (')')) {
           if ((r = TRY (type_name)) == err_node) P (assign_expr);
           op_append (c2m_ctx, list, r);
@@ -6467,6 +6549,7 @@ static struct type arithmetic_conversion (const struct type *type1, const struct
 
 struct expr {
   unsigned int const_p : 1, const_addr_p : 1, builtin_call_p : 1;
+  unsigned int builtin_kind : 5; /* enum builtin_kind of a builtin call, else BI_NONE */
   union {
     node_t lvalue_node;       /* for id, str, field, deref field, ind, deref, compound literal */
     node_t label_addr_target; /* for label address */
@@ -9982,6 +10065,7 @@ static struct expr *create_expr (c2m_ctx_t c2m_ctx, node_t r) {
   e->type->pos_node = r;
   e->u.lvalue_node = NULL;
   e->const_p = e->const_addr_p = e->builtin_call_p = FALSE;
+  e->builtin_kind = BI_NONE;
   e->c_u_hi_val = 0;
   e->call_proto_item = NULL;
   e->c_im_val = 0.0L;
@@ -10636,19 +10720,6 @@ static int specs_no_strict_aliasing_p (node_t specs) {
               || strcmp (arg->u.s.s, "no-strict-aliasing") == 0))
         return TRUE;
   }
-  return FALSE;
-}
-
-#define BUILTIN_VA_START \
-  (const char *[]) { "__builtin_va_start", NULL }
-#define BUILTIN_VA_ARG \
-  (const char *[]) { "__builtin_va_arg", NULL }
-#define ALLOCA \
-  (const char *[]) { "alloca", "__builtin_alloca", NULL }
-
-static int str_eq_p (const char *str, const char *v[]) {
-  for (int i = 0; v[i] != NULL; i++)
-    if (strcmp (v[i], str) == 0) return TRUE;
   return FALSE;
 }
 
@@ -11522,34 +11593,37 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     int vectorelements_p = FALSE, cleanup_arm_p = FALSE;
     int frame_address_p = FALSE, return_address_p = FALSE;
     mir_size_t vectorelements_count = 0;
+    enum builtin_kind bk = BI_NONE;
 
     op1 = NL_HEAD (r->u.ops);
     if (op1->code == N_ID) {
-      alloca_p = str_eq_p (op1->u.s.s, ALLOCA);
-      add_overflow_p = strcmp (op1->u.s.s, ADD_OVERFLOW) == 0;
-      sub_overflow_p = strcmp (op1->u.s.s, SUB_OVERFLOW) == 0;
-      mul_overflow_p = strcmp (op1->u.s.s, MUL_OVERFLOW) == 0;
-      expect_p = strcmp (op1->u.s.s, EXPECT) == 0;
-      abort_p = strcmp (op1->u.s.s, BUILTIN_ABORT) == 0;
-      memcmp_p = strcmp (op1->u.s.s, BUILTIN_MEMCMP) == 0;
-      copysignf_p = strcmp (op1->u.s.s, BUILTIN_COPYSIGNF) == 0;
-      nan_p = strcmp (op1->u.s.s, BUILTIN_NAN) == 0;
-      convertvector_p = strcmp (op1->u.s.s, CONVERT_VECTOR) == 0;
-      shuffle_p = strcmp (op1->u.s.s, SHUFFLE) == 0;
-      shufflevector_p = strcmp (op1->u.s.s, SHUFFLE_VECTOR) == 0;
-      vectorelements_p = strcmp (op1->u.s.s, VECTOR_ELEMENTS) == 0;
-      jcall_p = strcmp (op1->u.s.s, JCALL) == 0;
-      jret_p = strcmp (op1->u.s.s, JRET) == 0;
-      prop_set_p = strcmp (op1->u.s.s, PROP_SET) == 0;
-      prop_eq_p = strcmp (op1->u.s.s, PROP_EQ) == 0;
-      prop_ne_p = strcmp (op1->u.s.s, PROP_NE) == 0;
-      cleanup_arm_p = strcmp (op1->u.s.s, CLEANUP_ARM) == 0;
-      frame_address_p = strcmp (op1->u.s.s, FRAME_ADDRESS) == 0;
-      return_address_p = strcmp (op1->u.s.s, RETURN_ADDRESS) == 0;
+      bk = builtin_kind (op1->u.s.s, NULL);
+      alloca_p = bk == BI_ALLOCA;
+      add_overflow_p = bk == BI_ADD_OVERFLOW;
+      sub_overflow_p = bk == BI_SUB_OVERFLOW;
+      mul_overflow_p = bk == BI_MUL_OVERFLOW;
+      expect_p = bk == BI_EXPECT;
+      abort_p = bk == BI_ABORT;
+      memcmp_p = bk == BI_MEMCMP;
+      copysignf_p = bk == BI_COPYSIGNF;
+      nan_p = bk == BI_NAN;
+      convertvector_p = bk == BI_CONVERT_VECTOR;
+      shuffle_p = bk == BI_SHUFFLE;
+      shufflevector_p = bk == BI_SHUFFLE_VECTOR;
+      vectorelements_p = bk == BI_VECTOR_ELEMENTS;
+      jcall_p = bk == BI_JCALL;
+      jret_p = bk == BI_JRET;
+      prop_set_p = bk == BI_PROP_SET;
+      prop_eq_p = bk == BI_PROP_EQ;
+      prop_ne_p = bk == BI_PROP_NE;
+      cleanup_arm_p = bk == BI_CLEANUP_ARM;
+      frame_address_p = bk == BI_FRAME_ADDRESS;
+      return_address_p = bk == BI_RETURN_ADDRESS;
     }
+    /* va_start and va_arg are builtins only while undeclared */
     if (op1->code == N_ID && find_def (c2m_ctx, S_REGULAR, op1, curr_scope, NULL) == NULL) {
-      va_arg_p = str_eq_p (op1->u.s.s, BUILTIN_VA_ARG);
-      va_start_p = str_eq_p (op1->u.s.s, BUILTIN_VA_START);
+      va_arg_p = bk == BI_VA_ARG;
+      va_start_p = bk == BI_VA_START;
       if (!va_arg_p && !va_start_p && !alloca_p && !memcmp_p && !copysignf_p && !nan_p
           && !convertvector_p && !shuffle_p && !shufflevector_p && !vectorelements_p) {
         /* N_SPEC_DECL (N_SHARE (N_LIST (N_INT)), N_DECL (N_ID, N_FUNC (N_LIST)), N_IGNORE,
@@ -11852,6 +11926,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e = create_expr (c2m_ctx, r);
     *e->type = *ret_type;
     e->builtin_call_p = builtin_call_p;
+    e->builtin_kind = builtin_call_p ? bk : BI_NONE;
     if (vectorelements_p && vectorelements_count != 0) {
       e->const_p = TRUE;
       e->c.i_val = (mir_llong) vectorelements_count;
@@ -12122,15 +12197,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     symbol_t sym;
     struct node_scope *ns;
 
-    if (str_eq_p (id->u.s.s, ALLOCA) || str_eq_p (id->u.s.s, BUILTIN_VA_START)
-        || str_eq_p (id->u.s.s, BUILTIN_VA_ARG) || strcmp (id->u.s.s, ADD_OVERFLOW) == 0
-        || strcmp (id->u.s.s, SUB_OVERFLOW) == 0 || strcmp (id->u.s.s, MUL_OVERFLOW) == 0
-        || strcmp (id->u.s.s, EXPECT) == 0 || strcmp (id->u.s.s, BUILTIN_ABORT) == 0
-        || strcmp (id->u.s.s, BUILTIN_MEMCMP) == 0
-        || strcmp (id->u.s.s, BUILTIN_COPYSIGNF) == 0
-        || strcmp (id->u.s.s, BUILTIN_NAN) == 0 || strcmp (id->u.s.s, JCALL) == 0
-        || strcmp (id->u.s.s, JRET) == 0 || strcmp (id->u.s.s, FRAME_ADDRESS) == 0
-        || strcmp (id->u.s.s, RETURN_ADDRESS) == 0) {
+    unsigned builtin_flags = 0;
+    if (builtin_kind (id->u.s.s, &builtin_flags) != BI_NONE
+        && (builtin_flags & BIF_RESERVED) != 0) {
       error (c2m_ctx, POS (id), "%s is a builtin function", id->u.s.s);
       break;
     }
@@ -19761,29 +19830,32 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     MIR_item_t proto_item;
     MIR_insn_t call_insn, label;
     mir_size_t saved_call_arg_area_offset_before_args, arg_area_offset;
-    int va_arg_p = call_expr->builtin_call_p && str_eq_p (func->u.s.s, BUILTIN_VA_ARG);
-    int va_start_p = call_expr->builtin_call_p && str_eq_p (func->u.s.s, BUILTIN_VA_START);
-    int alloca_p = call_expr->builtin_call_p && str_eq_p (func->u.s.s, ALLOCA);
-    int add_overflow_p = call_expr->builtin_call_p && strcmp (func->u.s.s, ADD_OVERFLOW) == 0;
-    int sub_overflow_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SUB_OVERFLOW) == 0;
-    int mul_overflow_p = call_expr->builtin_call_p && strcmp (func->u.s.s, MUL_OVERFLOW) == 0;
-    int expect_p = call_expr->builtin_call_p && strcmp (func->u.s.s, EXPECT) == 0;
-    int abort_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_ABORT) == 0;
-    int memcmp_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_MEMCMP) == 0;
-    int copysignf_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_COPYSIGNF) == 0;
-    int nan_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_NAN) == 0;
-    int convertvector_p = call_expr->builtin_call_p && strcmp (func->u.s.s, CONVERT_VECTOR) == 0;
-    int shuffle_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SHUFFLE) == 0;
-    int shufflevector_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SHUFFLE_VECTOR) == 0;
-    int vectorelements_p = call_expr->builtin_call_p && strcmp (func->u.s.s, VECTOR_ELEMENTS) == 0;
-    int jcall_p = call_expr->builtin_call_p && strcmp (func->u.s.s, JCALL) == 0;
-    int jret_p = call_expr->builtin_call_p && strcmp (func->u.s.s, JRET) == 0;
-    int prop_set_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_SET) == 0;
-    int prop_eq_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_EQ) == 0;
-    int prop_ne_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_NE) == 0;
-    int cleanup_arm_p = call_expr->builtin_call_p && strcmp (func->u.s.s, CLEANUP_ARM) == 0;
-    int frame_address_p = call_expr->builtin_call_p && strcmp (func->u.s.s, FRAME_ADDRESS) == 0;
-    int return_address_p = call_expr->builtin_call_p && strcmp (func->u.s.s, RETURN_ADDRESS) == 0;
+    /* the kind the checker stored (builtin_kind): no name is compared again here */
+    enum builtin_kind bk
+      = call_expr->builtin_call_p ? (enum builtin_kind) call_expr->builtin_kind : BI_NONE;
+    int va_arg_p = bk == BI_VA_ARG;
+    int va_start_p = bk == BI_VA_START;
+    int alloca_p = bk == BI_ALLOCA;
+    int add_overflow_p = bk == BI_ADD_OVERFLOW;
+    int sub_overflow_p = bk == BI_SUB_OVERFLOW;
+    int mul_overflow_p = bk == BI_MUL_OVERFLOW;
+    int expect_p = bk == BI_EXPECT;
+    int abort_p = bk == BI_ABORT;
+    int memcmp_p = bk == BI_MEMCMP;
+    int copysignf_p = bk == BI_COPYSIGNF;
+    int nan_p = bk == BI_NAN;
+    int convertvector_p = bk == BI_CONVERT_VECTOR;
+    int shuffle_p = bk == BI_SHUFFLE;
+    int shufflevector_p = bk == BI_SHUFFLE_VECTOR;
+    int vectorelements_p = bk == BI_VECTOR_ELEMENTS;
+    int jcall_p = bk == BI_JCALL;
+    int jret_p = bk == BI_JRET;
+    int prop_set_p = bk == BI_PROP_SET;
+    int prop_eq_p = bk == BI_PROP_EQ;
+    int prop_ne_p = bk == BI_PROP_NE;
+    int cleanup_arm_p = bk == BI_CLEANUP_ARM;
+    int frame_address_p = bk == BI_FRAME_ADDRESS;
+    int return_address_p = bk == BI_RETURN_ADDRESS;
     int builtin_call_p = alloca_p || va_arg_p || va_start_p, inline_p = FALSE;
     node_t block = NL_EL (curr_func_def->u.ops, 3);
     struct node_scope *ns = block->attr;
@@ -21265,7 +21337,7 @@ static void gen_mir_protos (c2m_ctx_t c2m_ctx) {
     assert (call->code == N_CALL);
     op1 = NL_HEAD (call->u.ops);
     arg_list = NL_NEXT (op1);
-    if (op1->code == N_ID && strcmp (op1->u.s.s, JCALL) == 0) {
+    if (op1->code == N_ID && builtin_kind (op1->u.s.s, NULL) == BI_JCALL) {
       func = NL_HEAD (arg_list->u.ops);
       first_arg = NL_EL (arg_list->u.ops, 1);
     } else {

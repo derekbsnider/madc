@@ -5454,23 +5454,13 @@ DataDef *CirBuilder::as_reference_type(DataDef *dd)
 	return new DataDefREF(*dd);   // m_prog-less fallback (collapse preserved)
 }
 
-// c2mir lowers these call names in-place as builtins (it even rejects user
-// declarations of them); never emit an extern prototype for one.
+// c2mir lowers these call names in place as builtins (no symbol is called);
+// never emit an extern prototype for one, and a body calling one is
+// emittable. c2mir's own table answers -- never a list here (a copy here
+// missed the frame queries; gated by check-one-c2mir-builtin-names.sh).
 static bool is_c2mir_builtin_call_name(const madc::dis::istring &name)
 {
-	return name.compare(0, 13, "__builtin_va_") == 0
-	    || name == "__builtin_add_overflow"
-	    || name == "__builtin_sub_overflow"
-	    || name == "__builtin_mul_overflow"
-	    // c2mir's ALLOCA set (c2mir.c): both spellings compile as the
-	    // builtin — no external symbol exists or is needed.
-	    || name == "alloca"
-	    || name == "__builtin_alloca"
-	    // c2mir's frame queries (MIR_FRAME_ADDR / MIR_RET_ADDR): no symbol.
-	    // A win64 try's _setjmp takes the frame address, so every forest
-	    // template body holding a try calls it.
-	    || name == "__builtin_frame_address"
-	    || name == "__builtin_return_address";
+	return c2mir_builtin_call_name_p(name.c_str()) != 0;
 }
 
 static DataDefCLASS *class_behind(DataDef *dd);

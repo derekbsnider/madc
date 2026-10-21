@@ -1,6 +1,15 @@
 # Changelog
 
 ## [Unreleased]
+### c2mir's builtin call names live in one table
+
+Consolidated: c2mir_builtin_call_names — gate scripts/check-one-c2mir-builtin-names.sh
+
+- `builtin_names[]` in `third_party/mir/c2mir/c2mir.c` is the one table of c2mir's in-place builtin call names, read through `builtin_kind()`. The `__has_builtin` test, the call check, the definition check and the generator read it. Each site keeps its previous name set as data.
+- `c2mir_builtin_call_name_p()` is exported from `third_party/mir/c2mir/c2mir.h`. madc's `is_c2mir_builtin_call_name` in `src/cir_builder.cpp` calls it instead of keeping its own list. The old list lacked `__builtin_frame_address` and `__builtin_return_address`, which failed the win64 release pack smoke on 2026-10-21.
+- `scripts/check-one-c2mir-builtin-names.sh` (in `make gates`) fails on a builtin-name comparison in `c2mir.c` outside `builtin_kind()`, and on a string literal in madc's predicate.
+- Tier 1 and Tier 2 on Linux are green: tier1 127 passed, 0 failed; c-testsuite 220/0; c-torture 1620, 0 outside baseline; c2mir-tests 368/0; gui 13/0; gxx-c++11 1505, 0 outside baseline; index-c 50/50; commonmark 664, 0 outside baseline.
+
 ### On win64, a `try` passes its frame to `_setjmp`, so a throw unwinds through `RtlUnwindEx`
 
 - On Windows targets, a madc `try` calls `_setjmp(jbuf, __builtin_frame_address(0))` in place of `_setjmp(jbuf, NULL)`. Each raise's `longjmp` is an unwinding one: `RtlUnwindEx` walks the frames between the throw and the `try`.

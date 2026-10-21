@@ -1255,6 +1255,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-return-declarator.sh
 	@cd .. && bash scripts/check-one-counted-loop.sh
 	@cd .. && bash scripts/check-one-dbg-macro.sh
+	@cd .. && bash scripts/check-one-c2mir-builtin-names.sh
 	@cd .. && bash scripts/check-one-ldouble-layout.sh
 	@cd .. && bash scripts/check-one-funcdef-clone.sh
 	@cd .. && bash scripts/check-one-class-pointer-decl.sh

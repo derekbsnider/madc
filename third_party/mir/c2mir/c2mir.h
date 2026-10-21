@@ -49,6 +49,12 @@ void c2mir_finish (MIR_context_t ctx);
 int c2mir_compile (MIR_context_t ctx, struct c2mir_options *ops, int (*getc_func) (void *),
                    void *getc_data, const char *source_name, FILE *output_file);
 
+/* Nonzero when c2mir lowers a call to NAME in place (alloca, __builtin_va_arg,
+   __builtin_frame_address, ...): no symbol is called, so a front end building
+   c2mir's tree declares and links nothing for it.  c2mir's own table answers;
+   context-free. */
+int c2mir_builtin_call_name_p (const char *name);
+
 /* For a debug_info_p compile: the source files referenced by the stamped line
    numbers, in file-id order (index i has file id i+1).  Returns the count and
    sets *names to the (compiler-owned) array.  Valid until c2mir_finish.  Used
