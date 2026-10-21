@@ -375,6 +375,13 @@ saved and restored with the rest of the exception state at task switches.
        Windows suites as its oracle); the codes + JIT registration
        (testunwind_backtrace's win64 skip lifts); the PE/COFF sections; the
        handler + the throw switch with step 7.
+     - Probe 2026-10-21 (`tmp/castattr/sehprobe.c` + `sehprobe_asm.S`, the
+       proposed frame with N = 1024 and a `.seh_handler`), genuine Windows
+       and wine alike: a `longjmp` across the frame calls its handler with
+       code 0x80000026 (STATUS_LONGJUMP), flags 0x02, establisher frame ==
+       rbp; a `longjmp` to a `_setjmp(buf, rbp)` in the frame calls it with
+       flags 0x22 (UNWINDING | TARGET_UNWIND), the same establisher frame,
+       and lands. The design holds as written.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,
    consumers converted, runtime cleanup stack deleted, REPL boundary.
    `tests/testthrow_through_frame` (11 cases, g++/clang oracle) is the gate,
