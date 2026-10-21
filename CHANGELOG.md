@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### A JIT frame on Apple arm64 is registered with the unwinder through its finder
+
+- On Apple arm64, each generated function's unwind table is found by the host unwinder through `__unw_add_find_dynamic_unwind_sections` (resolved by `dlsym`), as a DWARF section under a static Mach-O header for the target's plain code. Before, it went to `__register_frame`, and a C++ throw through a JIT frame trapped (SIGTRAP, `brk #0xc471`) inside libunwind.
+- `gen_cfi_host_add()` and `gen_cfi_host_remove_all()` in `third_party/mir/mir-gen.c` are the one host registration. A libunwind without the entry point falls back to `__register_frame`. Linux (libgcc) takes the whole table, as before.
+- `tests/unit/test_mir_unwind.cpp` and `tests/unit/test_mir_cfi.cpp` on an arm64 macOS 14 host: `test_mir_unwind` 18/18 (before: 3 cases trapped), `test_mir_cfi` 3/3 (before: trapped).
+
 ### A failed binary module read abandons its module, and the fallback goes on
 
 - A failed `MIR_read_with_func` in madc's MIR module cache (the system pack, a frozen forest's module, a ledger module) abandons the module the read had begun, through `MIR_abandon_module`. Before, the fallback's next `MIR_new_module` or `MIR_finish` stopped with "Creating module when previous module frozen is not finished".

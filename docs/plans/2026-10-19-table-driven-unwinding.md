@@ -311,7 +311,21 @@ block's join).
        FDE, so the LSDA index is empty), a function without one 0, and a
        sentinel index entry at the end of `__text`. An FDE past the 24-bit
        offset field is DWARF mode with offset 0 (the unwinder searches).
-     - JIT: unchanged (libunwind's `__register_frame` takes one FDE).
+     - JIT: the system libunwind on Apple silicon is the arm64e build (measured
+       macOS 14, arm64 Mac mini). A frame whose table came from
+       `__register_frame` it reads as arm64e code -- the saved return address
+       signed with the CFA -- and authenticating madc's unsigned one traps
+       (`brk #0xc471` in `UnwindCursor::step`, every C++ throw through two JIT
+       frames). An image's frames it reads by the image
+       (`unw_proc_info.flags` 1: plain code). So MIR registers each generated
+       function's table through `__unw_add_find_dynamic_unwind_sections`, a
+       DWARF section under a Mach-O header naming the target's plain code
+       (LLVM ORC's shape); without that entry point, `__register_frame` (one
+       FDE). Thread contract: one process-wide list of the contexts holding
+       ranges (the finder takes no user data), one lock over additions,
+       removal and the unwinder's lookups. Tests: tests/unit/test_mir_unwind.cpp
+       and test_mir_cfi.cpp built and run natively on the Mac (they trapped
+       before; 18/18 and 3/3 after).
      - Tests: the executable and merged-object cases of
        tests/unit/test_mir_unwind.cpp run on macOS (x86_64, arm64); the
        machogate legs check the `.o` and image structure with llvm-objdump and

@@ -233,6 +233,17 @@ typedef struct gen_cfi_rule {
 DEF_VARR (gen_cfi_rule_t);
 DEF_VARR (MIR_unwind_call_t);
 
+#if defined(__APPLE__)
+/* A generated function's code and its frame table (LEN bytes), as the Apple
+   unwinder's lookup finds them (gen_cfi_find). */
+typedef struct gen_cfi_range {
+  uintptr_t lo, hi;
+  uint8_t *table;
+  size_t len;
+} gen_cfi_range_t;
+DEF_VARR (gen_cfi_range_t);
+#endif
+
 /* AOT object mode: MIR item -> object-symbol id */
 typedef struct obj_item_sym {
   MIR_item_t item;
@@ -312,6 +323,11 @@ struct gen_ctx {
   size_t cfi_pending;                   /* ... and the marks this pass has yet to locate */
   VARR (uint8_t) * cfi_insns;           /* the FDE instructions being encoded */
   VARR (void_ptr_t) * cfi_registered;   /* frame tables registered with the host unwinder */
+#if defined(__APPLE__)
+  VARR (gen_cfi_range_t) * cfi_ranges; /* those tables by code address (gen_cfi_find) */
+  struct gen_ctx *cfi_next;            /* the next context with ranges, while listed */
+  int cfi_listed_p;
+#endif
   /* Unwind info of the function being generated (MIR_unwind_info_t): */
   VARR (MIR_unwind_call_t) * unwind_calls; /* call sites recorded during target_translate */
   MIR_insn_t unwind_top_alloca;            /* the frame base's ALLOCA, or NULL */
@@ -10403,14 +10419,157 @@ static void gen_eh_capture (gen_ctx_t gen_ctx, MIR_func_t func, size_t text_off,
 extern void __register_frame (void *);
 extern void __deregister_frame (void *);
 
+#if defined(__APPLE__)
+#include <dlfcn.h>
+#include <pthread.h>
+#include <mach-o/loader.h>
+
+/* Apple: the arm64e libunwind (measured on macOS 14 arm64) reads a frame whose
+   table came from __register_frame as arm64e code -- its saved return address
+   signed with the CFA -- and authenticating the unsigned one traps (brk
+   0xc471).  An image's frames it reads by the image (unw_proc_info.flags 1:
+   plain code, the return address signed for it before use).  So the generated
+   functions' tables are found through __unw_add_find_dynamic_unwind_sections,
+   each in a DWARF section under a header naming the target's plain code -- the
+   shape LLVM's ORC JIT registers.  Without that entry point (an older
+   libunwind) they go to __register_frame, which takes one FDE.
+   Thread contract: the finder takes no user data, so the contexts holding
+   ranges form one process-wide list; one lock serializes a context's
+   additions and its removal with the lookups the unwinder makes on any
+   thread. */
+struct gen_cfi_sections { /* libunwind's unw_dynamic_unwind_sections */
+  uintptr_t dso_base, dwarf_section;
+  size_t dwarf_section_length;
+  uintptr_t compact_unwind_section;
+  size_t compact_unwind_section_length;
+};
+typedef int (*gen_cfi_finder_t) (uintptr_t, struct gen_cfi_sections *);
+
+static const struct mach_header_64 gen_cfi_header = {MH_MAGIC_64,
+#if defined(__aarch64__)
+                                                     CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL,
+#else
+                                                     CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL,
+#endif
+                                                     MH_DYLIB, 0, 0, 0, 0};
+static pthread_mutex_t gen_cfi_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t gen_cfi_once = PTHREAD_ONCE_INIT;
+static int gen_cfi_finder_p;              /* set once, by gen_cfi_install_finder */
+static struct gen_ctx *gen_cfi_contexts; /* the contexts with ranges */
+
+static int gen_cfi_find (uintptr_t addr, struct gen_cfi_sections *info) {
+  struct gen_ctx *g;
+  int found = FALSE;
+
+  pthread_mutex_lock (&gen_cfi_lock);
+  for (g = gen_cfi_contexts; g != NULL && !found; g = g->cfi_next) {
+    gen_cfi_range_t *r = VARR_ADDR (gen_cfi_range_t, g->cfi_ranges);
+    size_t lo = 0, hi = VARR_LENGTH (gen_cfi_range_t, g->cfi_ranges), mid;
+
+    while (lo < hi) {
+      mid = lo + (hi - lo) / 2;
+      if (addr < r[mid].lo) {
+        hi = mid;
+      } else if (addr >= r[mid].hi) {
+        lo = mid + 1;
+      } else {
+        memset (info, 0, sizeof (*info));
+        info->dso_base = (uintptr_t) &gen_cfi_header;
+        info->dwarf_section = (uintptr_t) r[mid].table;
+        info->dwarf_section_length = r[mid].len;
+        found = TRUE;
+        break;
+      }
+    }
+  }
+  pthread_mutex_unlock (&gen_cfi_lock);
+  return found;
+}
+
+static void gen_cfi_install_finder (void) {
+  int (*add) (gen_cfi_finder_t)
+    = (int (*) (gen_cfi_finder_t)) dlsym (RTLD_DEFAULT, "__unw_add_find_dynamic_unwind_sections");
+
+  gen_cfi_finder_p = add != NULL && add (gen_cfi_find) == 0;
+}
+
+/* TABLE (its LEN bytes, the FDE at FDE_POS) describes the CODE_LEN bytes at
+   CODE: to the host unwinder. */
+static void gen_cfi_host_add (gen_ctx_t gen_ctx, uint8_t *table, size_t fde_pos, size_t len,
+                              void *code, size_t code_len) {
+  gen_cfi_range_t r;
+  size_t i;
+
+  pthread_once (&gen_cfi_once, gen_cfi_install_finder);
+  if (!gen_cfi_finder_p) {
+    __register_frame (table + fde_pos);
+    return;
+  }
+  r.lo = (uintptr_t) code;
+  r.hi = r.lo + code_len;
+  r.table = table;
+  r.len = len;
+  pthread_mutex_lock (&gen_cfi_lock);
+  VARR_PUSH (gen_cfi_range_t, gen_ctx->cfi_ranges, r);
+  for (i = VARR_LENGTH (gen_cfi_range_t, gen_ctx->cfi_ranges) - 1;
+       i > 0 && VARR_GET (gen_cfi_range_t, gen_ctx->cfi_ranges, i - 1).lo > r.lo; i--)
+    VARR_SET (gen_cfi_range_t, gen_ctx->cfi_ranges, i,
+              VARR_GET (gen_cfi_range_t, gen_ctx->cfi_ranges, i - 1));
+  VARR_SET (gen_cfi_range_t, gen_ctx->cfi_ranges, i, r);
+  if (!gen_ctx->cfi_listed_p) {
+    gen_ctx->cfi_next = gen_cfi_contexts;
+    gen_cfi_contexts = gen_ctx;
+    gen_ctx->cfi_listed_p = TRUE;
+  }
+  pthread_mutex_unlock (&gen_cfi_lock);
+}
+
+/* Every table of GEN_CTX away from the host unwinder. */
+static void gen_cfi_host_remove_all (gen_ctx_t gen_ctx) {
+  struct gen_ctx **p;
+  size_t i;
+
+  if (!gen_cfi_finder_p) {
+    for (i = 0; i < VARR_LENGTH (void_ptr_t, gen_ctx->cfi_registered); i++) {
+      uint8_t *table = VARR_GET (void_ptr_t, gen_ctx->cfi_registered, i);
+
+      __deregister_frame (table + 4 + *(uint32_t *) table); /* the FDE, after the CIE */
+    }
+    return;
+  }
+  pthread_mutex_lock (&gen_cfi_lock);
+  if (gen_ctx->cfi_listed_p) {
+    for (p = &gen_cfi_contexts; *p != gen_ctx; p = &(*p)->cfi_next)
+      ;
+    *p = gen_ctx->cfi_next;
+    gen_ctx->cfi_listed_p = FALSE;
+  }
+  VARR_TRUNC (gen_cfi_range_t, gen_ctx->cfi_ranges, 0);
+  pthread_mutex_unlock (&gen_cfi_lock);
+}
+#else
+/* libgcc takes the whole terminated table. */
+static void gen_cfi_host_add (gen_ctx_t gen_ctx MIR_UNUSED, uint8_t *table,
+                              size_t fde_pos MIR_UNUSED, size_t len MIR_UNUSED,
+                              void *code MIR_UNUSED, size_t code_len MIR_UNUSED) {
+  __register_frame (table);
+}
+
+static void gen_cfi_host_remove_all (gen_ctx_t gen_ctx) {
+  size_t i;
+
+  for (i = 0; i < VARR_LENGTH (void_ptr_t, gen_ctx->cfi_registered); i++)
+    __deregister_frame (VARR_GET (void_ptr_t, gen_ctx->cfi_registered, i));
+}
+#endif
+
 /* An .eh_frame table for one generated function -- its CIE, its FDE and the
-   terminator -- registered with the host unwinder: libgcc takes the table,
-   libunwind (Apple) one FDE.  With a region table (gen_eh_table_p) the CIE
-   names the personality and the FDE points at the table, which follows the
-   terminator in the same allocation. */
+   terminator -- given to the host unwinder (gen_cfi_host_add).  With a region
+   table (gen_eh_table_p) the CIE names the personality and the FDE points at
+   the table, which follows the terminator in the same allocation. */
 static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, size_t code_len) {
   VARR (uint8_t) *b = gen_ctx->cfi_insns;
-  size_t fde_pos, lsda_pos, table_pos = 0;
+  size_t fde_pos, lsda_pos, sections_len, table_pos = 0;
   uint8_t *table;
   int table_p = gen_eh_table_p (func);
 
@@ -10421,6 +10580,7 @@ static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, si
   lsda_pos = gen_eh_fde (gen_ctx, b, 0, 0, func, (uint64_t) (uintptr_t) code, 0, code_len,
                          table_p, 0);
   gen_cfi_push_u32 (b, 0); /* terminator */
+  sections_len = VARR_LENGTH (uint8_t, b);
   if (table_p) {
     table_pos = VARR_LENGTH (uint8_t, b);
     gen_unwind_table (gen_ctx, b, func, 0);
@@ -10432,25 +10592,14 @@ static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, si
 
     memcpy (table + lsda_pos, &lsda, sizeof (lsda));
   }
-#if defined(__APPLE__)
-  table += fde_pos;
-#else
-  (void) fde_pos;
-#endif
-  __register_frame (table);
   VARR_PUSH (void_ptr_t, gen_ctx->cfi_registered, table);
+  gen_cfi_host_add (gen_ctx, table, fde_pos, sections_len, code, code_len);
 }
 
 static void gen_cfi_deregister_all (gen_ctx_t gen_ctx) {
-  while (VARR_LENGTH (void_ptr_t, gen_ctx->cfi_registered) != 0) {
-    uint8_t *table = VARR_POP (void_ptr_t, gen_ctx->cfi_registered);
-
-    __deregister_frame (table);
-#if defined(__APPLE__)
-    table -= ((uint32_t *) table)[1] - 4; /* the FDE's CIE pointer leads back to the table */
-#endif
-    MIR_free (gen_alloc (gen_ctx), table);
-  }
+  gen_cfi_host_remove_all (gen_ctx);
+  while (VARR_LENGTH (void_ptr_t, gen_ctx->cfi_registered) != 0)
+    MIR_free (gen_alloc (gen_ctx), VARR_POP (void_ptr_t, gen_ctx->cfi_registered));
 }
 #endif
 
@@ -11300,6 +11449,11 @@ void MIR_gen_init (MIR_context_t ctx) {
   VARR_CREATE (gen_cfi_rule_t, gen_ctx->cfi_rules, alloc, 16);
   VARR_CREATE (uint8_t, gen_ctx->cfi_insns, alloc, 128);
   VARR_CREATE (void_ptr_t, gen_ctx->cfi_registered, alloc, 0);
+#if defined(__APPLE__)
+  VARR_CREATE (gen_cfi_range_t, gen_ctx->cfi_ranges, alloc, 0);
+  gen_ctx->cfi_next = NULL;
+  gen_ctx->cfi_listed_p = FALSE;
+#endif
   VARR_CREATE (gen_eh_reloc_t, gen_ctx->eh_relocs, alloc, 8);
   VARR_CREATE (gen_eh_cie_t, gen_ctx->eh_cies, alloc, 2);
   gen_ctx->cfi_prev_insn = NULL;
@@ -11388,6 +11542,9 @@ void MIR_gen_finish (MIR_context_t ctx) {
   gen_cfi_deregister_all (gen_ctx);
 #endif
   VARR_DESTROY (void_ptr_t, gen_ctx->cfi_registered);
+#if defined(__APPLE__)
+  VARR_DESTROY (gen_cfi_range_t, gen_ctx->cfi_ranges);
+#endif
   VARR_DESTROY (gen_eh_reloc_t, gen_ctx->eh_relocs);
   VARR_DESTROY (gen_eh_cie_t, gen_ctx->eh_cies);
   VARR_DESTROY (gen_cfi_mark_t, gen_ctx->cfi_marks);
