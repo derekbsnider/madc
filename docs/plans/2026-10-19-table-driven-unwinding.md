@@ -433,7 +433,9 @@ saved and restored with the rest of the exception state at task switches.
        `RtlAddFunctionTable` (deleted at unload, which now also unmaps on
        Windows). Gate: `testunwind_backtrace`, `testunwind_frameshapes` and
        `testbuiltin_frame_return_address` lose their win64 exe skips (exe and
-       obj green on wine; the pre-change PE walks no generated frame). 4b, with
+       obj green on wine and on genuine Windows -- the release PE's artifacts
+       run through `win_run.sh`, since `win_suite.sh` stages a JIT-only run;
+       the pre-change PE walks no generated frame). 4b, with
        step 5: the language-specific handler, its LSDA and the in-image stub
        for an imported handler -- testable only once the handler exists.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,
