@@ -192,7 +192,15 @@ public:
     const char *c_str(uint32_t id)  const { return &_bytes[_entries[id].off]; }
     uint32_t    length(uint32_t id) const { return _entries[id].len; }
     std::string str(uint32_t id)    const { return std::string(c_str(id), length(id)); }
+    // The memoized name: the hit stays inline at every caller (the lexer's
+    // per-identifier read); the first read of an id fills the memo out of line.
     istring     name(uint32_t id)   const
+    {
+	if ( id < _names.size() && !_names[id].empty() )
+	    return _names[id];
+	return name_slow(id);
+    }
+    __attribute__((noinline)) istring name_slow(uint32_t id) const
     {
 	if ( id == 0 )
 	    return istring();
