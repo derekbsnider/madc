@@ -314,7 +314,67 @@ saved and restored with the rest of the exception state at task switches.
        tests/unit/test_mir_unwind.cpp run on macOS (x86_64, arm64); the
        machogate legs check the `.o` and image structure with llvm-objdump and
        ld64.lld on the container; Apple ld links a `.o` on the Macs.
-   - 6.3 PE + the Windows runtime.
+   - 6.3 PE + the Windows runtime (canon recon 2026-10-21: mingw gcc 13 and
+     clang 18 `x86_64-w64-mingw32`, mingw libgcc's unwind-seh.o / unwind-c.o).
+     - Canon. Every function has a RUNTIME_FUNCTION in `.pdata` ({begin, end,
+       UNWIND_INFO} as ADDR32NB image-relative words) and an UNWIND_INFO in
+       `.xdata` (version 1; prologue codes in reverse prologue order; the
+       frame register and its offset, at most 15 x 16 = 240 bytes above the
+       RSP of the fixed allocation, established after it). A function with
+       handlers sets EHANDLER|UHANDLER and names a language-specific handler
+       (`__gcc_personality_seh0`) by RVA; its LSDA is the handler data that
+       follows the codes, offsets relative to the function start (no
+       `.gcc_except_table`). The image's exception directory (data
+       directory 3) covers `.pdata`. libgcc's `_GCC_specific_handler` bridges
+       the dispatcher to a DWARF-style personality, but `_Unwind_GetGR`
+       aborts past register 1, `_Unwind_GetCFA` is the frame's RSP, and its
+       forced unwind calls a stop function only in frames that carry its own
+       handler.
+     - MIR's Windows x86-64 frame becomes the canonical one. Today the
+       prologue stores rbp below RSP (`mov %rbp,-8(%rsp)` -- Windows has no
+       red zone), sets rbp at the frame's TOP before the allocation, and
+       saves callee-saved registers at its bottom: no frame over 240 bytes
+       has a valid description. The Windows prologue is `push %rbp; sub $N,
+       %rsp; mov %rsp,%rbp` (frame register rbp, offset 0, so the
+       establisher frame IS rbp), the saves at `rbp + k` (SAVE_NONVOL /
+       SAVE_XMM128), `__chkstk` probing for N >= 4096 (gcc calls
+       `___chkstk_ms`; MIR probes nothing today), and the epilogue `lea
+       N(%rbp),%rsp; pop %rbp; ret` (a form the unwinder recognizes). Every
+       rbp-relative displacement MIR assigned against the top -- stack
+       slots, incoming arguments, the varargs spill, `fp + disp` address
+       arithmetic -- is rebased by the one frame delta when the prologue is
+       made.
+     - Unwind codes come from the same prologue facts as the DWARF CFI (the
+       marks `gen_cfi_*` record): one encoder for the JIT and the images.
+     - JIT: each function's UNWIND_INFO, LSDA and a handler thunk (`jmp
+       *slot` to the handler) sit in its code allocation (every RVA is
+       32-bit from the base, and code memory may be far from madc's image);
+       `RtlAddFunctionTable` registers it, `RtlDeleteFunctionTable` drops it.
+       A frame with no regions still gets codes: `RtlUnwindEx` across a JIT
+       frame with none faulted (win_ucrt_gate.sh).
+     - PE images and COFF objects: `.pdata`, `.xdata`, an image-relative
+       relocation kind (ADDR32NB), the exception directory; the handler
+       through an in-image stub, as ld writes one for an imported
+       personality. The synthesized entry stub gets its entry too.
+     - Runtime: madc's own language-specific handler, `__madc_seh_handler`,
+       runs the same region table: the call site from `ControlPc` - the
+       function start, the frame base from the establisher frame. The throw
+       on Windows is an unwinding `longjmp` (`_setjmp` with the try frame's
+       establisher frame; ucrt's `longjmp` calls `RtlUnwindEx`, which calls
+       each frame's handler with EXCEPTION_UNWINDING and the target frame's
+       with EXCEPTION_TARGET_UNWIND): madc's handler runs a frame's regions
+       when a madc throw is in flight (a thread-local the throw sets) or for
+       a GCC unwind code (a host C++ exception crossing MIR frames), and in
+       the target frame stops at the try's guard. A plain C `longjmp` runs
+       no cleanups (gcc's handler ignores STATUS_LONGJUMP too). Host g++
+       frames between a madc throw and its try skip their destructors on
+       Windows, as today.
+     - Order: probe `RtlUnwindEx`'s target-frame and handler-call semantics
+       on genuine Windows (a mingw C probe with a hand-written `.seh_handler`)
+       first; then the MIR frame (behaviour-preserving, the wine and genuine
+       Windows suites as its oracle); the codes + JIT registration
+       (testunwind_backtrace's win64 skip lifts); the PE/COFF sections; the
+       handler + the throw switch with step 7.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,
    consumers converted, runtime cleanup stack deleted, REPL boundary.
    `tests/testthrow_through_frame` (11 cases, g++/clang oracle) is the gate,
