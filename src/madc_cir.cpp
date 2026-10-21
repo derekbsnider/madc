@@ -2858,8 +2858,8 @@ static bool cir_import_covered(const char *name,
     // interrogating them, never loading anything new.
     for (const std::string &c : covers) {
 	if (!madc_spelled_library_p(c))
-	    continue;	// a bare stem (darwin's libsystem_/libc++) is a
-			// prefix cover, handled by the dladdr pass below
+	    continue;	// a bare stem (darwin's libc++) or a directory (the
+			// libSystem umbrella's) is handled by the dladdr pass below
 	void *h = madcdl_probe_loaded(c.c_str());
 	if (!h)
 	    continue;
@@ -2877,6 +2877,12 @@ static bool cir_import_covered(const char *name,
     const char *bn = strrchr(info.fname, '/');
     bn = bn ? bn + 1 : info.fname;
     for (const std::string &c : covers) {
+	if (!c.empty() && c[c.size() - 1] == '/') {
+	    // A directory cover: every image under it.
+	    if (madc::detail::host_path_within(c, info.fname))
+		return true;
+	    continue;
+	}
 	size_t slash = c.rfind('/');
 	const char *cb = slash == madc::dis::istring::npos ? c.c_str()
 						    : c.c_str() + slash + 1;
@@ -3031,7 +3037,7 @@ static bool cir_undefined_references(const std::vector<madc::dis::istring> &impo
 #else
     for (const std::string &c : covers) {
 	if (!madc_spelled_library_p(c))
-	    continue;	// a prefix cover stem (darwin's libsystem_), no file
+	    continue;	// a cover stem or directory (darwin's), no file
 	std::string err;
 	if (!madc_module_open(c, err))
 	    return false;
@@ -3148,7 +3154,7 @@ static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
 // A USER library (-l / import, arriving in `other` as its TARGET spelling —
 // a .dylib name) is a real load command too. Everything else in `other` is
 // cover-analysis input, never a load command: a hosted-darwin madc's stems
-// (libc++, libsystem_, libSystem), a Linux-hosted cross madc's HOST ELF
+// (libc++, /usr/lib/system/, libSystem), a Linux-hosted cross madc's HOST ELF
 // images (libstdc++.so.6, libm.so.6, libc.so.6 — the process the analysis
 // runs in), and libSystem.B.dylib (the `c` / `m` module rows), which is
 // dyld's implicit world. So the test is "spelled for Darwin", asked of the
@@ -3390,16 +3396,18 @@ static bool cir_native_link_env(const madc_stdlib_flavor *flavor,
 #ifdef __APPLE__
     // Cover analysis runs in THIS process (dlsym + dladdr below), so the
     // base C/C++ cover spellings must name the HOST's runtime images. On
-    // darwin the libc surface dladdr-reports as libsystem_*.dylib pieces
-    // under the libSystem umbrella; libc++/libc++abi carry the C++ runtime.
-    // Prefix-matched, so the bare stems cover every versioned dylib name.
+    // darwin every image the libSystem umbrella re-exports lives in
+    // /usr/lib/system -- the libc surface (libsystem_*.dylib), the unwinder
+    // (libunwind.dylib: the runtime's forced unwind), dyld's API
+    // (libdyld.dylib) -- so that directory is the cover; libc++/libc++abi
+    // carry the C++ runtime, prefix-matched by the bare stem.
     // (These cover stems never become load commands. The emit lanes add
     // the real install names separately — cir_apple_extra_dylibs puts
     // libc++ on the load list when the import set is C++ — and the
     // writer binds imports flat across that list.)
     (void)flavor;
     needed.push_back("libc++");
-    needed.push_back("libsystem_");
+    needed.push_back("/usr/lib/system/");
     needed.push_back("libSystem");
 #elif defined(_WIN32)
     // Hosted win64: the process's own runtime DLLs, in the madcdl

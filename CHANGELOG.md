@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### -static-libmadc on darwin covers the libSystem directory
+
+- On darwin, `madc -static-libmadc` covers the unwinder's `_Unwind_*` imports and dyld's imports, which the libSystem umbrella re-exports from `/usr/lib/system/`. Before, an iostream program was refused with "-static-libmadc cannot cover 6 runtime symbol(s)".
+- The darwin cover list in `cir_native_link_env()` in `src/madc_cir.cpp` names `/usr/lib/system/` in place of the `libsystem_` stem. `cir_import_covered()` matches a directory cover against the image path with `madc::detail::host_path_within()`.
+- On an arm64 macOS 14 host, a `std::map` + `std::ostringstream` + `std::cout` program builds with `-static-libmadc` and prints 1. Before, it was refused.
+
 ### A JIT frame on Apple arm64 is registered with the unwinder through its finder
 
 - On Apple arm64, each generated function's unwind table is found by the host unwinder through `__unw_add_find_dynamic_unwind_sections` (resolved by `dlsym`), as a DWARF section under a static Mach-O header for the target's plain code. Before, it went to `__register_frame`, and a C++ throw through a JIT frame trapped (SIGTRAP, `brk #0xc471`) inside libunwind.

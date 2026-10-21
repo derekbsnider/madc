@@ -35,7 +35,8 @@ const char *madc_target_dso_suffix(TargetOS os);
 const char *madc_target_dso_suffix();	// for madc_target_os (madc::library_suffix)
 // True when `name` already carries SOME target's library suffix (libc.so.6,
 // libfoo.so, libSystem.B.dylib, ucrtbase.dll) — as opposed to a bare stem
-// (libc++, libsystem_: the darwin cover prefixes) or a module name. The one
+// (libc++: a darwin cover prefix), a directory cover (/usr/lib/system/) or a
+// module name. The one
 // "is this spelled?" test for consumers that read recorded spellings of any
 // platform (the native cover analysis).
 bool madc_spelled_library_p(const std::string &name);
