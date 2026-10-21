@@ -1,0 +1,7 @@
+# Labels whose line legitimately DIFFERS from tests/testpp_literal_respell.win64_expect
+# versus tests/testpp_literal_respell.expect — the win64 domain's own answers:
+# wchar_t is 16-bit there, so the wide literal's widest unit is \xfedc (the
+# test's WCHAR_MAX arm; x86_64-w64-mingw32 gcc 13 under wine prints the line).
+# Every other labelled line must be identical in both
+# (scripts/check-expect-twins.sh).
+wide

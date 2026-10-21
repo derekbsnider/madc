@@ -9,7 +9,10 @@
  * entered itself until the stack overflowed (SIGSEGV), and maybe was an
  * ordinary import ("import of undefined item maybe").
  * Oracle: gcc 13 and clang 18, -std=gnu17 -finstrument-functions: the lines
- * below. */
+ * below. x86_64-w64-mingw32 clang 18: "entries 2" (the .win64_expect) --
+ * mingw's <stdio.h> printf is an inline wrapper this TU instruments -- and
+ * maybe a COFF weak external whose default is 0; mingw gcc 13's object
+ * leaves maybe undefined and does not link. */
 #include <stdio.h>
 
 static int entries;

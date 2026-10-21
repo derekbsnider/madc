@@ -1,0 +1,6 @@
+# Labels whose line legitimately DIFFERS from tests/testgit.win64_expect
+# versus tests/testgit.expect — the win64 domain's own answers: on Windows '\'
+# is a path separator, so git::relpath writes `tests/a\b.txt` as tests/a/b.txt
+# (on POSIX it is a file-name byte, kept). Every other labelled line must be
+# identical in both (scripts/check-expect-twins.sh).
+relpath-backslash-name

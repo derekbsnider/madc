@@ -1,33 +1,34 @@
 // A shift by a constant 0 is a move: every MIR shift form (64-bit and 32-bit
 // left, arithmetic right, logical right), each into a variable other than its
-// source, the count a constant or one the optimizer propagates.
+// source, the count a constant or one the optimizer propagates. The 64-bit
+// forms are long long: 64 bits on LLP64 Windows too, where long is 32.
 // MIR's s390x emitter turned such a shift into a move inserted ahead of it and
 // then skipped past the move, so the destination never received the value.
 // gcc 13.3 and clang 18.1 print the .expect lines.
 #include <stdio.h>
 
-static long l64(long x) { long y = x << 0; return y; }
-static long r64(long x) { long y = x >> 0; return y; }
-static unsigned long u64(unsigned long x) { unsigned long y = x >> 0; return y; }
+static long long l64(long long x) { long long y = x << 0; return y; }
+static long long r64(long long x) { long long y = x >> 0; return y; }
+static unsigned long long u64(unsigned long long x) { unsigned long long y = x >> 0; return y; }
 static int l32(int x) { int y = x << 0; return y; }
 static int r32(int x) { int y = x >> 0; return y; }
 static unsigned u32(unsigned x) { unsigned y = x >> 0; return y; }
 
-static long prop(long x)
+static long long prop(long long x)
 {
 	int n = 0;
-	long y = x << n, z = x >> n;
+	long long y = x << n, z = x >> n;
 	return y + z;
 }
 
 int main(void)
 {
-	printf("l64 %ld\n", l64(-123456789012L));
-	printf("r64 %ld\n", r64(-123456789012L));
-	printf("u64 %lu\n", u64(0xfedcba9876543210UL));
+	printf("l64 %lld\n", l64(-123456789012LL));
+	printf("r64 %lld\n", r64(-123456789012LL));
+	printf("u64 %llu\n", u64(0xfedcba9876543210ULL));
 	printf("l32 %d\n", l32(-1234567));
 	printf("r32 %d\n", r32(-1234567));
 	printf("u32 %u\n", u32(0xfedcba98u));
-	printf("prop %ld\n", prop(21));
+	printf("prop %lld\n", prop(21));
 	return 0;
 }

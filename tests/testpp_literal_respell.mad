@@ -16,7 +16,13 @@
 #include <wchar.h>
 
 #define V2 "\xFF\x00\x00\x01"
+#if WCHAR_MAX > 0xffff
 #define WIDE L"ab\x00e9\x12345"
+#else
+/* a 16-bit wchar_t (Windows): \x12345 is out of range there (clang rejects
+ * it, gcc truncates with a warning), so the widest unit it holds */
+#define WIDE L"ab\x00e9\xfedc"
+#endif
 #define SPLIT L"\xd800" L"f"
 #define COPY(dst, src, n) memcpy(dst, src, n)
 #define LEN(s) wcslen(s)

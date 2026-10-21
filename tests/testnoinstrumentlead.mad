@@ -7,7 +7,9 @@
  * and __cyg_profile_func_enter entered itself until the stack overflowed
  * (SIGSEGV).
  * Oracle: gcc 13 and clang 18, -std=gnu17 -finstrument-functions: the lines
- * below. */
+ * below. x86_64-w64-mingw32 gcc 13: "entries 2" (the .win64_expect) --
+ * mingw's <stdio.h> defines printf as an inline wrapper, compiled and
+ * instrumented in this TU, and the first printf enters it. */
 #include <stdio.h>
 
 static int entries;
