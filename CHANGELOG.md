@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### An operator call's extern decline is decided before anything is emitted
+
+- `CirBuilder::class_operator_external_call()` checks `extern_symbol_can_link()` on the callee's pre-set Itanium symbol at entry, before the operand temporaries, the result temporary or the caller's result slot are emitted. Before, a decline after those emissions left a cleanup-tagged result temporary that was declared but never constructed, so its destructor ran on garbage at scope exit, and the operands' temporaries were emitted twice when the caller fell through to body instantiation.
+- Where the symbol links, the emitted code is unchanged; only the position of the check moved.
+
 ### A local object in an init-statement, a case or a substatement is constructed
 
 - An object declared in an `if` or `switch` init-statement, as a non-compound substatement, or in a `case`'s statements is constructed where it is declared and destroyed when its scope ends. Before, only its storage and cleanup were emitted, so its destructor ran on uninitialized storage: `if (std::string s = "abc"; ...)` aborted with "double free or corruption" (SIGABRT).

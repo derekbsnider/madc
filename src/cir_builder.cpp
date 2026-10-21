@@ -22561,6 +22561,18 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		node_t ret_slot, DataDefCLASS *slot_cls, bool *slot_used)
 {
 	if (!callee || callee->emit_symbol.empty()) return NULL;
+	// The callee arrived with a pre-set Itanium emit_symbol (a W2 binding
+	// minted before the link test existed for this lane). Under a flavor
+	// that does not export it (libc++ has no operator<<(ostream&, const
+	// char*) export), the bind is an undefined import for a template whose
+	// retained body could serve — decline, and the caller falls through to
+	// the body-instantiation route. Decided BEFORE anything is emitted: a
+	// decline after the result temp's declaration left a cleanup-tagged
+	// object nothing constructs (its destructor ran on garbage at scope
+	// exit), and after the operands', their temporaries and a consumed
+	// result slot.
+	if (!extern_symbol_can_link(callee->emit_symbol))
+		return NULL;
 	// lhs target: a free operator's param[0] names the (base) class the
 	// lhs binds to — object_arg_addr's base walk does the upcast. A member
 	// callee's param[0] is the __this pointer (not a reference param), so
@@ -22659,14 +22671,6 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		ret_ptr = false;
 		ret_specs.clear();   // void sret call; the slot carries the result
 	}
-	// The callee arrived with a pre-set Itanium emit_symbol (a W2 binding
-	// minted before the link test existed for this lane). Under a flavor
-	// that does not export it (libc++ has no operator<<(ostream&, const
-	// char*) export), the bind is an undefined import for a template whose
-	// retained body could serve — decline, and the caller falls through to
-	// the body-instantiation route.
-	if (!extern_symbol_can_link(callee->emit_symbol))
-		return NULL;
 	need_output_extern(callee->emit_symbol.c_str(), ret_ptr, eparams, ret_specs);
 	node_t ocall = node2(N_CALL, id(callee->emit_symbol.c_str(), origin),
 			     args, origin);
