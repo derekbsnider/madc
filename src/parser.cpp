@@ -3940,6 +3940,30 @@ madc::dis::istring Program::host_flavor_fn_symbol(const madc::dis::istring &ns_n
     return namespace_cpp_function_symbol(ns_name, member_name, fd, &mask);
 }
 
+// The vtable slot identity (declared beside ref_qualifier in madc.h). Each
+// parameter encodes on its own (no cross-parameter substitutions, no class
+// prefix), so the key is the same in every class that declares the
+// signature: an override in a derived class names its base's slot.
+madc::dis::istring FuncDef::virtual_slot_key() const
+{
+    if ( method_display_name.empty() || method_display_name[0] == '~'
+      || param_cpp_spellings.size() != parameters.size() )
+	return method_display_name;
+    std::vector<madc::dis::istring> psp;
+    for ( size_t i = 1; i < param_cpp_spellings.size(); ++i )
+	psp.push_back(mangle_param_spelling(i));
+    spell_varargs_tail(psp);
+    std::string key(method_display_name.c_str());	// built text; returned interned
+    key += '(';
+    for ( size_t i = 0; i < psp.size(); ++i )
+	key += itanium_encode_type_sub(psp[i]).c_str();
+    key += ')';
+    if ( is_const_method ) key += 'K';
+    if ( is_volatile_method ) key += 'V';
+    if ( ref_qualifier ) key += ref_qualifier == 1 ? 'R' : 'O';
+    return key;
+}
+
 // task #69, method half: the HOST-flavor twin of a host-implemented class
 // method's Itanium symbol (madc::channel::readline under -stdlib=libc++ —
 // the first madc-owned class on the mangled-direct spine to cross the
@@ -21217,6 +21241,42 @@ Variable *DataDefCLASS::findMethod(const madc::dis::istring &s)
     return NULL;
 }
 
+Variable *DataDefCLASS::slot_overrider(const madc::dis::istring &key)
+{
+    // Own declarations only: a using-declaration lists the base's Variable
+    // here too, and that one is the base's own (found below, ranked there).
+    for ( Variable *m : methods )
+    {
+	FuncDef *fd = m ? dynamic_cast<FuncDef *>(m->type) : NULL;
+	Method *mm = fd ? (Method *)m->data : NULL;
+	if ( !fd || (m->flags & vfSTATIC) || (mm && mm->owner_class
+		&& mm->owner_class != this) )
+	    continue;
+	// The key begins with the display name: encode only same-name members.
+	const madc::dis::istring &dn = fd->method_display_name;
+	if ( dn.empty() || key.size() < dn.size()
+	  || key.compare(0, dn.size(), dn.c_str()) != 0
+	  || (key.size() > dn.size() && key[dn.size()] != '(') )
+	    continue;
+	if ( fd->virtual_slot_key() == key )
+	    return m;
+    }
+    Variable *best = NULL;
+    DataDefCLASS *best_owner = NULL;
+    for ( const BaseSpec &bs : bases )
+    {
+	Variable *c = bs.base ? bs.base->slot_overrider(key) : NULL;
+	Method *cm = c ? (Method *)c->data : NULL;
+	DataDefCLASS *co = cm && cm->owner_class ? cm->owner_class : bs.base;
+	if ( c && (!best || (co != best_owner && co->is_or_derives_from(best_owner))) )
+	{
+	    best = c;
+	    best_owner = co;
+	}
+    }
+    return best;
+}
+
 static bool method_callable_with_arg_count(Variable *mv, size_t argc,
 					   size_t *total_out = NULL)
 {
@@ -24574,7 +24634,7 @@ void DataDefCLASS::build_vtable_groups()
     if ( !has_vtable && !has_vptr_slot ) return;
 
     // The primary group holds the PRIMARY-chain slots: the primary base's slots
-    // (overrides resolved by name at emit time) plus this class's own newly
+    // (overrides resolved by slot key at emit time) plus this class's own newly
     // introduced virtuals. Secondary bases' slots live in their own groups, so
     // exclude them from the primary group.
     DataDefCLASS *prim = NULL;
@@ -24836,7 +24896,9 @@ bool DataDefCLASS::is_externally_defined() const
     {
 	FuncDef *fd = dynamic_cast<FuncDef *>(m ? m->type : NULL);
 	if ( fd && has_madc_body(m) && !fd->method_display_name.empty()
-	  && virtual_methods.find(fd->method_display_name) != virtual_methods.end() )
+	  && !(m->flags & vfSTATIC)
+	  && virtual_methods.find(fd->method_display_name) != virtual_methods.end()
+	  && vtable_slot(fd->virtual_slot_key()) >= 0 )
 	    return false;
     }
     // A destructor with a body (dtors don't carry method_display_name). Any
@@ -52409,13 +52471,20 @@ void Program::register_class_method_signature(DataDefCLASS *ddc, Variable *mvar,
 	    ddc->has_vtable = true;
 	}
     }
-    else if ( spec.kind == ClassMethodKind::Method
+    else if ( spec.kind == ClassMethodKind::Method && !spec.is_static
 	   && (spec.is_virtual || ddc->is_virtual_method(spec.display_name)) )
     {
-	ddc->virtual_methods[spec.display_name] = true;
-	if ( ddc->vtable_slot(spec.display_name) < 0 )
-	    ddc->vtable_slots.push_back(spec.display_name);
-	ddc->has_vtable = true;
+	// The slot is per SIGNATURE: a same-name member overrides only the
+	// inherited slot its key names; a non-virtual overload of a virtual
+	// name occupies none.
+	madc::dis::istring key = fd ? fd->virtual_slot_key() : spec.display_name;
+	if ( spec.is_virtual || ddc->vtable_slot(key) >= 0 )
+	{
+	    ddc->virtual_methods[spec.display_name] = true;
+	    if ( ddc->vtable_slot(key) < 0 )
+		ddc->vtable_slots.push_back(key);
+	    ddc->has_vtable = true;
+	}
     }
 }
 

@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### Virtual functions take one vtable slot per signature
+
+- A class's vtable slots are keyed by signature, not by name. Overloads of one virtual name each take their own slot, in declaration order, as Itanium C++ ABI 2.5.2 lays them out. Before, all overloads of a name shared one slot, so overriding one overload redirected every overload of that name.
+- An override is matched by its parameter types and cv- and ref-qualifiers. A non-virtual overload that shares a name with a virtual one is no longer made virtual.
+- Against libc++, `wcout << ...` on a `wchar_t` stream dispatched through the wrong virtual (`ctype<wchar_t>::widen` called `do_widen(char)` through slot 8 where the ABI has 11). `teststreamwideops` now runs under `-stdlib=libc++`.
+- Tests: `testvirtualoverloadslots` (C++, `--std=gnu++17`) prints `1 20 3 4 50 / 10 2 / 60 70 / pg 3 / 70 2 30 4`, the output of g++ 13 and clang++ 18. v0.105.0 printed `20 20 3 50 50 / 10 10 / 60 60 / pg 3 / 70 10 30 30`.
+- The forest format is version 74: a class's vslot run holds signature keys.
+
 ### A GNU attribute among a member's specifiers is read
 
 - A class member may carry a GNU attribute group among its decl-specifiers, for example `static __attribute__((__noinline__)) int f(int)` or `constexpr __attribute__((__noinline__)) int g(int) const`. Before, the member was refused with "Expecting type in class definition". This is the form libc++'s `_LIBCPP_CONSTEXPR_SINCE_CXX20 _LIBCPP_NOINLINE` takes once `__has_attribute(noinline)` answers 1.

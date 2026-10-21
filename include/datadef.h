@@ -1970,8 +1970,12 @@ public:
     void collect_vbases(std::vector<DataDefCLASS *> &out,
 			std::set<DataDefCLASS *> &seen, int depth = 0) const;
     // Virtual function table
-    std::vector<madc::dis::istring> vtable_slots; // method names in vtable slot order
-    std::map<madc::dis::istring, bool> virtual_methods;  // names of methods declared virtual
+    // Slot keys in vtable slot order: FuncDef::virtual_slot_key (one per
+    // virtual SIGNATURE), "~" / "~$deleting" for the destructor.
+    std::vector<madc::dis::istring> vtable_slots;
+    // Display NAMES with a virtual member — the cheap "may this name occupy
+    // a slot" prefilter; the slot itself is per signature (vtable_slots).
+    std::map<madc::dis::istring, bool> virtual_methods;
     void **vtable;         // runtime vtable (array of function pointers, filled at compile time)
     bool has_vtable;       // true if this class or any base has virtual methods
     bool from_system_header;  // defined in a system/toolchain header (glibc/libstdc++):
@@ -2008,8 +2012,8 @@ public:
     // secondary_vptr_owners from RESTORED vtable_groups (frozen forest: the
     // groups are frozen, the owners list is not). Defined in parser.cpp.
     void secondary_vptr_owners_from_groups();
-    // Resolve a virtual method name to its (group, in-group slot). Returns false if
-    // not a virtual method of any group.
+    // Resolve a slot key to its (group, in-group slot). Returns false if no
+    // group holds it.
     bool find_vslot(const madc::dis::istring &m, size_t &group, int &slot) const {
 	for ( size_t g = 0; g < vtable_groups.size(); g++ )
 	    for ( size_t i = 0; i < vtable_groups[g].slots.size(); i++ )
@@ -2042,6 +2046,11 @@ public:
 	  from_system_header(false), is_extern_template_instantiated(false) {}
     virtual BaseType basetype() const override { return BaseType::btClass; }
     Variable *findMethod(const madc::dis::istring &s);
+    // The FINAL OVERRIDER of the vtable slot `key` (FuncDef::virtual_slot_key)
+    // in this class: its own method with that key, else the dominant one
+    // across every base (a vbase's overrider loses to a class derived from
+    // it). NULL when no method fills the slot. Defined in parser.cpp.
+    Variable *slot_overrider(const madc::dis::istring &key);
     // Among the same-name method overloads (this class + base chain), pick the
     // one whose parameter types best match `argtypes` (overload resolution by
     // argument type). Returns NULL when no same-name method exists; falls back

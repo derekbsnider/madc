@@ -879,6 +879,14 @@ public:
     // participates in signature identity beside is_const_method. Itanium
     // mangling: 'R' (&) / 'O' (&&) before the CV qualifiers.
     uint8_t ref_qualifier;
+    // The vtable SLOT a virtual member occupies (Itanium 2.5.2: one per
+    // virtual function; [class.virtual]/2: an override has the same name,
+    // parameter-type-list, cv- and ref-qualifier): the display name, each
+    // user parameter's Itanium encoding (the mangler's — typedefs and
+    // template parameters desugared), then K/V/R/O. A destructor's key is its
+    // display name (its slots are "~" / "~$deleting"); a misaligned spelling
+    // array keys by the display name alone. Never asked of a static member.
+    madc::dis::istring virtual_slot_key() const;
     // True when the body was defined in-class or arrived through the
     // deferred-body machinery (parse_deferred_function_body): the C++
     // implicit-inline set — every TU that sees the defining class/header can

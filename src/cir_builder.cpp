@@ -12847,8 +12847,8 @@ node_t CirBuilder::member_ptr_constant(TokenMemberPtrConst *mpc, int64_t delta,
 	node_t ptr_val;
 	size_t grp = 0;
 	int slot = -1;
-	if (mpc->owner && mpc->owner->is_virtual_method(mpc->member_name)
-	    && mpc->owner->find_vslot(mpc->member_name, grp, slot)) {
+	if (mpc->owner && mfd && mpc->owner->is_virtual_method(mpc->member_name)
+	    && mpc->owner->find_vslot(mfd->virtual_slot_key(), grp, slot)) {
 		ptr_val = node2(N_CAST, void_ptr_type(),
 				integer((int64_t)(1 + slot * 8), tb), tb);
 	} else {
@@ -13318,7 +13318,7 @@ void CirBuilder::note_vtable_slot_references(DataDefCLASS *cdd)
 		for (const madc::dis::istring &slot : G.slots) {
 			if (slot == "~" || slot == "~$deleting")
 				continue;
-			Variable *mv = cdd->findMethod(slot);
+			Variable *mv = cdd->slot_overrider(slot);
 			FuncDef *mfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
 			if (!mv || !mfd || mfd->pure_virtual)
 				continue;
@@ -13525,7 +13525,9 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	// (a vbase-owned method entered via the primary vptr adjusts FORWARD to
 	// the hoisted vbase; an override at the top entered via a secondary vptr
 	// adjusts BACK). Deduped by name — two groups needing the same
-	// (delta, method) share one thunk. Returns the thunk's symbol name.
+	// (delta, method) share one thunk. <m> is the overrider's body symbol
+	// (a slot key is a signature, not an identifier). Returns the thunk's
+	// symbol name.
 	//   RET Cls__thunk_<delta>_<m>(__self, p1...) {
 	//       return Override((MOwner*)((char*)__self + delta), p1...);
 	//   }
@@ -13603,8 +13605,9 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 
 	// Initializer: grouped sub-tables back-to-back — primary group, then each
 	// secondary polymorphic base's group (address points recorded in
-	// build_vtable_groups). Each slot resolves by NAME to the most-derived
-	// findMethod (so overrides win); a pure/abstract slot emits a null pointer.
+	// build_vtable_groups). Each slot resolves by its SIGNATURE key to its
+	// final overrider (slot_overrider); a slot no method fills emits a null
+	// pointer, a pure one __cxa_pure_virtual.
 	// A slot in a SECONDARY group whose resolved method is an OVERRIDE (its __this
 	// owner != the group's base) gets a this-adjusting thunk: the slot is reached
 	// via the secondary-base vptr with a base-subobject `this`, so the thunk
@@ -13672,7 +13675,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 				append(inits, node2(N_INIT, list(), fnref));
 				continue;
 			}
-			Variable *mv = cdd->findMethod(sname);
+			Variable *mv = cdd->slot_overrider(sname);
 			if (!mv) {
 				append(inits, node2(N_INIT, list(), integer(0)));
 				continue;
@@ -13711,7 +13714,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 			long tdelta = (moff != (size_t)-1)
 				? (long)moff - (long)G.this_offset : 0;
 			if (tdelta != 0 && mowner && mfd)
-				symname = make_thunk(mfd, bsym, mowner, tdelta, sname);
+				symname = make_thunk(mfd, bsym, mowner, tdelta, bsym);
 			else
 				referenced_funcs.insert(bsym);
 			node_t vptr_type = void_ptr_type();
@@ -14983,18 +14986,22 @@ void CirBuilder::append_ctor_vbase_static_args(node_t args, DataDefCLASS *callee
 }
 
 // The vtable SLOT a method call dispatches through is keyed by the method's
-// DISPLAY name (the parser registers virtual slots under it: "id",
-// "operator=="). Read it from the FuncDef — never reconstructed from the
-// emitted call symbol, whose spelling is the Itanium ABI's (_ZN1B2idEv) once
-// a user class's members carry their own names, not Class__name (that strip
-// turned every virtual call into a direct call to the static type's body).
-// The prefix strip survives only as the fallback for a FuncDef with no
-// recorded display name — a legacy internal-name symbol.
-static madc::dis::istring method_slot_name(FuncDef *callee, const madc::dis::istring &sym,
+// SIGNATURE (FuncDef::virtual_slot_key, the key the parser registers:
+// "id()", "f(i)", "operator==(RK1S)K"). Read it from the FuncDef — never
+// reconstructed from the emitted call symbol, whose spelling is the Itanium
+// ABI's (_ZN1B2idEv) once a user class's members carry their own names, not
+// Class__name (that strip turned every virtual call into a direct call to
+// the static type's body). A static member occupies no slot. The prefix
+// strip survives only as the fallback for a FuncDef with no recorded display
+// name — a legacy internal-name symbol.
+static madc::dis::istring method_slot_name(FuncDef *callee, const Variable &var,
+				    const madc::dis::istring &sym,
 				    DataDefCLASS *recv_class)
 {
+	if (var.flags & vfSTATIC)
+		return madc::dis::istring();
 	if (callee && !callee->method_display_name.empty())
-		return callee->method_display_name;
+		return callee->virtual_slot_key();
 	return (recv_class && sym.size() > recv_class->name.size() + 2)
 		? madc::dis::istring(sym.substr(recv_class->name.size() + 2)) : sym;
 }
@@ -15108,7 +15115,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 	    && (tm->parent_expr->type() == TokenType::ttCallFunc
 		|| tm->parent_expr->type() == TokenType::ttCallMethod)
 	    && callee) {
-		madc::dis::istring mname_chk = method_slot_name(callee, sym, recv_class);
+		madc::dis::istring mname_chk = method_slot_name(callee, tm->var, sym,
+							   recv_class);
 		size_t vg; int vs;
 		if (recv_class->find_vslot(mname_chk, vg, vs)) {
 			snprintf(vrecv_tmp, sizeof(vrecv_tmp), "__madc_vrecv_%d",
@@ -15136,7 +15144,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 	size_t vgrp = 0;
 	int vslot = -1;
 	if (callee && !callee->is_member_template_placeholder()) {
-		madc::dis::istring vmn = method_slot_name(callee, sym, recv_class);
+		madc::dis::istring vmn = method_slot_name(callee, tm->var, sym,
+							  recv_class);
 		size_t vg; int vs;
 		if (recv_class->find_vslot(vmn, vg, vs)) {
 			vgrp = vg;
@@ -19891,10 +19900,10 @@ madc::dis::istring CirBuilder::class_pure_virtual_of(DataDefCLASS *cdd)
 	for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
 		for (const madc::dis::istring &slot : cdd->vtable_groups[g].slots) {
 			if (slot == "~" || slot == "~$deleting") continue;
-			Variable *mv = cdd->findMethod(slot);
+			Variable *mv = cdd->slot_overrider(slot);
 			FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
 			if (fd && fd->pure_virtual)
-				return slot;
+				return fd->method_display_name;
 		}
 	}
 	return madc::dis::istring();

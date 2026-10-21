@@ -751,7 +751,11 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // arm writes (its condition spells a name it defines): a bind that skips the
 // arm checks a write it leaves unlike the freeze's where frozen content
 // expands it, instead of declining. A v72 container lacks those points.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 73 };
+//
+// v74: a class's vslot run holds per-SIGNATURE slot keys
+// (FuncDef::virtual_slot_key: "f(i)", "h()K"); a v73 pack's run holds one
+// display name per overload set.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 74 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies

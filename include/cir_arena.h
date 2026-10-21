@@ -389,7 +389,7 @@ struct defrec {
 	// vtable_slot("~$deleting") < 0 (no deleting dtor synthesized, no
 	// dispatch through `delete p`) and is_virtual_method() false (a
 	// consumer-side derived class never saw the override).
-	uint32_t vslot_begin;	// word run: DataDefCLASS::vtable_slots name ids
+	uint32_t vslot_begin;	// word run: DataDefCLASS::vtable_slots key ids (v74)
 	uint32_t vslot_count;
 	uint32_t vmeth_begin;	// word run: DataDefCLASS::virtual_methods keys
 	uint32_t vmeth_count;
