@@ -440,7 +440,8 @@ endif
 # msvcrt-compiled static libs (libstdc++, winpthreads) import.
 # __USE_MINGW_SETJMP_NON_SEH is mandatory lane-wide (W2.1): SEH-default
 # longjmp runs RtlUnwindEx frame-consistency unwinding, which faults crossing
-# a JIT frame with no RUNTIME_FUNCTION entry. All three defines live in
+# a JIT frame with no RUNTIME_FUNCTION entry. (madc's own try lowering passes
+# its frame: generated frames carry their RUNTIME_FUNCTIONs, B205 6.3.) All three defines live in
 # CC/CXX (not DEFINES) so the parse-time host-table capture (HOSTTAB_GEN)
 # sees the same posture the binary is built with.
 # The release pack also needs this root while the outer make has no hosted

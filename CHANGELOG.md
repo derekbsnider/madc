@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### On win64, a `try` passes its frame to `_setjmp`, so a throw unwinds through `RtlUnwindEx`
+
+- On Windows targets, a madc `try` calls `_setjmp(jbuf, __builtin_frame_address(0))` in place of `_setjmp(jbuf, NULL)`. Each raise's `longjmp` is an unwinding one: `RtlUnwindEx` walks the frames between the throw and the `try`.
+- `__builtin_frame_address` and `__builtin_return_address` are c2mir builtins with no external symbol, so a template body holding a `try` compiles without an undefined-symbol fallback.
+- Host code keeps `__USE_MINGW_SETJMP_NON_SEH`. `scripts/win_ucrt_gate.sh` keeps its SEH leg as the negative control over a frame with no RUNTIME_FUNCTION.
+- Under wine, `testtrycatch` ran with 230 unwind trace lines and 4 `RtlRestoreContext` calls; the previous PE had 0 of each. The exception tests (JIT, exe, obj) pass under wine and on genuine Windows with unchanged `.expect` files.
+
 ### PE/COFF objects and images carry unwind tables for generated functions
 
 - On Windows targets, each generated function's unwind info is written to `.xdata` and a 12-byte RUNTIME_FUNCTION to `.pdata`, with image-relative (ADDR32NB) fields. A function with no frame to describe gets neither entry.

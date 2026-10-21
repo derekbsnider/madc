@@ -18,11 +18,14 @@
 #         FAULTS crossing a JIT frame with no RUNTIME_FUNCTION entry (probed
 #         2026-08-12: page fault inside ntdll, wine 9.0).  The mitigation is
 #         __USE_MINGW_SETJMP_NON_SEH: setjmp becomes _setjmp(buf, NULL) and
-#         longjmp restores registers without the unwinder.  madc's exception
-#         lowering MUST ride the NON-SEH variant on win64.  The SEH leg here
-#         is the negative control: it must KEEP failing — if a future
-#         wine/ntdll makes it pass, the hazard model changed and this gate
-#         says so loudly instead of silently drifting.
+#         longjmp restores registers without the unwinder.  Host code rides
+#         the NON-SEH variant on win64.  madc's own try passes its frame
+#         (B205 6.3): every frame madc generates carries its RUNTIME_FUNCTION
+#         (the JIT registers it, images carry .pdata), so its raise is an
+#         unwinding longjmp.  The SEH leg here is the negative control over a
+#         frame WITHOUT one: it must KEEP failing — if a future wine/ntdll
+#         makes it pass, the hazard model changed and this gate says so
+#         loudly instead of silently drifting.
 #
 # Runner: wine by default; set MADC_WIN_RUNNER to run on real Windows over
 # the W0.2 channel (e.g. an ssh-wrapper script), same convention the suite

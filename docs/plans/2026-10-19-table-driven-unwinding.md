@@ -435,7 +435,17 @@ saved and restored with the rest of the exception state at task switches.
        `testbuiltin_frame_return_address` lose their win64 exe skips (exe and
        obj green on wine and on genuine Windows -- the release PE's artifacts
        run through `win_run.sh`, since `win_suite.sh` stages a JIT-only run;
-       the pre-change PE walks no generated frame). 4b, with
+       the pre-change PE walks no generated frame).
+     - The throw on Windows (2026-10-21): a madc try calls `_setjmp(jbuf,
+       __builtin_frame_address(0))` -- mingw's default setjmp shape, the
+       frame being the try function's establisher frame -- so every raise's
+       `longjmp` is an unwinding one through `RtlUnwindEx`, the Windows
+       counterpart of the Linux forced unwind. Behaviour-preserving while no
+       frame names a handler: the exception suite on wine and genuine Windows
+       (JIT, exe, obj) proves the landing. Host code keeps
+       `__USE_MINGW_SETJMP_NON_SEH` (the task trampoline's catch-all, a
+       script's own `setjmp`) -- step 7 decides those with the consumers.
+       4b, with
        step 5: the language-specific handler, its LSDA and the in-image stub
        for an imported handler -- testable only once the handler exists.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,

@@ -5465,7 +5465,12 @@ static bool is_c2mir_builtin_call_name(const madc::dis::istring &name)
 	    // c2mir's ALLOCA set (c2mir.c): both spellings compile as the
 	    // builtin — no external symbol exists or is needed.
 	    || name == "alloca"
-	    || name == "__builtin_alloca";
+	    || name == "__builtin_alloca"
+	    // c2mir's frame queries (MIR_FRAME_ADDR / MIR_RET_ADDR): no symbol.
+	    // A win64 try's _setjmp takes the frame address, so every forest
+	    // template body holding a try calls it.
+	    || name == "__builtin_frame_address"
+	    || name == "__builtin_return_address";
 }
 
 static DataDefCLASS *class_behind(DataDef *dd);
@@ -29316,21 +29321,25 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	// jbuf the runtime returned. c2mir takes the (void*) and treats it as the
 	// jmp_buf the libc setjmp expects (jmp_buf is an array -> a pointer in C).
 #ifdef _WIN32
-	// NON_SEH setjmp (W2.1): ucrtbase EXPORTS plain `setjmp`, and its x64
-	// flavor captures the SEH frame — the paired longjmp then RtlUnwindEx-
-	// walks JIT frames, the exact fault W2.1 gated. The safe contract is
-	// the two-arg _setjmp(jbuf, NULL): a NULL frame-ctx makes longjmp take
-	// the plain-restore path. `_setjmp` resolves to this binary's
-	// win_ucrt_compat thunk (tail-jmp to __intrinsic_setjmpex with the ctx
-	// register passed through), and MIR's returns-twice bookkeeping knows
-	// the name (SETJMP_NAME2). Host==target for the JIT; a future
-	// cross-windows mode moves this onto the target enum.
+	// The two-arg _setjmp(jbuf, frame), mingw's default setjmp shape: the
+	// frame is the try function's establisher frame,
+	// __builtin_frame_address(0), so the paired longjmp is an unwinding one
+	// -- ucrt's longjmp calls RtlUnwindEx, which walks every frame between
+	// the throw and the try (B205 6.3: every generated frame carries its
+	// RUNTIME_FUNCTION -- the JIT registers it, images carry .pdata) and
+	// calls each frame's unwind handler. `_setjmp` resolves to this
+	// binary's win_ucrt_compat thunk (tail-jmp to __intrinsic_setjmpex
+	// with the frame register passed through), and MIR's returns-twice
+	// bookkeeping knows the name (SETJMP_NAME2). Host==target for the JIT;
+	// a future cross-windows mode moves this onto the target enum.
 	need_output_extern("_setjmp", false,
 			   { { {N_VOID}, true }, { {N_VOID}, true } },
 			   { N_INT });
+	node_t frame_args = list();
+	append(frame_args, integer(0, tt));
 	node_t sj_args = list();
 	append(sj_args, push_call);
-	append(sj_args, node2(N_CAST, void_ptr_type(), integer(0, tt), tt));
+	append(sj_args, node2(N_CALL, id("__builtin_frame_address", tt), frame_args, tt));
 	node_t sj_call = node2(N_CALL, id("_setjmp", tt), sj_args, tt);
 #else
 	need_output_extern("setjmp", false, { { {N_VOID}, true } }, { N_INT });
