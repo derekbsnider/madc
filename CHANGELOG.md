@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### Windows x86-64 MIR probes the stack a page at a time
+
+- A frame or an alloca of 4096 bytes or more now touches every page between SP and its new value, in order, before the stack pointer reaches the lowest one. Before, MIR moved SP down by the whole size in one step, so the first store past the committed guard page faulted: a 300000-byte local array or VLA through the packed `madc.exe` JIT, or a madc-built `.exe`, exited with an access violation (exit 5).
+- The probes are inline in `third_party/mir/mir-gen-x86_64.c` (`win64_probe_frame`, and the `MIR_ALLOCA` patterns `r r` and `r i2`), because MIR links no `___chkstk_ms`. A constant alloca size under a page keeps the plain `sub` through the new pattern element `g`. Non-Windows code is unchanged.
+- `tests/teststackprobe.mad` (`--std=c17`) prints the gcc 13 and clang 18 answers in `tests/teststackprobe.expect`: `fixed 74`, `variable 148`, `nested 216`.
+
 ### A prototype's leading function attributes are the function's
 
 - A function attribute among a prototype's leading declaration specifiers (`no_instrument_function`, `weak`, `noinline`, `no_strict_aliasing`) now becomes the function's, as one after its declarator already did. Before, only attribute groups after the declarator reached the FuncDef; a prototype returned at its `;` before them.

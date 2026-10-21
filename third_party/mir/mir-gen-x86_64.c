@@ -1517,6 +1517,24 @@ static void vsave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t har
            _MIR_new_var_op (ctx, hard_reg));
 }
 
+#ifdef _WIN32
+/* Windows commits a thread's stack a guard page at a time: before the prologue
+   moves SP down by SIZE (a page or more), load from every page below SP in
+   order, the last load at SP - SIZE (the pages ___chkstk_ms touches; MIR
+   links nothing, so the loads are inline).  RAX is free at function entry. */
+static void win64_probe_frame (gen_ctx_t gen_ctx, MIR_insn_t anchor, size_t size) {
+  MIR_context_t ctx = gen_ctx->ctx;
+
+  if (size < 4096) return;
+  for (size_t k = 4096;; k += 4096) {
+    if (k > size) k = size;
+    gen_mov (gen_ctx, anchor, MIR_MOV, _MIR_new_var_op (ctx, AX_HARD_REG),
+             _MIR_new_var_mem_op (ctx, MIR_T_I64, -(MIR_disp_t) k, SP_HARD_REG, MIR_NON_VAR, 1));
+    if (k == size) break;
+  }
+}
+#endif
+
 static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_regs,
                                        size_t stack_slots_num) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -1585,6 +1603,9 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   if (!keep_fp_p) stack_slots_size = (stack_slots_size + 15) / 16 * 16;
   /* stack slots, and saved regs as multiple of 16 bytes: */
   block_size = (stack_slots_size + saved_hard_regs_size + 15) / 16 * 16;
+#ifdef _WIN32
+  win64_probe_frame (gen_ctx, anchor, block_size + service_area_size);
+#endif
   new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op,
                            MIR_new_int_op (ctx, block_size + service_area_size));
   gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= block size + service_area_size */
@@ -1734,6 +1755,7 @@ struct pattern {
          .mir.addrpool slot ('p' replacement) instead of an in-text imm64
      s - immediate 1, 2, 4, or 8 (scale)
      c<number> - immediate integer <number>
+     g - immediate ALLOCA size that rounds (to 16) below a page: 0..4080
      m[0-3] - int (signed or unsigned) type memory of size 8,16,32,64-bits
      ms[0-3] - signed int type memory of size 8,16,32,64-bits
      mu[0-3] - unsigned int type memory of size 8,16,32,64-bits
@@ -2086,9 +2108,27 @@ static struct pattern patterns[] = {
   {MIR_D2LD, "mld r", "F2 Y 0F 11 r1 mt; DD /0 mt; DB /7 m0", 0},
   {MIR_D2LD, "mld md", "DD /0 m1; DB /7 m0", 0}, /* fldl m1; fstp m0 */
 
+#ifdef _WIN32
+  /* Windows commits a thread's stack a guard page at a time, so an alloca of
+     a page or more touches every page in order as SP moves down (gcc and
+     clang call ___chkstk_ms; MIR links nothing, so the loop is inline; every
+     insn below has a fixed length, the jumps' displacements with it):
+       L: cmp r0, 4096; jb D; sub sp, 4096; test (sp), sp; sub r0, 4096; jmp L
+       D: sub sp, r0; test (sp), sp; mov r0, sp
+     ("X 85 24 24" is test (sp), sp: ModRM 24 and SIB 24 name (rsp).) */
+#define WIN64_ALLOCA_PROBE_LOOP                                                           \
+  "X 81 /7 R0 V00001000; 72 14; X 81 /5 H04 V00001000; X 85 24 24; X 81 /5 R0 V00001000; " \
+  "EB E3; X 2B h04 R0; X 85 24 24; X 8B r0 H04"
+  /* lea r0, 15(r1); and r0, r0, -16; the probe loop: */
+  {MIR_ALLOCA, "r r", "Y 8D r0 adF; X 81 /4 R0 VFFFFFFF0; " WIN64_ALLOCA_PROBE_LOOP, 0},
+  {MIR_ALLOCA, "r g", "X 81 /5 H04 I1; X 8B r0 H04", 0}, /* sub sp, g; mov r0, sp */
+  {MIR_ALLOCA, "r i2", "X C7 /0 R0 I1; " WIN64_ALLOCA_PROBE_LOOP, 0}, /* mov r0, i2; the loop */
+#undef WIN64_ALLOCA_PROBE_LOOP
+#else
   /* lea r0, 15(r1); and r0, r0, -16; sub sp, r0; mov r0, sp: */
   {MIR_ALLOCA, "r r", "Y 8D r0 adF; X 81 /4 R0 VFFFFFFF0; X 2B h04 R0; X 8B r0 H04", 0},
   {MIR_ALLOCA, "r i2", "X 81 /5 H04 I1; X 8B r0 H04", 0}, /* sub sp, i2; mov r0, sp */
+#endif
 
   {MIR_BSTART, "r", "X 8B r0 H4", 0}, /* r0 = sp */
   {MIR_BEND, "r", "X 8B h4 R0", 0},   /* sp = r0 */
@@ -2500,6 +2540,10 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
     case 's':
       if ((op_ref->mode != MIR_OP_INT && op_ref->mode != MIR_OP_UINT)
           || (op_ref->u.i != 1 && op_ref->u.i != 2 && op_ref->u.i != 4 && op_ref->u.i != 8))
+        return FALSE;
+      break;
+    case 'g':
+      if ((op_ref->mode != MIR_OP_INT && op_ref->mode != MIR_OP_UINT) || op_ref->u.u > 4080)
         return FALSE;
       break;
     case 'c': {
