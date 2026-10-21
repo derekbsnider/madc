@@ -61,9 +61,12 @@ ifeq ($(MODE),hosted-x86-64-windows)
 GITMOD_LIBRARY = $(MODULE_LIBDIR)/git.dll
 GITMOD_LIBGIT2 = $(LIBGIT2_STAGE)/libgit2-x86-64-windows.a
 GITMOD_CFLAGS = -I$(LIBGIT2_INCLUDE)
+# --export-all-symbols: the module's own symbols -- the git:: publics madc
+# resolves by mangled name -- are its exports, as on ELF; the dllexport on
+# madc_module_git alone would otherwise turn ld's auto-export off.
 # --exclude-libs,ALL: the archives' globals (libgit2's whole API among them)
 # stay out of the DLL's export table (gate: check-module-exports.sh).
-GITMOD_LINK_FLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--exclude-libs,ALL
+GITMOD_LINK_FLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -Wl,--exclude-libs,ALL
 GITMOD_LIBS = $(GITMOD_LIBGIT2) -L../lib -lmadc.dll -lws2_32 -lsecur32 -lpthread
 GITMOD_LINK_PREREQ = ../bin/libmadc-0.dll
 else ifdef HOSTED_DARWIN_TARGET

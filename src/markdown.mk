@@ -63,7 +63,9 @@ MARKDOWN_STAGED = $(CMARK_GFM_STAGE)/x86-64-windows
 MARKDOWN_AVAILABLE := 1
 MARKDOWN_CFLAGS = $(MARKDOWN_STAGE_CFLAGS)
 MARKDOWN_LIBRARY = $(MODULE_LIBDIR)/markdown.dll
-MARKDOWN_LINK_FLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--exclude-libs,ALL
+# --export-all-symbols: the markdown:: publics madc resolves by mangled name
+# are the DLL's exports (git.mk); --exclude-libs keeps cmark's out.
+MARKDOWN_LINK_FLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -Wl,--exclude-libs,ALL
 MARKDOWN_LIBS = $(MARKDOWN_ARCHIVES) -L../lib -lmadc.dll -lpthread
 MARKDOWN_LINK_PREREQ = ../bin/libmadc-0.dll
 MARKDOWN_NOTICE = $(CMARK_GFM_STAGE)/src/COPYING

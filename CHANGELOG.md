@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### Windows module DLLs export their namespace symbols again
+
+- `git.dll` and `markdown.dll` export the `git::` and `markdown::` publics madc resolves by mangled name (`_ZN3git...`, `_ZN8markdown...`). Before, each DLL exported only its entry point `madc_module_<name>`, so an `import git;` or `import markdown;` under Windows failed with `is not exported by ... GetProcAddress ... (error 127)`.
+- The module link carries `-Wl,--export-all-symbols` (`src/git.mk`, `src/markdown.mk`); `-Wl,--exclude-libs,ALL` still keeps the static libgit2 and cmark-gfm symbols out of the export table.
+- `scripts/check-module-exports.sh` now also requires each module image to export a symbol of its own namespace, with a negative control for an image that exports only its entry point.
+
 ### Windows x86-64 MIR frame register sits at most 240 bytes above the frame bottom
 
 - A Windows frame-pointer function now pushes bp, allocates its frame, and sets bp to `lea min(N, 240)(%rsp)`, the canonical mingw gcc and clang frame. Before, bp was set to the frame's top with the saved bp stored below SP, and the x64 unwind rules describe a frame register at most 240 bytes above the fixed allocation's RSP, so no frame over 240 bytes, and no frame with saved registers, had a valid unwind description.
