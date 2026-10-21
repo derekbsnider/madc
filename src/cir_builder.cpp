@@ -28687,7 +28687,13 @@ void CirBuilder::header_declarator_stmts(TokenDecl *td, node_t items)
 	}
 	if (is_array_object(td->var.type)) {
 		append(items, var_decl(&td->var, td));
-		append(items, array_decl_ctor_call(td));	// allowed-exception: header-declarator scope local
+		// The construction's arguments may materialize temporaries: their
+		// declarations precede it (translate_block's carrier arm, likewise).
+		node_t cc = array_decl_ctor_call(td);	// allowed-exception: header-declarator scope local
+		for (node_t p : m_pending_stmts)
+			append(items, p);
+		m_pending_stmts.clear();
+		if (cc) append(items, cc);
 		append(items, cleanup_arm_stmt(var_emit_name(td->var).c_str(), td));
 		return;
 	}
@@ -28697,6 +28703,17 @@ void CirBuilder::header_declarator_stmts(TokenDecl *td, node_t items)
 	append(items, var_decl(&td->var, td));
 }
 
+bool CirBuilder::local_object_decl_into(TokenBase *tb, node_t items)
+{
+	TokenDecl *td = tb ? tb->as_decl_tok() : NULL;
+	if (!td || !is_object_declarator(td)
+	    || !(td->var.flags & (vfLOCAL | vfSTATIC))
+	    || (td->var.flags & vfEXTERN))
+		return false;
+	header_declarator_stmts(td, items);
+	return true;
+}
+
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
 	// C++17 init-statement: `if (init; cond) S else E` lowers to
@@ -28704,11 +28721,13 @@ node_t CirBuilder::translate_if(TokenIF *ti)
 	// run before the condition and share the same enclosing block scope.
 	if (!ti->init_stmt)
 		return translate_if_core(ti);
-	node_t init = translate_stmt(ti->init_stmt);
+	node_t items = list();
+	node_t init = NULL;
+	if (!local_object_decl_into(ti->init_stmt, items))
+		init = translate_stmt(ti->init_stmt);
 	std::vector<node_t> init_temps;
 	flush_pending_stmts(init_temps);
 	node_t core = translate_if_core(ti);
-	node_t items = list();
 	for (node_t p : init_temps)
 		append(items, p);
 	if (init)
@@ -30401,9 +30420,11 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 	// its temps) FIRST so it is emitted before the switch expression, which it
 	// may reference; the wrap is applied at the single return below.
 	node_t init = NULL;
+	node_t init_items = list();
 	std::vector<node_t> init_temps;
 	if (ts->init_stmt) {
-		init = translate_stmt(ts->init_stmt);
+		if (!local_object_decl_into(ts->init_stmt, init_items))
+			init = translate_stmt(ts->init_stmt);
 		flush_pending_stmts(init_temps);
 	}
 
@@ -30471,6 +30492,8 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 		}
 		append(block_items, node2(N_EXPR, labels, integer(0)));
 		for (size_t si = 0; si < tc->statements.size(); si++) {
+			if (local_object_decl_into(tc->statements[si], block_items))
+				continue;
 			node_t s = translate_stmt(tc->statements[si]);
 			if (s) append(block_items, s);
 		}
@@ -30512,7 +30535,7 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 	node_t sw = node3(N_SWITCH, list(), expr, body, ts);
 	if (!ts->init_stmt)
 		return sw;
-	node_t items = list();
+	node_t items = init_items;
 	for (node_t p : init_temps)
 		append(items, p);
 	if (init)
@@ -30963,6 +30986,15 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 			!(td->var.flags & vfLOCAL) && !(td->var.flags & vfSTATIC);
 		if (is_file_scope_global)
 			return NULL;
+		// An object declaration reaching here is a non-compound
+		// substatement: the one statement of its own block scope
+		// ([stmt.pre]/2). A scope that continues (an init-statement, a
+		// case's statements) takes local_object_decl_into's items itself.
+		{
+			node_t items = list();
+			if (local_object_decl_into(td, items))
+				return node2(N_BLOCK, list(), items, td);
+		}
 		materialize_value_captures(td);
 		return var_decl(&td->var, td);
 	  } }

@@ -3012,6 +3012,13 @@ public:
 	// object (storage + construction + cleanup) or an array object
 	// (storage + element construction).
 	bool is_object_declarator(class TokenDecl *td);
+	// A LOCAL object declaration statement (class or carrier) into the
+	// items of the scope it declares into: storage + construction + its
+	// cleanup's arm (header_declarator_stmts). False when `tb` is not one;
+	// the caller translates it as a statement. Serves the scopes that
+	// continue past the declaration: an if / switch init-statement, a
+	// case's statements.
+	bool local_object_decl_into(class TokenBase *tb, node_t items);
 	// The statements that declare ONE statement-header declarator, appended
 	// to `items`: class_decl_stmts for a class object, the storage + element
 	// construction for an array object, else the scalar SPEC_DECL with its

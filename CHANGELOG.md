@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### A local object in an init-statement, a case or a substatement is constructed
+
+- An object declared in an `if` or `switch` init-statement, as a non-compound substatement, or in a `case`'s statements is constructed where it is declared and destroyed when its scope ends. Before, only its storage and cleanup were emitted, so its destructor ran on uninitialized storage: `if (std::string s = "abc"; ...)` aborted with "double free or corruption" (SIGABRT).
+- `CirBuilder::local_object_decl_into()` is the one owner for these scopes; it reuses `header_declarator_stmts()`. A carrier construction now flushes pending temporaries ahead of itself.
+- `tests/testinitstmt_object.mad` (`--std=c++17`) prints the same lines as g++ 13 and clang++ 18.
+- Known remaining issue: a declaration inside a switch body's case is also default-constructed at the top of the enclosing block, because the switch body opens no scope of its own. The case's own object is constructed correctly.
+
 ### An object's cleanup arm follows its construction
 
 - The CIR builder places `__builtin_cleanup_arm(&name);` after the statement that constructs a cleanup-tagged object it declares: class declarations, carrier and class temporaries, returned-object temporaries, foreach elements, block locals, and host-call shim temporaries. A class without a destructor and a static or extern object get no arm.

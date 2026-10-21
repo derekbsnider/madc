@@ -1,0 +1,37 @@
+// A class object declared in an if / switch init-statement ([stmt.if]/3,
+// [stmt.switch]/3) or as a non-compound substatement (its own block scope,
+// [stmt.pre]/2) is constructed there and destroyed when its scope ends.
+// Oracles: g++ 13 and clang++ 18 (-std=c++17): the lines below. madc before
+// the fix declared these objects with their cleanup but never constructed
+// them: the std::string's destructor freed garbage ("double free or
+// corruption", SIGABRT).
+#include <cstdio>
+#include <string>
+
+struct T {
+	int id;
+	T(int i) : id(i) { std::printf("+%d ", id); }
+	~T() { std::printf("-%d ", id); }
+};
+
+int main(int argc, char **argv)
+{
+	(void)argv;
+	if (std::string s = "abc"; s.size() == 3)
+		std::printf("if: %s\n", s.c_str());
+	switch (std::string s = "xy"; s.size()) {
+	case 2: std::printf("switch: %s\n", s.c_str()); break;
+	default: std::printf("switch: other\n");
+	}
+	if (T t(5); t.id == 5)
+		std::printf("in ");
+	std::printf("\n");
+	switch (T t(6); t.id) {
+	case 6: std::printf("case "); break;
+	}
+	std::printf("\n");
+	if (argc)
+		T sub(8);
+	std::printf("\n");
+	return 0;
+}
