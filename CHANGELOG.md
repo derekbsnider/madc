@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### A binary module writes a region change ahead of the labels at its insn
+
+- MIR's binary writer emitted `uregion <region>` immediately before the first non-label insn of a new region, after any labels preceding that insn. The reader holds labels until their insn and refuses a region directive while labels are pending ("uregion should have no labels"), so a module whose region changes at a labelled insn did not read back.
+- `write_item()` in `third_party/mir/mir.c` writes the `uregion` directive ahead of the run of labels; the labels and their insn are written unchanged. The reader is unchanged.
+- With unwind regions on for C++ trees (B205 step 7), the Windows release pack's MIR module cache failed with `MIR_read failed: uregion should have no labels`. `make release-windows` and `make release` (Linux) now exit 0, with `forest_pack_gate` OK.
+- `tests/unit/test_mir_unwind.cpp` gains "binary module I/O: a region changing at a labelled insn". `bin/test_mir_unwind` reports 19 passed, 0 failed (230 assertions).
+
 ### A Windows language-specific handler runs a generated frame's cleanups for a madc throw
 
 - On x64 Windows, a generated function with a region table names `__madc_seh_handler` as its SEH language-specific handler (`UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER`). The handler runs the frame's live regions for a madc throw's `longjmp` into its target `try`, and for a host C++ exception crossing the frame. A plain C `longjmp` runs no regions.

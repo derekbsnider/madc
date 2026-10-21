@@ -5963,14 +5963,23 @@ static size_t write_item (MIR_context_t ctx, writer_func_t writer, MIR_item_t it
     len += write_uint (ctx, writer, func->unwind_base_align);
   }
   uint32_t region = 0;
-  for (insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;
-       insn = DLIST_NEXT (MIR_insn_t, insn)) {
-    if (insn->code != MIR_LABEL && insn->unwind_region != region) { /* uregion <region> */
-      region = insn->unwind_region;
+  for (insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;) {
+    /* A label belongs to the insn after it (the reader holds it until that
+       insn), so a region change goes ahead of the labels: uregion <region> */
+    MIR_insn_t labelled = insn;
+
+    while (labelled != NULL && labelled->code == MIR_LABEL)
+      labelled = DLIST_NEXT (MIR_insn_t, labelled);
+    if (labelled != NULL && labelled->unwind_region != region) {
+      region = labelled->unwind_region;
       len += write_name (ctx, writer, "uregion");
       len += write_uint (ctx, writer, region);
     }
-    len += write_insn (ctx, writer, func, insn);
+    for (; insn != labelled; insn = DLIST_NEXT (MIR_insn_t, insn))
+      len += write_insn (ctx, writer, func, insn);
+    if (labelled == NULL) break;
+    len += write_insn (ctx, writer, func, labelled);
+    insn = DLIST_NEXT (MIR_insn_t, labelled);
   }
   if (func->unwind_regions != NULL) /* unwind_region <parent> <offset> <cleanup> per region */
     for (i = 0; i < VARR_LENGTH (MIR_unwind_region_t, func->unwind_regions); i++) {

@@ -481,6 +481,49 @@ TEST_CASE("binary module I/O keeps unwind regions and the personality")
 	MIR_finish(ctx2);
 }
 
+// A label belongs to the insn after it: the stream's region change comes
+// ahead of the labels, so a region that starts or ends at a labelled insn
+// reads back (the reader refused a region change between a label and its
+// insn: "uregion should have no labels").
+static jmp_buf io_error_jmp;
+static void MIR_NO_RETURN io_error(MIR_error_type_t, const char *, ...)
+{
+	longjmp(io_error_jmp, 1);
+}
+
+TEST_CASE("binary module I/O: a region changing at a labelled insn")
+{
+	MIR_context_t ctx = MIR_init();
+	MIR_module_t mod = scan_module(ctx);
+	MIR_item_t f = find_item(ctx, mod, "f");
+	add_region(ctx, mod, f, 24);
+	MIR_insert_insn_before(ctx, f, nth_call(f, 0), MIR_new_label(ctx));
+	MIR_insert_insn_before(ctx, f, nth_call(f, 1), MIR_new_label(ctx));
+	MIR_insert_insn_before(ctx, f, nth_call(f, 1), MIR_new_label(ctx));
+	io_bytes.clear();
+	MIR_write_module_with_func(ctx, io_put, mod);
+	MIR_finish(ctx);
+
+	MIR_context_t ctx2 = MIR_init();
+	MIR_set_error_func(ctx2, io_error);
+	io_pos = 0;
+	bool read_ok = false;
+	if (setjmp(io_error_jmp) == 0) {
+		MIR_read_with_func(ctx2, io_get);
+		read_ok = true;
+	}
+	REQUIRE(read_ok);
+	MIR_module_t mod2 = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx2));
+	MIR_item_t f2 = find_item(ctx2, mod2, "f");
+	REQUIRE(f2 != nullptr);
+	CHECK(nth_call(f2, 0)->unwind_region == 1);
+	CHECK(nth_call(f2, 1)->unwind_region == 0);
+	MIR_insn_t before = DLIST_PREV(MIR_insn_t, nth_call(f2, 1));
+	REQUIRE(before != nullptr);
+	CHECK(before->code == MIR_LABEL);
+	MIR_finish(ctx2);
+}
+
 TEST_CASE("the inliner: a region's callee stays a call; an inlined body takes the call's region")
 {
 	static const char *text =
