@@ -74205,10 +74205,12 @@ static bool defaulted_member_parses_empty(DataDefCLASS *owner,
 
 // Clone a FuncDef with a DIFFERENT return type. FuncDef::returns is a reference
 // (cannot be reseated), so a return-type change after the FuncDef exists must
-// rebuild it — used for an `auto`-return function whose real type is only known
-// from its trailing return type (`-> T`) once parameters are in scope. Copies
-// every FuncDef field except `returns` (the DataDef base is default-constructed
-// identically for both, as it is for every FuncDef).
+// rebuild it: an `auto`-return function whose real type is only known from its
+// trailing return type (`-> T`) once parameters are in scope, and parseFunction's
+// refreshes (a definition that changes its declaration's return type, or meets
+// an unprototyped C declaration). Copies every FuncDef field except `returns`
+// (the DataDef base is default-constructed identically for both, as it is for
+// every FuncDef). The ONE rebuild: gate scripts/check-one-funcdef-clone.sh.
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
 {
     // Lazy member-template hydration: the field copy below includes the
@@ -74273,6 +74275,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->ctor_initializers = src->ctor_initializers;
     f->is_varargs = src->is_varargs;
     f->is_void_params = src->is_void_params;
+    f->declared_unprototyped = src->declared_unprototyped;
     f->no_instrument_function = src->no_instrument_function;
     f->no_strict_aliasing = src->no_strict_aliasing;
     f->weak_binding = src->weak_binding;
@@ -74293,6 +74296,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->is_volatile_method = src->is_volatile_method;
     f->vague_linkage = src->vague_linkage;
     f->internal_linkage = src->internal_linkage;
+    f->c_linkage = src->c_linkage;
     return f;
 }
 
@@ -74644,41 +74648,16 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	else if ( func->declaration_only
 	       && !func->is_void_params && func->parameters.empty() )
 	{
-	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref, return_rvalue_ref));
-	    fresh->return_types = func->return_types;
-	    fresh->multi_ret_struct = func->multi_ret_struct;
-	    fresh->return_typedef_name = func->return_typedef_name;
-	    fresh->is_constexpr = func->is_constexpr;
-	    fresh->constexpr_return_tokens = func->constexpr_return_tokens;
-	    fresh->param_typedef_names = func->param_typedef_names;
-	    fresh->param_template_param_spelled_directly =
-		func->param_template_param_spelled_directly;
-	    fresh->no_instrument_function = func->no_instrument_function;
-	    fresh->weak_binding = func->weak_binding;
-	    fresh->noinline = func->noinline;
-	    fresh->explicit_alignment = func->explicit_alignment;
-	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
-	    fresh->is_deleted = func->is_deleted;
-	    fresh->noexcept_spec = func->noexcept_spec;
-	    fresh->implicit_dtor_noexcept = func->implicit_dtor_noexcept;
-	    fresh->noexcept_condition_tokens = func->noexcept_condition_tokens;
-	    fresh->noexcept_parameters = func->noexcept_parameters;
-	    fresh->noexcept_owner = func->noexcept_owner;
-	    fresh->pure_virtual = func->pure_virtual;
-	    fresh->vague_linkage = func->vague_linkage;
-	    fresh->internal_linkage = func->internal_linkage;
-	    // The declaration's SYMBOL identity survives the rebuild: the name
-	    // its class registration bound (bind_declared_cpp_symbol —
+	    // The declaration survives the rebuild — its attributes, linkage
+	    // and SYMBOL identity (the name its class registration bound:
 	    // local_emit_name for madc's own body, emit_symbol for a library
-	    // definition), its member identity and const-ness. Dropping them
-	    // emitted a refreshed static member's body under its internal
-	    // registration key while every call imported the Itanium name.
-	    fresh->local_emit_name = func->local_emit_name; // allowed-exception: field copy (refresh), not symbol build
-	    fresh->emit_symbol = func->emit_symbol;
-	    fresh->method_display_name = func->method_display_name;
-	    fresh->is_const_method = func->is_const_method;
-	    fresh->is_volatile_method = func->is_volatile_method;
-	    fresh->is_member_template = func->is_member_template;
+	    // definition; dropping them emitted a refreshed static member's
+	    // body under its internal registration key while every call
+	    // imported the Itanium name). It declared no parameters, so this
+	    // declarator's bind as a new declaration's do.
+	    FuncDef *fresh = clone_funcdef_with_return(func,
+		returnDecl(dd, return_ref, return_rvalue_ref));
+	    fresh->declaration_only = false;
 	    fresh->declared_unprototyped = is_c_mode();
 	    funcdef_map[id] = fresh;
 	    func = fresh;
@@ -74691,48 +74670,12 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	if ( &func->return_value_type() != &dd )
 	{
 	    DBG(std::cout << "parseFunction() return type refresh: " << func->return_value_type().name << " → " << dd.name << " for " << id << std::endl);
-	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref, return_rvalue_ref));
-	    fresh->parameters   = func->parameters;
-	    fresh->is_varargs   = func->is_varargs;
-	    fresh->is_void_params = func->is_void_params;
-	    fresh->declared_unprototyped = func->declared_unprototyped;
-	    fresh->return_types = func->return_types;
-	    fresh->multi_ret_struct = func->multi_ret_struct;
-	    fresh->return_typedef_name = func->return_typedef_name;
-	    fresh->is_constexpr = func->is_constexpr;
-	    fresh->constexpr_return_tokens = func->constexpr_return_tokens;
-	    fresh->param_typedef_names = func->param_typedef_names;
-	    fresh->param_template_param_spelled_directly =
-		func->param_template_param_spelled_directly;
-	    fresh->no_instrument_function = func->no_instrument_function;
-	    fresh->weak_binding = func->weak_binding;
-	    fresh->noinline = func->noinline;
-	    fresh->explicit_alignment = func->explicit_alignment;
-	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
-	    fresh->is_deleted = func->is_deleted;
-	    fresh->noexcept_spec = func->noexcept_spec;
-	    fresh->implicit_dtor_noexcept = func->implicit_dtor_noexcept;
-	    fresh->noexcept_condition_tokens = func->noexcept_condition_tokens;
-	    fresh->noexcept_parameters = func->noexcept_parameters;
-	    fresh->noexcept_owner = func->noexcept_owner;
-	    fresh->pure_virtual = func->pure_virtual;
-	    fresh->vague_linkage = func->vague_linkage;
-	    fresh->internal_linkage = func->internal_linkage;
-	    // The refresh changes the RETURN type only; the declaration's
-	    // linkage, body status and captured parameter spellings carry over
-	    // (an extern "C" prototype refreshed by its definition stays a
-	    // C-linkage function, as in g++; its symbol needs the spellings
-	    // captured with the parameters it keeps).
-	    fresh->declaration_only = func->declaration_only;
-	    fresh->c_linkage = func->c_linkage;
-	    fresh->param_cpp_spellings = func->param_cpp_spellings;
-	    // ...and the declaration's symbol identity (see the refresh above).
-	    fresh->local_emit_name = func->local_emit_name; // allowed-exception: field copy (refresh), not symbol build
-	    fresh->emit_symbol = func->emit_symbol;
-	    fresh->method_display_name = func->method_display_name;
-	    fresh->is_const_method = func->is_const_method;
-	    fresh->is_volatile_method = func->is_volatile_method;
-	    fresh->is_member_template = func->is_member_template;
+	    // The refresh changes the RETURN type only: the declaration's
+	    // parameters, linkage (an extern "C" prototype refreshed by its
+	    // definition stays a C-linkage function, as in g++), body status and
+	    // symbol identity carry over.
+	    FuncDef *fresh = clone_funcdef_with_return(func,
+		returnDecl(dd, return_ref, return_rvalue_ref));
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	}

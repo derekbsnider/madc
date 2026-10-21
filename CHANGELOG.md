@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### One FuncDef rebuild serves every return-type change
+
+- `FuncDef::returns` is a reference, so a return-type change rebuilds the FuncDef. parseFunction's two refreshes (an unprototyped C declaration met by its definition, and a definition that changes its declaration's return type) now call `clone_funcdef_with_return`, the one rebuild, in place of two hand-written field-copy lists.
+- The lists had drifted. Both refreshes dropped `no_strict_aliasing`; the return-type refresh also dropped default arguments, `const_params`, `namespace_name` and the capture fields; the clone dropped `c_linkage` and `declared_unprototyped`. The rebuilt FuncDef now carries each of them.
+- `scripts/check-one-funcdef-clone.sh` (in `make -C src gates`) fails on a run of 8 or more member-wise FuncDef field copies outside `clone_funcdef_with_return`.
+
+Consolidated: funcdef_rebuild_field_copies — gate scripts/check-one-funcdef-clone.sh
+
 ### `__attribute__((no_instrument_function))` is read in every attribute position
 
 - `no_instrument_function` is recorded wherever it appears in a function's declaration: among the leading declaration specifiers, after another specifier, or after a prior declarator. Before, only an attribute group after the declarator was read, so a function marked in the leading position was instrumented under `-finstrument-functions`.
