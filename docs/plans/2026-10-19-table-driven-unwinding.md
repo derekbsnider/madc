@@ -399,6 +399,23 @@ saved and restored with the rest of the exception state at task switches.
        down a page at a time). Without the probes a native Windows process
        faulted on its first store into a larger area (wine commits the stack
        up front): `tests/teststackprobe`.
+     - Codes + JIT registration (2026-10-21). `target_win64_unwind_info`
+       (mir-gen-x86_64.c) writes UNWIND_INFO from the CFI rules in code order
+       (`gen_cfi_order_rules`, shared with the DWARF encoder): an SP rule whose
+       mark also saves a register at the new SP is its PUSH_NONVOL, any other
+       SP rule an ALLOC, the FP rule SET_FPREG, every other save a SAVE_NONVOL
+       / SAVE_XMM128 above the establisher frame. A code's offset is one byte,
+       so the frame probe became one fixed-size loop (`PROBE_CODE`, ~35 bytes,
+       ___chkstk_ms's walk) in place of a load per page: the longest prologue
+       (home area, push, probe, sub, lea, 17 saves) stays near 210 bytes. The
+       JIT asks for the code's address first (`_MIR_get_new_code_addr`), places
+       the UNWIND_INFO after the code at the next 4-byte boundary and registers
+       one RUNTIME_FUNCTION per function with `RtlAddFunctionTable` (base = the
+       code's address), as libgcc gets one `__register_frame` per function on
+       Linux. Gate: `tests/testunwind_frameshapes` (every frame shape: SP, FP
+       with xmm saves, varargs, a page-sized fixed frame from SP and from FP)
+       and `tests/testunwind_backtrace`, JIT on genuine Windows and wine; their
+       native-artifact passes wait for the PE/COFF slice.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,
    consumers converted, runtime cleanup stack deleted, REPL boundary.
    `tests/testthrow_through_frame` (11 cases, g++/clang oracle) is the gate,
