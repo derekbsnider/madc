@@ -10130,8 +10130,8 @@ int MIR_gen_cfi_cie (MIR_cfi_cie_t *cie) {
 
 /* Where generated functions' unwind records go: the host unwinder's
    registry when the target is the host (Windows describes frames with its
-   own tables), and the object an AOT capture builds when its container
-   carries them (ELF and Mach-O; PE when its writer does). */
+   own tables: gen_win64_publish), and the object an AOT capture builds --
+   .eh_frame in ELF and Mach-O, .xdata/.pdata in PE (gen_win64_capture). */
 #if defined(TARGET_CFI_CIE_INSNS) && !MIR_CROSS_P && !MIR_TARGET_WINDOWS_P
 #define GEN_CFI_REGISTER_P 1
 #else
@@ -10491,6 +10491,41 @@ static void gen_cfi_deregister_all (gen_ctx_t gen_ctx) {
 }
 #endif
 
+#if defined(TARGET_WIN64_UNWIND_P) && MIR_TARGET_WINDOWS_P
+#define GEN_WIN64_OBJECT_P 1
+#else
+#define GEN_WIN64_OBJECT_P 0
+#endif
+
+#if GEN_WIN64_OBJECT_P
+/* Windows: the object's records of a generated function, its code at .text +
+   TEXT_OFF -- its UNWIND_INFO (target_win64_unwind_info) in .xdata and its
+   RUNTIME_FUNCTION {begin, end, unwind info} in .pdata, three RVA32 fields
+   against the .text and .xdata section symbols (gcc's .pdata: ADDR32NB).  A
+   function with no frame to describe gets neither, as in the JIT: the
+   unwinder's leaf rule is its description. */
+static void gen_win64_capture (gen_ctx_t gen_ctx, size_t text_off, size_t code_len) {
+  VARR (uint8_t) *b = gen_ctx->cfi_insns;
+  static const uint8_t entry[12] = {0}; /* the relocations fill all three fields */
+  size_t info_off, entry_off;
+  int text_sym, xdata_sym;
+
+  VARR_TRUNC (uint8_t, b, 0);
+  if (code_len == 0 || !target_win64_unwind_info (gen_ctx, b)) return;
+  info_off = MIR_object_section_append (gen_object, MIR_OBJ_SEC_XDATA, VARR_ADDR (uint8_t, b),
+                                        VARR_LENGTH (uint8_t, b), 4);
+  entry_off = MIR_object_section_append (gen_object, MIR_OBJ_SEC_PDATA, entry, sizeof (entry), 4);
+  text_sym = MIR_object_section_symbol (gen_object, MIR_OBJ_SEC_TEXT);
+  xdata_sym = MIR_object_section_symbol (gen_object, MIR_OBJ_SEC_XDATA);
+  MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_PDATA, entry_off, text_sym, (int64_t) text_off,
+                        MIR_OBJ_RELOC_RVA32);
+  MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_PDATA, entry_off + 4, text_sym,
+                        (int64_t) (text_off + code_len), MIR_OBJ_RELOC_RVA32);
+  MIR_object_add_reloc (gen_object, MIR_OBJ_SEC_PDATA, entry_off + 8, xdata_sym,
+                        (int64_t) info_off, MIR_OBJ_RELOC_RVA32);
+}
+#endif
+
 static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int machine_code_p) {
   gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
   uint8_t *code;
@@ -10738,6 +10773,8 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
       size_t text_off = target_object_capture (gen_ctx, code, code_len);
 #if GEN_EH_OBJECT_P
       gen_eh_capture (gen_ctx, func_item->u.func, text_off, code_len);
+#elif GEN_WIN64_OBJECT_P
+      gen_win64_capture (gen_ctx, text_off, code_len);
 #else
       (void) text_off;
 #endif

@@ -1084,6 +1084,8 @@ struct MIR_object {
                                initializer, each covered by an ABS64 reloc */
   dwbuf_t ehframe, except;  /* .eh_frame and .gcc_except_table: the unwind
                                records, every pointer a PC32 field */
+  dwbuf_t xdata, pdata;     /* .xdata and .pdata: PE/COFF's unwind records,
+                               every pointer an RVA32 field */
   uint64_t bss_size;
   size_t data_align, bss_align, pool_align;
   objsym_t *syms;
@@ -1193,6 +1195,8 @@ static dwbuf_t *obj_sec_body (MIR_object_t obj, int k) {
   case MIR_OBJ_SEC_INITARR: return &obj->initarr;
   case MIR_OBJ_SEC_EHFRAME: return &obj->ehframe;
   case MIR_OBJ_SEC_EXCEPT: return &obj->except;
+  case MIR_OBJ_SEC_XDATA: return &obj->xdata;
+  case MIR_OBJ_SEC_PDATA: return &obj->pdata;
   default: return NULL;
   }
 }
@@ -1345,13 +1349,16 @@ int MIR_object_find_symbol (MIR_object_t obj, const char *name, int *sec, uint64
   return 0;
 }
 
-/* Each kind's ELF section name, and its relocation section's. */
+/* Each kind's ELF section name, and its relocation section's.  The PE-only
+   kinds (.xdata, .pdata) never occur in an ELF image; their names keep the
+   tables total over the kinds. */
 static const char *const obj_elf_sec_name[MIR_OBJ_SEC_NUM]
-  = {".text", ".data", ".bss", ".mir.addrpool", ".init_array", ".eh_frame", ".gcc_except_table"};
+  = {".text",       ".data",     ".bss",      ".mir.addrpool", ".init_array",
+     ".eh_frame",   ".gcc_except_table", ".xdata", ".pdata"};
 static const char *const obj_elf_rela_name[MIR_OBJ_SEC_NUM]
   = {".rela.text",       ".rela.data",     ".rela.bss",
      ".rela.mir.addrpool", ".rela.init_array", ".rela.eh_frame",
-     ".rela.gcc_except_table"};
+     ".rela.gcc_except_table", ".rela.xdata", ".rela.pdata"};
 
 /* Kind K's section in a relocatable object. */
 static dwsec_t obj_elf_alloc_sec (MIR_object_t obj, int k) {
@@ -1375,6 +1382,11 @@ static dwsec_t obj_elf_alloc_sec (MIR_object_t obj, int k) {
   case MIR_OBJ_SEC_EHFRAME: s.flags = SHF_ALLOC; break; /* read-only, 8-aligned records */
   case MIR_OBJ_SEC_EXCEPT:
     s.align = 1;
+    s.flags = SHF_ALLOC;
+    break;
+  case MIR_OBJ_SEC_XDATA:
+  case MIR_OBJ_SEC_PDATA:
+    s.align = 4;
     s.flags = SHF_ALLOC;
     break;
   }
@@ -2263,6 +2275,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   sec_file[MIR_OBJ_SEC_INITARR] = initarr_off;
   sec_file[MIR_OBJ_SEC_EHFRAME] = ehframe_off;
   sec_file[MIR_OBJ_SEC_EXCEPT] = except_off;
+  sec_file[MIR_OBJ_SEC_XDATA] = sec_file[MIR_OBJ_SEC_PDATA] = 0; /* PE-only: never present */
   for (int k = 0; k < MIR_OBJ_SEC_NUM; k++) sec_vaddr[k] = base + sec_file[k];
   sec_vaddr[MIR_OBJ_SEC_BSS] = bss_vaddr;
 
@@ -2707,6 +2720,8 @@ struct MIR_object_loaded {
   size_t n_init;
   void *eh_frame; /* the image's .eh_frame (+ terminator) the host unwinder
                      holds, or NULL */
+  void *pdata;    /* the image's .pdata the system unwinder holds
+                     (RtlAddFunctionTable), or NULL */
 };
 
 /* A loaded image's frames join the host unwinder's registry, as the JIT's do
@@ -2718,6 +2733,14 @@ extern void __register_frame (void *);
 extern void __deregister_frame (void *);
 #else
 #define OBJLOAD_EH_REGISTER_P 0
+#endif
+/* Windows: a PE image's frames join the system unwinder's dynamic function
+   tables, as the JIT's do (mir-gen.c's gen_win64_publish): its .pdata, every
+   RVA relative to the mapping -- the image's base. */
+#if !MIR_CROSS_P && MIR_TARGET_WINDOWS_P && defined(_WIN32)
+#define OBJLOAD_PDATA_REGISTER_P 1
+#else
+#define OBJLOAD_PDATA_REGISTER_P 0
 #endif
 
 #if (defined(__ELF__) || defined(_WIN32)) && defined(__GNUC__) && defined(__x86_64__)
@@ -3194,6 +3217,9 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
 #define OBJLOAD_PGALIGN(x) (((x) + pg - 1) & ~(pg - 1))
   uint8_t *map = NULL;
   MIR_object_loaded_t lo = NULL;
+#if OBJLOAD_PDATA_REGISTER_P
+  RUNTIME_FUNCTION *pdata_reg = NULL; /* registered: deleted again on failure */
+#endif
   size_t reg_off[MIR_OBJ_SEC_NUM], map_size = 0;
   for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) {
     if (v.sec[s].align > pg) {
@@ -3263,7 +3289,15 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
       OBJLOAD_ERR ("relocation %zu against an unplaceable symbol", k);
       goto fail;
     }
-    if (r->kind != MIR_OBJ_RELOC_ABS64) {
+    if (r->kind == MIR_OBJ_RELOC_RVA32) { /* the mapping is the image: its start the base */
+      uint64_t rva = sval + (uint64_t) r->addend - (uint64_t) (uintptr_t) map;
+      if (s->undef_p || rva > UINT32_MAX) {
+        OBJLOAD_ERR ("relocation %zu out of range", k);
+        goto fail;
+      }
+      uint32_t rva32 = (uint32_t) rva;
+      memcpy (slot, &rva32, 4);
+    } else if (r->kind != MIR_OBJ_RELOC_ABS64) {
       if (obj_apply_field_reloc (r->kind, slot, sval + (uint64_t) r->addend,
                                  (uint64_t) (uintptr_t) slot)
           != 0) {
@@ -3285,6 +3319,18 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
     OBJLOAD_ERR ("protecting the text region read+execute failed");
     goto fail;
   }
+#if OBJLOAD_PDATA_REGISTER_P
+  if (v.sec[MIR_OBJ_SEC_PDATA].size != 0) { /* relocated in place above */
+    size_t n_rf = (size_t) v.sec[MIR_OBJ_SEC_PDATA].size / sizeof (RUNTIME_FUNCTION);
+    RUNTIME_FUNCTION *rf = (RUNTIME_FUNCTION *) (map + reg_off[MIR_OBJ_SEC_PDATA]);
+    if (v.sec[MIR_OBJ_SEC_PDATA].size % sizeof (RUNTIME_FUNCTION) != 0
+        || !RtlAddFunctionTable (rf, (DWORD) n_rf, (DWORD64) (uintptr_t) map)) {
+      OBJLOAD_ERR ("registering the image's .pdata with the system unwinder failed");
+      goto fail;
+    }
+    pdata_reg = rf;
+  }
+#endif
 
   /* Export table: defined global/weak named symbols, sorted for bsearch. */
   lo = calloc (1, sizeof (struct MIR_object_loaded));
@@ -3322,11 +3368,17 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
     __register_frame (lo->eh_frame);
   }
 #endif
+#if OBJLOAD_PDATA_REGISTER_P
+  lo->pdata = pdata_reg;
+#endif
   objin_free (&v);
   return lo;
 
 fail:
   free (lo);
+#if OBJLOAD_PDATA_REGISTER_P
+  if (pdata_reg != NULL) RtlDeleteFunctionTable (pdata_reg);
+#endif
   if (map != NULL) objload_unmap (map, map_size);
   objin_free (&v);
   return NULL;
@@ -3352,8 +3404,11 @@ void MIR_object_loaded_unload (MIR_object_loaded_t lo) {
 #if OBJLOAD_EH_REGISTER_P
   if (lo->eh_frame != NULL) __deregister_frame (lo->eh_frame);
 #endif
-#if defined(MIR_DEBUG_HAVE_MMAP)
-  if (lo->map != NULL) munmap (lo->map, lo->map_size);
+#if OBJLOAD_PDATA_REGISTER_P
+  if (lo->pdata != NULL) RtlDeleteFunctionTable ((RUNTIME_FUNCTION *) lo->pdata);
+#endif
+#if defined(MIR_DEBUG_HAVE_MMAP) || defined(_WIN32)
+  if (lo->map != NULL) objload_unmap (lo->map, lo->map_size);
 #endif
   for (size_t i = 0; i < lo->n_syms; i++) free (lo->syms[i].name);
   free (lo->syms);

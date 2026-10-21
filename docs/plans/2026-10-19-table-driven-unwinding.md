@@ -416,6 +416,26 @@ saved and restored with the rest of the exception state at task switches.
        with xmm saves, varargs, a page-sized fixed frame from SP and from FP)
        and `tests/testunwind_backtrace`, JIT on genuine Windows and wine; their
        native-artifact passes wait for the PE/COFF slice.
+     - PE/COFF sections, split in two (ruling 2026-10-21). 4a: the codes in
+       every object and image. Two section kinds, `MIR_OBJ_SEC_XDATA` and
+       `MIR_OBJ_SEC_PDATA`, and a relocation kind, `MIR_OBJ_RELOC_RVA32`
+       (ADDR32NB) -- not `.eh_frame`'s kind, whose contract is "every pointer
+       PC32". `gen_win64_capture` (mir-gen.c) appends each function's
+       UNWIND_INFO to `.xdata` and a 12-byte RUNTIME_FUNCTION to `.pdata`, its
+       three fields RVA32 against the `.text` and `.xdata` section symbols (the
+       mingw-gcc 13 `.o`'s exact shape). The COFF writer and reader carry both
+       sections; the image writer places `.pdata` (data directory 3) and
+       `.xdata` after `.rdata`, resolves the RVAs at emit, writes the entry
+       region's own entries first (an executable's: one function, the stub's
+       `sub $0x28` at offset 52; a DLL's: DllMain's attach and detach paths)
+       and sorts `.pdata` by begin address. The in-process loader applies
+       RVA32 against its mapping and registers `.pdata` with
+       `RtlAddFunctionTable` (deleted at unload, which now also unmaps on
+       Windows). Gate: `testunwind_backtrace`, `testunwind_frameshapes` and
+       `testbuiltin_frame_return_address` lose their win64 exe skips (exe and
+       obj green on wine; the pre-change PE walks no generated frame). 4b, with
+       step 5: the language-specific handler, its LSDA and the in-image stub
+       for an imported handler -- testable only once the handler exists.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,
    consumers converted, runtime cleanup stack deleted, REPL boundary.
    `tests/testthrow_through_frame` (11 cases, g++/clang oracle) is the gate,

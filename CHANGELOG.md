@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### PE/COFF objects and images carry unwind tables for generated functions
+
+- On Windows targets, each generated function's unwind info is written to `.xdata` and a 12-byte RUNTIME_FUNCTION to `.pdata`, with image-relative (ADDR32NB) fields. A function with no frame to describe gets neither entry.
+- The COFF `.o` writer and reader carry `.xdata` and `.pdata`. The PE image writer places `.pdata` (data directory 3) and `.xdata` after `.rdata`, resolves the RVAs at emit, and sorts `.pdata` by begin address. An executable's entry stub and a DLL's DllMain paths get their own entries.
+- The in-process loader registers `.pdata` with `RtlAddFunctionTable` and removes it at unload. Unloading a module now also unmaps its image on Windows.
+- Before, a generated `.exe` built on win64 carried no unwind data, so `testunwind_backtrace` and `testunwind_frameshapes` reported zero frames and exited 0. `testunwind_backtrace`, `testunwind_frameshapes` and `testbuiltin_frame_return_address` no longer carry their win64 `.exe` skips; their exe and obj passes are green under wine.
+- The language-specific handler, its LSDA and an imported handler's stub are not part of this change.
+
 ### A forest bind checks a masked arm's differing macro where frozen content expands it
 
 - A forest root whose taken guard arm is skipped as masked no longer declines when another macro the arm writes differs from the consumer's state. The name joins the walk's differs-set and is checked at each frozen expansion point it reaches (the K2c check), so the root declines only where frozen content expands it to a different state. A spelled name that differs still declines.

@@ -1,1 +1,0 @@
-PE images and COFF objects carry no .pdata/.xdata until B205 step 6.3's PE/COFF slice; the JIT registers its unwind data (RtlAddFunctionTable) and runs this test.

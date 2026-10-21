@@ -165,7 +165,11 @@ typedef struct MIR_object *MIR_object_t;
    pointer in them is pc-relative (PC32), so neither ever needs a dynamic
    relocation; the CIE's personality and each table's cleanups go through
    .mir.addrpool slots (gcc's DW.ref word).  Present only when non-empty;
-   ELF images only for now. */
+   ELF and Mach-O images.
+   XDATA (".xdata") and PDATA (".pdata") are the PE/COFF counterparts: each
+   generated function's UNWIND_INFO, and its RUNTIME_FUNCTION {begin, end,
+   unwind info} -- three image-relative RVA32 fields.  Read-only, 4-byte
+   aligned, present only when non-empty; PE/COFF images only. */
 enum {
   MIR_OBJ_SEC_UNDEF = -1,
   MIR_OBJ_SEC_TEXT = 0,
@@ -175,6 +179,8 @@ enum {
   MIR_OBJ_SEC_INITARR = 4,
   MIR_OBJ_SEC_EHFRAME = 5,
   MIR_OBJ_SEC_EXCEPT = 6,
+  MIR_OBJ_SEC_XDATA = 7,
+  MIR_OBJ_SEC_PDATA = 8,
   MIR_OBJ_SEC_NUM /* the count of kinds: every per-kind table is sized by it */
 };
 
@@ -199,6 +205,11 @@ enum {
   MIR_OBJ_RELOC_AARCH64_ADD_LO12 = 4,    /* add Xd,Xn,#lo12:
                                             R_AARCH64_ADD_ABS_LO12_NC,
                                             (S+A)[11:0] into imm12 */
+  MIR_OBJ_RELOC_RVA32 = 5, /* image-relative 32-bit: IMAGE_REL_AMD64_ADDR32NB
+                              (S+A-ImageBase), the unwind tables' RVAs.
+                              PE/COFF only.  Never dynamic: an image rebases
+                              as a whole (the in-process loader's base is its
+                              mapping). */
 };
 
 /* Create a builder, or NULL if the build's target is not a supported ELF

@@ -24,6 +24,8 @@
                        agree)
      .data          -> .data          (DATA, R+W)
      .bss           -> .bss           (UNINITIALIZED, R+W, no file bytes)
+     .xdata         -> .xdata         (DATA, R, align 4: UNWIND_INFO records)
+     .pdata         -> .pdata         (DATA, R, align 4: RUNTIME_FUNCTIONs)
 
    Relocation model (every choice validated against a mingw-gcc 13 .o --
    the W3.0 oracle, container tmp/win/w3/oracle.o):
@@ -38,6 +40,8 @@
               the ELF addend already folded in.  (A trailing imm32's
               extra -4 is already inside the ELF addend, so the one +4
               rule covers every field position.)
+     RVA32 -> IMAGE_REL_AMD64_ADDR32NB with the addend as the 4-byte field
+              (S + A - ImageBase: the field adds as it stands).
      The aarch64 kinds cannot occur: MIR_TARGET_WINDOWS validates as
      x86-64 only (mir-target.h).
 
@@ -54,10 +58,11 @@
    WEAK_EXTERNAL entry, preserving the ELF semantics (the linker's
    winning definition is the target).
 
-   No .pdata/.xdata (SEH RUNTIME_FUNCTION unwind info) is emitted: this
-   matches the JIT posture -- JIT frames carry no RUNTIME_FUNCTION
-   entries either, and NON_SEH setjmp is the lane law precisely because
-   nothing unwinds through MIR frames (W2.1).
+   .pdata/.xdata are the generated functions' unwind tables, exactly as
+   the JIT registers them (RtlAddFunctionTable): one RUNTIME_FUNCTION per
+   function with a frame, three ADDR32NB fields against the .text and
+   .xdata section symbols (the mingw-gcc 13 .o's shape), its UNWIND_INFO
+   carrying no handler yet (B205 6.3 step 4a).
 
    A debug builder is refused rather than dropped, exactly as the
    Mach-O .o writer refuses: silently discarding debug info the caller
@@ -93,6 +98,7 @@ static uint32_t pe_align_flag (uint64_t align) {
 /* relocation types */
 #define PE_REL_AMD64_ABSOLUTE 0x0000u
 #define PE_REL_AMD64_ADDR64 0x0001u
+#define PE_REL_AMD64_ADDR32NB 0x0003u
 #define PE_REL_AMD64_REL32 0x0004u
 
 /* symbol storage classes / type */
@@ -105,14 +111,16 @@ static uint32_t pe_align_flag (uint64_t align) {
 /* ===== the .o writer (COFF object) ====================================== */
 
 /* The .o's sections in emission order (stable ordinals, the Mach-O .o
-   writer's rule): .text / .mir.addrpool / .data always present, .CRT$XCU
-   and .bss only when non-empty. */
+   writer's rule): .text / .mir.addrpool / .data always present, .CRT$XCU,
+   .bss, .xdata and .pdata only when non-empty. */
 enum {
   PE_OSEC_TEXT = 0,
   PE_OSEC_POOL,
   PE_OSEC_INIT,
   PE_OSEC_DATA,
   PE_OSEC_BSS,
+  PE_OSEC_XDATA,
+  PE_OSEC_PDATA,
   PE_OSEC_N
 };
 
@@ -122,15 +130,30 @@ static int pe_osec_of (int sec) {
          : sec == MIR_OBJ_SEC_INITARR  ? PE_OSEC_INIT
          : sec == MIR_OBJ_SEC_DATA     ? PE_OSEC_DATA
          : sec == MIR_OBJ_SEC_BSS      ? PE_OSEC_BSS
+         : sec == MIR_OBJ_SEC_XDATA    ? PE_OSEC_XDATA
+         : sec == MIR_OBJ_SEC_PDATA    ? PE_OSEC_PDATA
                                        : -1;
 }
 
+/* the inverse: a .o section's MIR_OBJ_SEC_* */
+static int pe_osec_sec (int osec) {
+  return osec == PE_OSEC_TEXT    ? MIR_OBJ_SEC_TEXT
+         : osec == PE_OSEC_POOL  ? MIR_OBJ_SEC_ADDRPOOL
+         : osec == PE_OSEC_INIT  ? MIR_OBJ_SEC_INITARR
+         : osec == PE_OSEC_DATA  ? MIR_OBJ_SEC_DATA
+         : osec == PE_OSEC_BSS   ? MIR_OBJ_SEC_BSS
+         : osec == PE_OSEC_XDATA ? MIR_OBJ_SEC_XDATA
+                                 : MIR_OBJ_SEC_PDATA;
+}
+
 static const char *pe_osec_name (int osec) {
-  return osec == PE_OSEC_TEXT   ? ".text"
-         : osec == PE_OSEC_POOL ? ".mir.addrpool"
-         : osec == PE_OSEC_INIT ? ".CRT$XCU"
-         : osec == PE_OSEC_DATA ? ".data"
-                                : ".bss";
+  return osec == PE_OSEC_TEXT    ? ".text"
+         : osec == PE_OSEC_POOL  ? ".mir.addrpool"
+         : osec == PE_OSEC_INIT  ? ".CRT$XCU"
+         : osec == PE_OSEC_DATA  ? ".data"
+         : osec == PE_OSEC_BSS   ? ".bss"
+         : osec == PE_OSEC_XDATA ? ".xdata"
+                                 : ".pdata";
 }
 
 typedef struct {
@@ -208,6 +231,12 @@ static int pe_emit_object (MIR_object_t obj, void **buf, size_t *size) {
     = (pe_osec_t) {NULL, obj->bss_size, obj->bss_align > 1 ? obj->bss_align : 1,
                    PE_SCN_CNT_UNINIT_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE,
                    0, 0, 0, 0, obj->bss_size != 0, 1};
+  S[PE_OSEC_XDATA] = (pe_osec_t) {obj->xdata.p, obj->xdata.len, 4,
+                                  PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ,
+                                  0, 0, 0, 0, obj->xdata.len != 0, 0};
+  S[PE_OSEC_PDATA] = (pe_osec_t) {obj->pdata.p, obj->pdata.len, 4,
+                                  PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ,
+                                  0, 0, 0, 0, obj->pdata.len != 0, 0};
 
   int nsects = 0;
   for (int s = 0; s < PE_OSEC_N; s++) {
@@ -292,6 +321,8 @@ static int pe_emit_object (MIR_object_t obj, void **buf, size_t *size) {
       pe_reloc (&rel[osec], (uint32_t) r->offset, final_idx[r->sym], PE_REL_AMD64_ADDR64);
     else if (r->kind == MIR_OBJ_RELOC_PC32)
       pe_reloc (&rel[osec], (uint32_t) r->offset, final_idx[r->sym], PE_REL_AMD64_REL32);
+    else if (r->kind == MIR_OBJ_RELOC_RVA32)
+      pe_reloc (&rel[osec], (uint32_t) r->offset, final_idx[r->sym], PE_REL_AMD64_ADDR32NB);
     else
       goto done; /* aarch64 kinds cannot reach a WINDOWS (x86-64-only) build */
     S[osec].nreloc++;
@@ -396,6 +427,10 @@ static int pe_emit_object (MIR_object_t obj, void **buf, size_t *size) {
     if (r->kind == MIR_OBJ_RELOC_ABS64) {
       uint64_t a = (uint64_t) r->addend;
       memcpy (slot, &a, 8);
+    } else if (r->kind == MIR_OBJ_RELOC_RVA32) { /* ADDR32NB: S + A' - ImageBase */
+      if (r->addend < 0 || r->addend > UINT32_MAX) goto done;
+      uint32_t a32 = (uint32_t) r->addend;
+      memcpy (slot, &a32, 4);
     } else { /* PC32, the only other kind that survived the pass above */
       int64_t a = r->addend + 4;
       if (a < INT32_MIN || a > INT32_MAX) goto done;
@@ -452,12 +487,7 @@ static uint16_t pe_rd16 (const uint8_t *p) {
 /* section-header name -> MIR_OBJ_SEC_*, or -1 when it is not one of ours */
 static int pe_sec_of_name (const char *nm) {
   for (int s = 0; s < PE_OSEC_N; s++)
-    if (strcmp (nm, pe_osec_name (s)) == 0)
-      return s == PE_OSEC_TEXT   ? MIR_OBJ_SEC_TEXT
-             : s == PE_OSEC_POOL ? MIR_OBJ_SEC_ADDRPOOL
-             : s == PE_OSEC_INIT ? MIR_OBJ_SEC_INITARR
-             : s == PE_OSEC_DATA ? MIR_OBJ_SEC_DATA
-                                 : MIR_OBJ_SEC_BSS;
+    if (strcmp (nm, pe_osec_name (s)) == 0) return pe_osec_sec (s);
   return -1;
 }
 
@@ -557,6 +587,10 @@ static int objin_from_pe (objin_t *v, const void *vbuf, size_t size, char *err_m
   }
   if (v->sec[MIR_OBJ_SEC_INITARR].size % 8 != 0) {
     OBJLOAD_ERR (".CRT$XCU is not 8-byte slots");
+    return -1;
+  }
+  if (v->sec[MIR_OBJ_SEC_PDATA].size % 12 != 0) {
+    OBJLOAD_ERR (".pdata is not 12-byte RUNTIME_FUNCTION entries");
     return -1;
   }
 
@@ -698,9 +732,10 @@ static int objin_from_pe (objin_t *v, const void *vbuf, size_t size, char *err_m
                      (unsigned long long) k, sec);
         goto fail;
       }
-      int kind = rtype == PE_REL_AMD64_ADDR64  ? MIR_OBJ_RELOC_ABS64
-                 : rtype == PE_REL_AMD64_REL32 ? MIR_OBJ_RELOC_PC32
-                                               : -1;
+      int kind = rtype == PE_REL_AMD64_ADDR64     ? MIR_OBJ_RELOC_ABS64
+                 : rtype == PE_REL_AMD64_REL32    ? MIR_OBJ_RELOC_PC32
+                 : rtype == PE_REL_AMD64_ADDR32NB ? MIR_OBJ_RELOC_RVA32
+                                                  : -1;
       if (kind < 0) {
         OBJLOAD_ERR ("unsupported relocation type %u in section %d", (unsigned) rtype, sec);
         goto fail;
@@ -720,6 +755,10 @@ static int objin_from_pe (objin_t *v, const void *vbuf, size_t size, char *err_m
         uint64_t a;
         memcpy (&a, v->sec[sec].body + r_addr, 8);
         d->addend = (int64_t) a;
+      } else if (kind == MIR_OBJ_RELOC_RVA32) { /* ADDR32NB's addend is the field */
+        uint32_t a32;
+        memcpy (&a32, v->sec[sec].body + r_addr, 4);
+        d->addend = (int64_t) a32;
       } else {
         int32_t a32;
         memcpy (&a32, v->sec[sec].body + r_addr, 4);
@@ -813,12 +852,19 @@ fail:
                           turns an .ico into RT_ICON + RT_GROUP_ICON
                           entries, as windres does for link.
 
-   No code signature, no checksum (unsigned images verify neither), no
-   .pdata/.xdata (the W3.1 posture note); subsystem CONSOLE, or WINDOWS_GUI
-   when params->gui_subsystem_p (gcc's -mwindows).
+   unwind tables:       .pdata (the exception directory) and .xdata, ld's
+                          sections: the entry region's own RUNTIME_FUNCTIONs
+                          and UNWIND_INFOs first (pex_entry_rf), then the
+                          object's, their ADDR32NB fields resolved at emit
+                          (RVAs: bias-invariant, no base relocation).  The
+                          loader binary-searches the directory, so .pdata is
+                          sorted by begin address.
+   No code signature, no checksum (unsigned images verify neither);
+   subsystem CONSOLE, or WINDOWS_GUI when params->gui_subsystem_p (gcc's
+   -mwindows).
    Section order: .text / .mirpool (the address pool + the stub's six
    slots) / .mirinit / .data (+ .bss as the virtual tail) / .rdata (import
-   metadata) / .rsrc (only with resources) / .reloc. */
+   metadata) / .pdata / .xdata / .rsrc (only with resources) / .reloc. */
 
 #define PEX_IMAGE_BASE 0x140000000ull
 #define PEX_DLL_IMAGE_BASE 0x180000000ull
@@ -838,6 +884,7 @@ fail:
 #define PEX_DIR_EXPORT 0
 #define PEX_DIR_IMPORT 1
 #define PEX_DIR_RESOURCE 2
+#define PEX_DIR_EXCEPTION 3
 #define PEX_DIR_BASERELOC 5
 #define PEX_N_DIRS 16
 /* a resource's bytes start 8-aligned within .rsrc */
@@ -996,6 +1043,39 @@ static const struct {
 } pex_dll_stub_slots[3] = {{0x35, 0}, {0x3d, 1}, {0x46, 2}};
 static const char *const pex_dll_stub_import[3]
   = {"__p___argc", "__p___argv", "_get_initial_narrow_environment"};
+
+/* The entry region's unwind data: {begin, end} offsets into the entry region
+   and the offset of its UNWIND_INFO in the table beside it.  An executable's
+   region is ONE function: the fixup loop runs at the caller's SP -- no code
+   applies before offset 52 -- then the stub's sub $0x28 (UWOP_ALLOC_SMALL,
+   0x28 / 8 - 1).  A DLL's is two: DllMain's attach path (five pushes, then
+   sub $0x20; the cmp/jne ahead of them applies no code) and its detach path
+   (sub $0x28 at its offset 8).  UNWIND_INFO version 1, no handler; the codes
+   in reverse prologue order, an even count of slots. */
+typedef struct {
+  uint32_t begin, end, info;
+} pex_entry_rf_t;
+static const pex_entry_rf_t pex_entry_rf[1] = {{0, PEX_ENTRY_SIZE, 0}};
+static const uint8_t pex_entry_xdata[8]
+  = {0x01, 52, 1, 0, /* version 1, prolog 52 bytes, 1 slot, no frame register */
+     52,   0x42, 0, 0 /* @52 ALLOC_SMALL 0x28; pad slot */};
+static const pex_entry_rf_t pex_dll_entry_rf[2] = {{0, 0x83, 0}, {0x83, 0x96, 16}};
+static const uint8_t pex_dll_entry_xdata[24]
+  = {0x01, 0x10, 6, 0, /* attach: prolog 0x10 bytes, 6 slots */
+     0x10, 0x32,       /* @0x10 ALLOC_SMALL 0x20 */
+     0x0c, 0xd0,       /* @0x0c PUSH_NONVOL r13 */
+     0x0a, 0xc0,       /* @0x0a PUSH_NONVOL r12 */
+     0x08, 0x70,       /* @0x08 PUSH_NONVOL rdi */
+     0x07, 0x60,       /* @0x07 PUSH_NONVOL rsi */
+     0x06, 0x30,       /* @0x06 PUSH_NONVOL rbx */
+     0x01, 0x08, 1, 0, /* detach: prolog 8 bytes, 1 slot */
+     0x08, 0x42, 0, 0 /* @8 ALLOC_SMALL 0x28; pad slot */};
+
+/* .pdata order: ascending begin RVA (the loader binary-searches it) */
+static int pex_rf_cmp (const void *a, const void *b) {
+  uint32_t x = pe_rd32 (a), y = pe_rd32 (b);
+  return x < y ? -1 : x > y;
+}
 
 /* one import-slot record: the address slot the loader must fill */
 typedef struct {
@@ -1200,6 +1280,15 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   uint64_t entry_size = dll_p ? PEX_DLL_STUB_SIZE : PEX_ENTRY_SIZE;
   int n_stub = dll_p ? 3 : 6;
   const char *const *stub_import = dll_p ? pex_dll_stub_import : pex_stub_import;
+  /* the entry region's unwind data, ahead of the object's in .pdata/.xdata */
+  const pex_entry_rf_t *entry_rf = dll_p ? pex_dll_entry_rf : pex_entry_rf;
+  size_t n_entry_rf = dll_p ? 2 : 1;
+  const uint8_t *entry_xd = dll_p ? pex_dll_entry_xdata : pex_entry_xdata;
+  uint64_t entry_xd_size = dll_p ? sizeof (pex_dll_entry_xdata) : sizeof (pex_entry_xdata);
+  uint64_t entry_pd_size = (uint64_t) n_entry_rf * 12;
+  if (obj->pdata.len % 12 != 0 || obj->xdata.len % 4 != 0) goto done;
+  uint64_t pdata_size = entry_pd_size + obj->pdata.len;
+  uint64_t xdata_size = entry_xd_size + obj->xdata.len;
 
   /* ---- RVA layout.  Region sizes are known up front except .rdata and
      .reloc, whose content depends on the import/fixup sets -- both are
@@ -1233,6 +1322,9 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   uint64_t init_rva = PEX_ALIGN (pool_rva + pool_size, PEX_SEC_ALIGN);
   uint64_t data_rva = PEX_ALIGN (init_rva + (init_size ? init_size : 1), PEX_SEC_ALIGN);
   uint64_t rdata_rva = PEX_ALIGN (data_rva + (data_span ? data_span : 1), PEX_SEC_ALIGN);
+  /* .pdata and .xdata follow .rdata, whose size settles below; only the
+     RVA32 pass reads their RVAs, after the layout is final */
+  uint64_t pdata_rva = 0, xdata_rva = 0;
 
   /* region base RVA for a defined symbol */
 #define PEX_SEC_RVA(sec) \
@@ -1240,22 +1332,25 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
    : (sec) == MIR_OBJ_SEC_ADDRPOOL ? pool_rva \
    : (sec) == MIR_OBJ_SEC_INITARR  ? init_rva \
    : (sec) == MIR_OBJ_SEC_DATA     ? data_rva \
+   : (sec) == MIR_OBJ_SEC_PDATA    ? pdata_rva + entry_pd_size \
+   : (sec) == MIR_OBJ_SEC_XDATA    ? xdata_rva + entry_xd_size \
                                    : data_rva + bss_base_off)
 
   /* ---- classify relocations: imports (undef ABS64 -> loader-filled
-     slots) vs internal fixups (defined ABS64 -> baked + DIR64) vs PC32
-     (internal, resolved at emit into the copied bodies later) */
+     slots) vs internal fixups (defined ABS64 -> baked + DIR64) vs PC32 and
+     RVA32 (internal, resolved at emit into the copied bodies later) */
   for (size_t i = 0; i < obj->n_rels; i++) {
     objreloc_t *r = &obj->rels[i];
     if (r->sym < 0 || (size_t) r->sym >= n) goto done;
     objsym_t *s = &obj->syms[r->sym];
-    if (r->kind == MIR_OBJ_RELOC_PC32) {
-      if (!s->defined_p) goto done; /* imports never take PC32 (slot model) */
+    if (r->kind == MIR_OBJ_RELOC_PC32 || r->kind == MIR_OBJ_RELOC_RVA32) {
+      if (!s->defined_p) goto done; /* imports never take PC32 or RVA32 (slot model) */
       continue;
     }
     if (r->kind != MIR_OBJ_RELOC_ABS64) goto done; /* x86-64-only builds */
     if (r->sec == MIR_OBJ_SEC_TEXT) goto done;     /* R6 PIC: text stays clean */
     if (r->sec == MIR_OBJ_SEC_BSS) goto done;      /* no file bytes to bake */
+    if (r->sec == MIR_OBJ_SEC_XDATA || r->sec == MIR_OBJ_SEC_PDATA) goto done; /* RVAs only */
     uint64_t slot_rva = PEX_SEC_RVA (r->sec) + r->offset;
     if (s->defined_p) {
       if (n_fixups == cap_fixups) {
@@ -1459,9 +1554,11 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     edir_size = (uint32_t) (rdata_rva + rdata.len) - edir_rva;
   }
   uint64_t rdata_size = rdata.len;
-  /* ---- .rsrc (params->resources), between .rdata and .reloc as ld and
+  pdata_rva = PEX_ALIGN (rdata_rva + (rdata_size ? rdata_size : 1), PEX_SEC_ALIGN);
+  xdata_rva = PEX_ALIGN (pdata_rva + pdata_size, PEX_SEC_ALIGN);
+  /* ---- .rsrc (params->resources), between .xdata and .reloc as ld and
      link.exe place it; absent when there are none */
-  uint64_t rsrc_rva = PEX_ALIGN (rdata_rva + (rdata_size ? rdata_size : 1), PEX_SEC_ALIGN);
+  uint64_t rsrc_rva = PEX_ALIGN (xdata_rva + xdata_size, PEX_SEC_ALIGN);
   if (params->n_resources != 0
       && pex_build_rsrc (params->resources, params->n_resources, (uint32_t) rsrc_rva, &rsrcsec)
            != 0)
@@ -1496,14 +1593,16 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   uint64_t image_end = PEX_ALIGN (reloc_rva + (reloc_size ? reloc_size : 1), PEX_SEC_ALIGN);
 
   /* ---- file layout */
-  int nsects = rsrc_size != 0 ? 7 : 6;
+  int nsects = rsrc_size != 0 ? 9 : 8;
   uint64_t hdr_size = PEX_ALIGN (64 + 4 + 20 + 240 + (uint64_t) nsects * 40, PEX_FILE_ALIGN);
   uint64_t text_fo = hdr_size;
   uint64_t pool_fo = PEX_ALIGN (text_fo + text_size, PEX_FILE_ALIGN);
   uint64_t init_fo = PEX_ALIGN (pool_fo + pool_size, PEX_FILE_ALIGN);
   uint64_t data_fo = PEX_ALIGN (init_fo + init_size, PEX_FILE_ALIGN);
   uint64_t rdata_fo = PEX_ALIGN (data_fo + data_size, PEX_FILE_ALIGN);
-  uint64_t rsrc_fo = PEX_ALIGN (rdata_fo + rdata_size, PEX_FILE_ALIGN);
+  uint64_t pdata_fo = PEX_ALIGN (rdata_fo + rdata_size, PEX_FILE_ALIGN);
+  uint64_t xdata_fo = PEX_ALIGN (pdata_fo + pdata_size, PEX_FILE_ALIGN);
+  uint64_t rsrc_fo = PEX_ALIGN (xdata_fo + xdata_size, PEX_FILE_ALIGN);
   uint64_t reloc_fo = PEX_ALIGN (rsrc_fo + rsrc_size, PEX_FILE_ALIGN);
   uint64_t total = PEX_ALIGN (reloc_fo + reloc_size, PEX_FILE_ALIGN);
 
@@ -1530,6 +1629,14 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   if (init_size != 0) memcpy (p + init_fo, obj->initarr.p, init_size);
   if (data_size != 0) memcpy (p + data_fo, obj->data.p, data_size);
   if (rdata_size != 0) memcpy (p + rdata_fo, rdata.p, rdata_size);
+  for (size_t k = 0; k < n_entry_rf; k++) { /* the entry region's own functions */
+    uint32_t rf[3] = {(uint32_t) text_rva + entry_rf[k].begin, (uint32_t) text_rva + entry_rf[k].end,
+                      (uint32_t) xdata_rva + entry_rf[k].info};
+    memcpy (p + pdata_fo + k * 12, rf, 12);
+  }
+  if (obj->pdata.len != 0) memcpy (p + pdata_fo + entry_pd_size, obj->pdata.p, obj->pdata.len);
+  memcpy (p + xdata_fo, entry_xd, entry_xd_size);
+  if (obj->xdata.len != 0) memcpy (p + xdata_fo + entry_xd_size, obj->xdata.p, obj->xdata.len);
   if (rsrc_size != 0) memcpy (p + rsrc_fo, rsrcsec.p, rsrc_size);
   if (reloc_size != 0) memcpy (p + reloc_fo, relsec.p, reloc_size);
 
@@ -1571,9 +1678,16 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     uint64_t sec_fo = r->sec == MIR_OBJ_SEC_TEXT       ? text_fo + entry_size
                       : r->sec == MIR_OBJ_SEC_ADDRPOOL ? pool_fo
                       : r->sec == MIR_OBJ_SEC_INITARR  ? init_fo
+                      : r->sec == MIR_OBJ_SEC_PDATA    ? pdata_fo + entry_pd_size
+                      : r->sec == MIR_OBJ_SEC_XDATA    ? xdata_fo + entry_xd_size
                                                        : data_fo;
     uint8_t *slot = p + sec_fo + r->offset;
-    if (r->kind == MIR_OBJ_RELOC_PC32) {
+    if (r->kind == MIR_OBJ_RELOC_RVA32) { /* S + A - ImageBase: the RVA itself */
+      uint64_t v = PEX_SEC_RVA (s->sec) + s->value + (uint64_t) r->addend;
+      if (v > UINT32_MAX) goto done;
+      uint32_t v32 = (uint32_t) v;
+      memcpy (slot, &v32, 4);
+    } else if (r->kind == MIR_OBJ_RELOC_PC32) {
       /* S + A - P over RVAs (bias-invariant).  The capture only emits
          PC32 from text (rip-relative pool references). */
       if (r->sec != MIR_OBJ_SEC_TEXT) goto done;
@@ -1590,6 +1704,11 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       /* import slot: the IAT-prefill pass below owns these bytes */
     }
   }
+
+  /* .pdata sorted by begin RVA, the directory's contract: the object's
+     entries already arrive in text order (capture and merge both append),
+     after the entry region's */
+  qsort (p + pdata_fo, (size_t) (pdata_size / 12), 12, pex_rf_cmp);
 
   /* ---- IAT prefill: every import slot's file bytes carry its ILT-entry
      value (the hint/name RVA), exactly as link.exe and ld emit an IAT.
@@ -1628,8 +1747,8 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     buf_u8 (&h, 14); /* linker versions: cosmetic */
     buf_u8 (&h, 0);
     buf_u32 (&h, (uint32_t) text_size);              /* SizeOfCode */
-    buf_u32 (&h, (uint32_t) (pool_size + init_size + data_size + rdata_size + rsrc_size
-                             + reloc_size));
+    buf_u32 (&h, (uint32_t) (pool_size + init_size + data_size + rdata_size + pdata_size
+                             + xdata_size + rsrc_size + reloc_size));
     buf_u32 (&h, (uint32_t) bss_size);               /* SizeOfUninitializedData */
     buf_u32 (&h, (uint32_t) text_rva);               /* AddressOfEntryPoint = the stub (a DLL's DllMain) */
     buf_u32 (&h, (uint32_t) text_rva);               /* BaseOfCode */
@@ -1664,6 +1783,9 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       } else if (k == PEX_DIR_RESOURCE && rsrc_size != 0) {
         buf_u32 (&h, (uint32_t) rsrc_rva);
         buf_u32 (&h, (uint32_t) rsrc_size);
+      } else if (k == PEX_DIR_EXCEPTION) {
+        buf_u32 (&h, (uint32_t) pdata_rva);
+        buf_u32 (&h, (uint32_t) pdata_size);
       } else if (k == PEX_DIR_BASERELOC && reloc_size != 0) {
         buf_u32 (&h, (uint32_t) reloc_rva);
         buf_u32 (&h, (uint32_t) reloc_size);
@@ -1679,7 +1801,7 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       uint64_t rva, vsz, fo, rsz;
       uint32_t chars;
       int present;
-    } st[7] = {
+    } st[9] = {
       {".text", text_rva, text_size, text_fo, PEX_ALIGN (text_size, PEX_FILE_ALIGN),
        PE_SCN_CNT_CODE | PE_SCN_MEM_EXECUTE | PE_SCN_MEM_READ, 1},
       {".mirpool", pool_rva, pool_size, pool_fo, PEX_ALIGN (pool_size, PEX_FILE_ALIGN),
@@ -1690,12 +1812,16 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
        PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE, 1},
       {".rdata", rdata_rva, rdata_size, rdata_fo, PEX_ALIGN (rdata_size, PEX_FILE_ALIGN),
        PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ, 1},
+      {".pdata", pdata_rva, pdata_size, pdata_fo, PEX_ALIGN (pdata_size, PEX_FILE_ALIGN),
+       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ, 1},
+      {".xdata", xdata_rva, xdata_size, xdata_fo, PEX_ALIGN (xdata_size, PEX_FILE_ALIGN),
+       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ, 1},
       {".rsrc", rsrc_rva, rsrc_size, rsrc_fo, PEX_ALIGN (rsrc_size, PEX_FILE_ALIGN),
        PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ, rsrc_size != 0},
       {".reloc", reloc_rva, reloc_size, reloc_fo, PEX_ALIGN (reloc_size, PEX_FILE_ALIGN),
        PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | 0x02000000u /* MEM_DISCARDABLE */, 1},
     };
-    for (int k = 0; k < 7; k++) {
+    for (int k = 0; k < 9; k++) {
       if (!st[k].present) continue;
       char f[8] = {0};
       memcpy (f, st[k].nm, strlen (st[k].nm) > 8 ? 8 : strlen (st[k].nm));
