@@ -9099,10 +9099,13 @@ TokenBase *Program::_getToken()
 		    bool protocol_visit = need_protocol_macro_live();
 		    // K2d: an include inside a frozen arm the bind walk runs is an
 		    // edge of that walk, never a live include or a root of its own.
+		    // No serving completes here: the completion side effects (the
+		    // value_stream injection writes the program's token stream) are
+		    // the ROOT's, when its walk commits or its live parse runs.
 		    if ( forest_arm_walk )
 		    {
 			forest_arm_include(incfile, is_system && !is_include_next && !protocol_visit);
-			return include_completed_token();
+			return getToken();
 		    }
 		    // angle-bracket includes: prefer real precompiled headers, then
 		    // text-embedded compatibility headers, then filesystem source.

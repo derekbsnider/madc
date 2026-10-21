@@ -1573,7 +1573,12 @@ echo "forest_bind_gate: [k2c] OK — a run arm's differing macro is checked wher
 #            arm already declared them live), so nothing is declared twice.
 #   unbound  — an arm whose `#include` names a header the freeze never read:
 #            the walk cannot bind it, the root declines and parses live.
-# gcc and clang: inline=41 twice=80 / extra=3.
+#   stream   — madc dialect: the root's walk replays <iostream> (the ostream
+#            guard), runs k2d_wchar.h's arm, whose `#include` binds, then
+#            declines on a later conditional. The arm's include completes
+#            no serving, so bits/value_stream is injected once, after the
+#            live <iostream> — never mid-walk ahead of std::ostream.
+# gcc and clang: inline=41 twice=80 / extra=3 / stream=41.
 kd_dir=tmp/fbgate_k2d
 rm -rf "$kd_dir"
 mkdir -p "$kd_dir"
@@ -1629,11 +1634,38 @@ cat > "$kd_dir/fbgate_k2d_unseen.h" <<'EOF'
 static inline int fbg_k2d_unseen(void) { return 3; }
 #endif
 EOF
+cat > "$kd_dir/fbgate_k2d_spice.h" <<'EOF'
+#ifndef FBG_K2D_SPICE_H
+#define FBG_K2D_SPICE_H
+#define FBG_K2D_SPICE 1
+#endif
+EOF
+cat > "$kd_dir/fbgate_k2d_osroot.h" <<'EOF'
+#ifndef FBG_K2D_OSROOT_H
+#define FBG_K2D_OSROOT_H
+#include <iostream>
+#include <fbgate_k2d_wchar.h>
+#ifdef FBG_K2D_SPICE
+typedef int fbg_k2d_spiced;
+#endif
+#endif
+EOF
 cat > "$kd_dir/producer.cpp" <<'EOF'
 #include <fbgate_k2d_stdio.h>
 #include <fbgate_k2d_top.h>
 #include <fbgate_k2d_extra.h>
 int main() { return 0; }
+EOF
+cat > "$kd_dir/producer_stream.mad" <<'EOF'
+#include <fbgate_k2d_spice.h>
+#include <fbgate_k2d_stdio.h>
+#include <fbgate_k2d_osroot.h>
+int main() { return 0; }
+EOF
+cat > "$kd_dir/stream.mad" <<'EOF'
+#include <fbgate_k2d_osroot.h>
+int fbg_k2d_proto(int x) { return x * 10; }
+int main() { std::cout << "stream=" << fbg_k2d_inline(4) << std::endl; return 0; }
 EOF
 cat > "$kd_dir/withdraw.cpp" <<'EOF'
 #include <fbgate_k2d_top.h>
@@ -1671,8 +1703,25 @@ grep -aq "withdraws 'fbg_k2d_inline'" "$kd_dir/withdraw.log" \
 kd_case unbound "extra=3"
 grep -aq "DECLINE root.*fbgate_k2d_extra\.h.*cannot bind" "$kd_dir/unbound.log" \
     || fail "[k2d] unbound: fbgate_k2d_extra.h did not decline on its unbindable #include"
+# stream: the madc profile's own freeze (the subject's --std=madc).
+kd_snap2=$kd_dir/k2d_stream.msnap
+timeout 600 "$BIN" --freeze="$kd_snap2" -I "$kd_dir" "$kd_dir/producer_stream.mad" \
+    >"$kd_dir/freeze_stream.log" 2>&1 || fail "[k2d] stream: the --freeze FAILED: $(tail -n 3 "$kd_dir/freeze_stream.log")"
+if command -v g++ >/dev/null 2>&1; then
+    cp "$kd_dir/stream.mad" "$kd_dir/stream_gxx.cpp"
+    g++ -std=gnu++17 -I "$kd_dir" -o "$kd_dir/stream.gxx" "$kd_dir/stream_gxx.cpp" 2>"$kd_dir/stream.gxx.err" \
+	|| fail "[k2d] stream: g++ compile FAILED: $(head -n 2 "$kd_dir/stream.gxx.err")"
+    [ "$("$kd_dir/stream.gxx")" = "stream=41" ] || fail "[k2d] stream: g++ output is not 'stream=41' — the reducer is wrong"
+fi
+kd_out=$(timeout 60 "$BIN" --forest-bind="$kd_snap2" -I "$kd_dir" "$kd_dir/stream.mad" 2>&1)
+[ "$kd_out" = "stream=41" ] || fail "[k2d] stream: output '$(printf '%s' "$kd_out" | head -n 2)' != 'stream=41' (g++)"
+timeout 60 "$BIN" -v --forest-bind="$kd_snap2" -I "$kd_dir" "$kd_dir/stream.mad" >"$kd_dir/stream.log" 2>/dev/null
+grep -aq "run arm's #include <fbgate_k2d_inl\.h> binds unit" "$kd_dir/stream.log" \
+    || fail "[k2d] stream: the run arm's #include did not bind fbgate_k2d_inl.h"
+grep -aq "DECLINE root.*fbgate_k2d_osroot\.h" "$kd_dir/stream.log" \
+    || fail "[k2d] stream: fbgate_k2d_osroot.h did not decline on FBG_K2D_SPICE"
 rm -rf "$kd_dir"
-echo "forest_bind_gate: [k2d] OK — a run arm's #include is an edge of the walk, and a frozen arm the walk skips withdraws its declarations"
+echo "forest_bind_gate: [k2d] OK — a run arm's #include is an edge of the walk (no serving completes there), and a frozen arm the walk skips withdraws its declarations"
 
 # --- case: lexalike (docs/plans/2026-10-18-verified-cxx-bind.md, K2b) ---
 # A run arm whose write differs in SPELLING from the freeze's state but lexes

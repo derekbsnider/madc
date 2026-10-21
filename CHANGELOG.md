@@ -8,6 +8,7 @@
 - mingw's `stdio.h` and `wchar.h` hold the same `#ifndef _WSTDIO_DEFINED` block, including `#include <swprintf.inl>`. A consumer that reaches `wchar.h` first now binds its frozen unit instead of declining.
 - `scripts/forest_bind_gate.sh` `[k2d]` `withdraw` prints `inline=41 twice=80` (g++ prints the same) and `unbound` declines and prints `extra=3`. The `[redecl]` corpus 1 asserts the withdrawal; the typedef-twin tolerance moves to corpus 3.
 - The freeze records each captured arm's token range; container format v72 (`CIR_COND_TOK_BEGIN` / `CIR_COND_TOK_END`). `--dump-forest` condnest lines print `tok=`.
+- A run arm's `#include` completes no serving on its own. `bits/value_stream` is injected once, when the root's walk commits or its live parse runs, so under `--std=madc` it no longer lands ahead of `std::ostream` when a root's walk replays `<iostream>`. Before, the win64 release build's forest pack layout failed on `<iostream>` with `use of undeclared identifier 'ostream'` (`bits/value_stream:35:10`). `scripts/forest_bind_gate.sh` `[k2d]` `stream` prints `stream=41` (g++ prints the same).
 
 ### A forest bind checks a macro where frozen content expands it
 
