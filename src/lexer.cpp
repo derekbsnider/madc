@@ -12554,23 +12554,41 @@ void Program::handle_pragma_body()
 		    source.get(); // consume closing "
 		if ( is_push )
 		{
-		    auto it = define_map.find(mname);
-		    std::string val = (it != define_map.end()) ? *it : std::string("\x01");
-		    _macro_save_stack[mname].push(val);
-		    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
+		    typedef MadcSharedPreludeCache::MacroState MacroState;
+		    const MacroState st = MadcSharedPreludeCache::macro_state(*this, mname);
+		    PushedMacro pm;
+		    pm.kind = st.kind == MacroState::object ? PushedMacro::object
+			    : st.kind == MacroState::function ? PushedMacro::function
+			    : PushedMacro::absent;
+		    pm.value = st.value;
+		    pm.macro = st.macro;
+		    _macro_save_stack[mname].push(pm);
+		    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved kind "
+			<< (int)pm.kind << std::endl);
 		}
 		else
 		{
 		    auto sit = _macro_save_stack.find(mname);
 		    if ( sit != _macro_save_stack.end() && !sit->second.empty() )
 		    {
-			madc::dis::istring val = sit->second.top();
+			// The restore is a macro write like #define / #undef:
+			// the same writer (a walk's undo log sees it), the
+			// program-write note, the freeze's event.
+			const PushedMacro pm = sit->second.top();
 			sit->second.pop();
-			if ( val == "\x01" )
-			    define_map.erase(mname);
+			const madc::dis::istring name(mname);
+			forest_note_program_macro(mname.c_str());
+			MadcSharedPreludeCache::set_macro(*this, name,
+			    pm.kind == PushedMacro::object ? &pm.value.str() : NULL,
+			    pm.kind == PushedMacro::function ? &pm.macro : NULL);
+			if ( pm.kind == PushedMacro::object )
+			    pack_record_define(name, pm.value.str());
+			else if ( pm.kind == PushedMacro::function )
+			    pack_record_define_fn(name, pm.macro);
 			else
-			    define_map[mname] = val;
-			DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored=\"" << val << "\"" << std::endl);
+			    pack_record_undef(name);
+			DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored kind "
+			    << (int)pm.kind << std::endl);
 		    }
 		}
 	    }

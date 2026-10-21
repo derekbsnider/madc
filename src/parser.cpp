@@ -83883,7 +83883,7 @@ struct Program::EntryTransaction::State
     std::map<madc::dis::istring, madc::dis::istring> include_guard_by_file;
     std::set<madc::dis::istring> forest_live_tokenized;
     std::map<madc::dis::istring, LazyEntry> lazy_map;
-    std::map<madc::dis::istring, std::stack<madc::dis::istring> > macro_save_stack;
+    std::map<madc::dis::istring, std::stack<Program::PushedMacro> > macro_save_stack;
     std::vector<madc::dis::istring> active_using_namespaces;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> > inline_namespace_children;
     bool include_iostream, include_string, include_ns_madc;

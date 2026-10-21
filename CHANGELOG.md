@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### `#pragma push_macro` / `pop_macro` save and restore the whole macro definition
+
+- A push saves an object-like body, a function-like definition, or an undefined name. A pop restores that state: a function-like macro comes back function-like, and a name undefined at the push is undefined again. Before, only an object-like body was saved, so `pop_macro` of a function-like macro left a stale or missing definition ("import of undefined item FN" under MIR).
+- Pushes nest last-in, first-out. A pop with nothing pushed changes nothing.
+- The restore goes through the same macro writer `#define` and `#undef` use, with the same program-write note and freeze event, so a forest walk's undo log sees it. `Program::PushedMacro` is the saved element type; `_macro_save_stack` holds it.
+- `tests/testpragma_push_pop_macro.mad` (`--std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testpragma_push_pop_macro.expect`: `function-like restored: 9`, `undefined restored: 1`, `nested: 8 7`, `function over object: 101`, `unpaired pop: 3`.
+
 ### `__builtin_frame_address` and `__builtin_return_address` return the function's own frame and return address
 
 - `__builtin_return_address(0)` yields the address the function returns to, and `__builtin_frame_address(0)` yields an address inside the function's own frame, on every target. Before, the lexer turned `__builtin_return_address` into `0`, and `__builtin_frame_address` became a host helper's own frame address.

@@ -5913,7 +5913,15 @@ public:
     std::map<madc::dis::istring, LazyEntry> lazy_map;	// deferred symbol registration
     madc::dis::intern_keyed_map<std::string> define_map;	// #define name value (key = interned spelling-id)
     std::set<madc::dis::istring> disabled_builtin_names;	// -fno-builtin-foo from CLI/tests
-    std::map<madc::dis::istring, std::stack<madc::dis::istring>> _macro_save_stack; // #pragma push_macro / pop_macro
+    // #pragma push_macro / pop_macro: each name's saved definitions, last
+    // pushed on top — object- or function-like, or undefined — as gcc saves
+    // them.
+    struct PushedMacro {
+	enum Kind : unsigned char { absent, object, function } kind = absent;
+	madc::dis::istring value;	// object-like body
+	MacroDef macro;			// function-like definition
+    };
+    std::map<madc::dis::istring, std::stack<PushedMacro>> _macro_save_stack;
     std::vector<madc::dis::istring> include_paths;	// -I include search paths (for #include "file.h")
     std::vector<std::pair<madc::dis::istring,madc::dis::istring>> cli_defines;	// -DNAME[=VALUE] command-line defines (applied after builtins)
     // Selected C++ standard library flavor (-stdlib=), NULL = the build's
