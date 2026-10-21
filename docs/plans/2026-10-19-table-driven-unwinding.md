@@ -335,15 +335,15 @@ saved and restored with the rest of the exception state at task switches.
        red zone), sets rbp at the frame's TOP before the allocation, and
        saves callee-saved registers at its bottom: no frame over 240 bytes
        has a valid description. The Windows prologue is `push %rbp; sub $N,
-       %rsp; mov %rsp,%rbp` (frame register rbp, offset 0, so the
-       establisher frame IS rbp), the saves at `rbp + k` (SAVE_NONVOL /
-       SAVE_XMM128), `__chkstk` probing for N >= 4096 (gcc calls
-       `___chkstk_ms`; MIR probes nothing today), and the epilogue `lea
-       N(%rbp),%rsp; pop %rbp; ret` (a form the unwinder recognizes). Every
-       rbp-relative displacement MIR assigned against the top -- stack
-       slots, incoming arguments, the varargs spill, `fp + disp` address
-       arithmetic -- is rebased by the one frame delta when the prologue is
-       made.
+       %rsp; lea FO(%rsp),%rbp` (frame register rbp at offset FO = min(N,
+       240) -- see the canon recon below -- so the establisher frame is
+       rbp - FO), the saves at the establisher frame + k (SAVE_NONVOL /
+       SAVE_XMM128), inline page probes for N >= 4096, and the epilogue `lea
+       (N - FO)(%rbp),%rsp; pop %rbp; ret` (a form the unwinder recognizes).
+       Every rbp-relative displacement MIR assigned against the top --
+       stack slots, incoming arguments, the varargs spill, `fp + disp`
+       address arithmetic -- moves by the one frame delta N - FO when the
+       prologue is made (none for a frame of 240 bytes or less).
      - Unwind codes come from the same prologue facts as the DWARF CFI (the
        marks `gen_cfi_*` record): one encoder for the JIT and the images.
      - JIT: each function's UNWIND_INFO, LSDA and a handler thunk (`jmp
@@ -382,6 +382,23 @@ saved and restored with the rest of the exception state at task switches.
        rbp; a `longjmp` to a `_setjmp(buf, rbp)` in the frame calls it with
        flags 0x22 (UNWINDING | TARGET_UNWIND), the same establisher frame,
        and lands. The design holds as written.
+     - Canon recon 2026-10-21 (frame register offset, probes): clang sets the
+       frame register ABOVE the bottom -- `push %rbp; sub $N,%rsp; lea
+       K(%rsp),%rbp; .seh_setframe %rbp, K` (K = 32 or 128) -- and passes the
+       establisher frame, `lea -K(%rbp)`, to `_setjmp`; gcc does the same
+       with K = 128 and, in a function without alloca, `push %rbp; mov
+       %rsp,%rbp; push ...; sub` (pushes after the frame register are sound
+       only while SP is fixed). MIR's frame register offset is therefore
+       FO = min(N, 240): a frame of 240 bytes or less keeps today's rbp (the
+       top), so nothing in its body moves; a larger frame's FP-relative
+       displacements move by N - FO. The establisher frame a try passes to
+       `_setjmp` is rbp - FO (a MIR operation, as clang's frame address).
+       Both canons probe a frame or an alloca of 4096 bytes or more through
+       `___chkstk_ms`; MIR links nothing, so it probes inline (the prologue
+       loads every page below SP before the one `sub`; an alloca walks SP
+       down a page at a time). Without the probes a native Windows process
+       faulted on its first store into a larger area (wine commits the stack
+       up front): `tests/teststackprobe`.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,
    consumers converted, runtime cleanup stack deleted, REPL boundary.
    `tests/testthrow_through_frame` (11 cases, g++/clang oracle) is the gate,
