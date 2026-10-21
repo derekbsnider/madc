@@ -1472,6 +1472,18 @@ static void dwsref_record (void *env, int src, size_t pos, int tgt, uint32_t val
   c->refs.n++;
 }
 
+#if MIR_TARGET_APPLE_P || MIR_TARGET_WINDOWS_P
+/* A container writer with no DWARF carriage yet refuses a debug builder
+   rather than dropping what the caller asked for -- and says so, so the
+   caller's generic "emission failed" is not the only word.  CONTAINER
+   names the artifact; TRUE = refused. */
+static int obj_debug_refused_p (MIR_object_t obj, const char *container) {
+  if (obj->debug == NULL && !obj->dbg_raw_p) return FALSE;
+  fprintf (stderr, "madc: %s emit: no DWARF carriage yet, -g refused\n", container);
+  return TRUE;
+}
+#endif
+
 #if MIR_TARGET_APPLE_P
 /* Apple targets swap the assembler behind the seam -- same builder, Mach-O
    container, for BOTH artifacts: MH_OBJECT for MIR_object_emit and

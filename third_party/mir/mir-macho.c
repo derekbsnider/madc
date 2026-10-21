@@ -1565,7 +1565,7 @@ static size_t macho_u64_index (const uint64_t *v, size_t n, uint64_t x) {
 }
 
 static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
-  if (obj->debug != NULL || obj->dbg_raw_p) return -1; /* no __DWARF yet: say so */
+  if (obj_debug_refused_p (obj, "Mach-O object")) return -1;
   /* the unwind sections' own start labels: their fields' SUBTRACTOR base */
   if (obj->except.len != 0) MIR_object_section_symbol (obj, MIR_OBJ_SEC_EXCEPT);
   if (obj->ehframe.len != 0) MIR_object_section_symbol (obj, MIR_OBJ_SEC_EHFRAME);

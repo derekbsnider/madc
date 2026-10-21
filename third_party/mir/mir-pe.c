@@ -179,7 +179,7 @@ static void pe_reloc (dwbuf_t *b, uint32_t addr, uint32_t symidx, uint16_t type)
 }
 
 static int pe_emit_object (MIR_object_t obj, void **buf, size_t *size) {
-  if (obj->debug != NULL || obj->dbg_raw_p) return -1; /* no DWARF-in-COFF yet: say so */
+  if (obj_debug_refused_p (obj, "COFF object")) return -1;
 
   size_t n = obj->n_syms;
   int rc = -1;
@@ -1156,7 +1156,7 @@ out:
 static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params, void **buf,
                                size_t *size) {
   int dll_p = params->shared_p != 0;                  /* a DLL (see the header note) */
-  if (obj->debug != NULL || obj->dbg_raw_p) return -1; /* no debug image yet: say so */
+  if (obj_debug_refused_p (obj, "PE image")) return -1;
 
   int rc = -1;
   unsigned char *p = NULL;
