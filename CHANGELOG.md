@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### A native darwin build generates its tables with its own madc
+
+- `make release-macos` on a Mac (`MODE=hosted-<arch>-macos` on the build host) no longer names `../bin/madc` as the generator of the dialect registry. Before, every `cross-%` and `hosted-%` mode did, and a native build, which builds no dev madc, stopped with "No rule to make target '../bin/madc'".
+- `MODE_RUNS_ON_HOST` in `src/Makefile` is the one predicate: a plain mode, and a `hosted-<host arch>-macos` mode on a darwin host, generate with their own stage one; other cross and hosted modes generate with `../bin/madc`. `MODULE_TABLE_GEN` in `src/madc_modules.mk` reads the same predicate.
+- Linux and the cross darwin modes are unchanged.
+- On an arm64 Mac mini (macOS 14), `make release-macos` exits 0, with `forest_pack_gate` OK and `verify_macho_release` OK.
+
 ### A module table names a platform integer through its accessor
 
 - `type_expr()` in `src/madc_builtin_registry.cpp` switches on `DataDef::platform_integer()` and emits `dd_platform_long()`, `dd_platform_ulong()`, `dd_platform_longlong()` or `dd_platform_ulonglong()` for a distinct platform integer. Before, a face returning or taking `long long` where `int64_t` aliases it (darwin) was refused with "cannot be built -- return type 'long long'", so `make release-macos` failed generating `ui_web.madi`.

@@ -13,10 +13,11 @@
 # The generated tables: one per module for EVERY target (the builders name
 # DataDefs, never sizes or symbols — the dialect table's property), so one
 # directory, mode-independent. The generator is this mode's madc where it runs
-# on the build host, else the host's dev madc (a cross or hosted build runs
-# after the host build, as the dialect table's R3 carry does).
+# on the build host (MODE_RUNS_ON_HOST, src/Makefile), else the host's dev
+# madc (a cross build runs after the host build, as the dialect table's R3
+# carry does).
 MODULE_TABLE_DIR = ../obj/modules
-ifeq ($(filter cross-% hosted-%,$(MODE)),)
+ifdef MODE_RUNS_ON_HOST
 MODULE_TABLE_GEN = $(BIN)
 else
 MODULE_TABLE_GEN = ../bin/madc
