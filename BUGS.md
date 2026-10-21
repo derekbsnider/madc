@@ -175,6 +175,17 @@ int main(void) { assert_off(); assert_on(); printf("evals=%d\n", evals); return 
   arms' `#define assert(` lines taken from two `clang -E -dD` runs of
   `<assert.h>` (with and without `-DNDEBUG`) under `#ifdef NDEBUG`.
 - Not a regression: the prelude has flattened `assert.h` since August.
+- 2026-10-21, b530bc415: the umbrella carries both arms under `#ifdef NDEBUG`
+  (taken from the two flattens), so `-DNDEBUG` and a `#define NDEBUG` ahead of
+  the first standard include now disable `assert` on macOS
+  (`tests/testndebugflag`, `tests/testndebugfirst_c`). Left: a RE-include
+  under a changed `NDEBUG` (this reducer, `testsysheaderreinclude*`,
+  `testndebugcxxbind` — all `.darwin_skip`, owner 2026-10-21: not a
+  regression). A guard-less stub alone does not reach it:
+  `Program::should_tokenize_include` keeps every named (embedded) include
+  once-only, so the stub is never read twice. The fix is the include
+  machinery's, with the umbrella's per-header scoping (KG Gap
+  darwin_umbrella_prelude_whole_set_visibility) — its own session.
 
 ### B181. A non-type template argument naming a variable is keyed and spliced by its spelling
 
@@ -802,6 +813,42 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+### B215. `typeid(ns::S)` of a namespace-scope struct that is not a class is refused
+
+```cpp
+#include <cstdio>
+#include <typeinfo>
+namespace data { struct node { int w; long pad; }; }
+int main()
+{
+	std::printf("%s %zu\n", typeid(data::node).name(), sizeof(data::node));
+	return 0;
+}
+```
+
+- Found 2026-10-21 writing `tests/testnsclasstagcollide` (the namespace-class
+  canonical-spelling fix).
+- g++ 13 and clang++ 18 (`-std=gnu++17`): `N4data4nodeE 16`. madc (the
+  packed release binary before that fix, the dev binary after it): `error:
+  'node' is not a member of namespace 'data'` at the `typeid` operand. `sizeof(data::node)` and a
+  declaration `data::node d` resolve; `typeid(lib::node)` of a class (a
+  struct with a virtual member) resolves.
+- Layer: the `typeid` operand's type-id-or-expression reading of a qualified
+  name — the namespace's data-only struct is not taken as a type there.
+  Parser — its own session.
+
+### B216. libc++: a range-for over a `std::map` returned by reference does not compile
+
+- `tests/testrangefor_ref_call.mad` under `-stdlib=libc++` (Linux and the
+  darwin lane): c2mir check errors in libc++'s bodies — `map:1212`
+  "incompatible argument type for struct/union type parameter",
+  `__tree:1109` "invalid type argument of unary *", `__tree:1739/1755`
+  "conversion of non-scalar value requested". g++/clang++ print the
+  `.expect`. v0.105.0 refuses it under libc++ too (a different check error),
+  so not a regression; `.libcxx_skip` (owner 2026-10-21).
+- Found 2026-10-21 on the native darwin lane. Layer: unknown — the CIR
+  lowering of a libc++ `__tree` member body; recon first.
 
 ### B209. A braced single same-class element (`S q{s};`) is lowered as a member list
 
