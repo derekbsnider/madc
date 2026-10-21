@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### A module table names a platform integer through its accessor
+
+- `type_expr()` in `src/madc_builtin_registry.cpp` switches on `DataDef::platform_integer()` and emits `dd_platform_long()`, `dd_platform_ulong()`, `dd_platform_longlong()` or `dd_platform_ulonglong()` for a distinct platform integer. Before, a face returning or taking `long long` where `int64_t` aliases it (darwin) was refused with "cannot be built -- return type 'long long'", so `make release-macos` failed generating `ui_web.madi`.
+- Linux output is unchanged: `int64_t` there is `&ddINT64`, which the singleton list matches first.
+- `tests/unit/test_builtin_registry.cpp` gains "module table: a platform integer is named through its accessor". `bin/test_builtin_registry` reports 3 test cases, 65 assertions, all passing.
+
 ### A throw destroys the live objects of every frame it crosses
 
 - A throw through a function with no `try` of its own destroys that function's live objects, as g++ and clang++ do ([except.ctor]/1-2). Before, only the objects of a `try` body were destroyed, through the runtime cleanup stack; `tests/testthrow_through_frame.mad` printed `+1 +2 caught2` with no destructor output.

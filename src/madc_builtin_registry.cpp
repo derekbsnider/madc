@@ -555,6 +555,16 @@ static bool type_expr(Program &pgm, DataDef *dd, std::string &expr, std::string 
 	    expr = singletons[i].spelled;
 	    return true;
 	}
+    // A platform integer (datadef.h: the distinct `long` / `long long` a target
+    // mints where it needs one) by its accessor — the loading madc's own type.
+    switch ( dd->platform_integer() )
+    {
+	case PlatformInteger::piLONG:      expr = "dd_platform_long()"; return true;
+	case PlatformInteger::piULONG:     expr = "dd_platform_ulong()"; return true;
+	case PlatformInteger::piLONGLONG:  expr = "dd_platform_longlong()"; return true;
+	case PlatformInteger::piULONGLONG: expr = "dd_platform_ulonglong()"; return true;
+	case PlatformInteger::piNONE:      break;
+    }
     std::string base;
     if ( DataDefQUAL *q = dd->as_qualified_dd() )
     {

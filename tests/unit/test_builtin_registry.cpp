@@ -10,6 +10,7 @@ thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include <deque>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -19,6 +20,10 @@ thread_local bool madc_verbose = false;
 #include <stack>
 #include <string>
 #include <vector>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #include "datadef.h"
 #include "tokens.h"
@@ -143,4 +148,33 @@ TEST_CASE("R5a: the generated fragment words equal a scan of each fragment's tex
 	std::vector<std::pair<madc::dis::istring, bool> > none;
 	CHECK_FALSE(generated_fragment_words(madc::dis::istring("stdio.h"), none));
 	CHECK(none.empty());
+}
+
+// A module face's platform integer — darwin's `long long`, a type distinct from
+// `long` where int64_t aliases it (datadef.h) — is generated as its accessor's
+// call, which answers the loading madc's own type. A native darwin build
+// generates its module tables on darwin (src/madc_modules.mk); the alias is set
+// here so the Linux unit test parses as that generator does.
+TEST_CASE("module table: a platform integer is named through its accessor") {
+	char dir[] = "/tmp/madc_unit_faceXXXXXX";
+	REQUIRE(mkdtemp(dir) != nullptr);
+	const std::string face = std::string(dir) + "/plat.madi";
+	{
+		std::ofstream f(face.c_str());
+		f << "namespace plat {\n"
+		     "    long long signed_ll(long long a);\n"
+		     "    unsigned long long unsigned_ll();\n"
+		     "}\n";
+	}
+	const TargetInt64Alias saved = madc_target_int64_alias;
+	madc_target_int64_alias = TargetInt64Alias::LongLong;
+	std::ostringstream out, diag;
+	const bool ok = emit_module_table(out, diag, face);
+	madc_target_int64_alias = saved;
+	remove(face.c_str());
+	rmdir(dir);
+	INFO(diag.str());
+	REQUIRE(ok);
+	CHECK(out.str().find("dd_platform_longlong()") != std::string::npos);
+	CHECK(out.str().find("dd_platform_ulonglong()") != std::string::npos);
 }
