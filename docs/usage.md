@@ -122,6 +122,10 @@ madc prog.o                       # execute .o files as a precompiled cache
 - `-static-libmadc` packs the madc runtime pieces the program needs into the
   emitted image, so it runs with no madc library installed (libc/libstdc++
   stay dynamic).
+- An object another toolchain links names madc's runtime as a g++ object
+  names libstdc++: add `-L<dir>/lib -lmadc_rt` to that link (a function with
+  cleanups references `__madc_personality`; try/catch and VLAs reference the
+  archive's other entries).
 - `-pie` / `-no-pie` select the image layout, gcc-style.
 - `-mwindows` / `-mconsole` (Windows) select the executable's subsystem,
   mingw-gcc-style: a windowed program allocates no console at start; a
