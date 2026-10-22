@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### -finstrument-functions instruments a bound header's inline definition
+
+- Under `--finstrument-functions`, a function definition bound from the forest pack now gets the `__cyg_profile_func_enter`/`__cyg_profile_func_exit` hooks when this translation unit emits it, as gcc instruments an inline body in each TU that emits it. Before, the packed binary bound `<cstdlib>`'s `std::abs(long)` (`bits/std_abs.h`) from the forest — lowered when the pack was built, without the TU's flags — and emitted it hook-less, so a program calling it read `entries 0 exits 0`. On win64 the C layer (J5) did the same for mingw's inline `printf` wrapper.
+- The hook wrapping is `CirBuilder::instrumented_body` (extracted unchanged from `func_def`), applied to a loaded definition by `CirBuilder::instrument_loaded_def` at both bound-body splice sites in `translate_module` — the materialize-and-lower fixpoint and the bound user-header inline-method block — once per body node (`m_instr_loaded_defs`). `CirBuilder::instruments` answers whether a `FuncDef` gets the hooks, honouring `no_instrument_function`.
+- The user-header block runs after Pass 1.95 and the extern flush, so when it hooks a body it appends the hooks' not-yet-emitted externs and the exit thunk (`m_instr_thunk_def`) to `top_list` ahead of every definition.
+- The opt-in MIR-cache bind (`MADC_MIR_CACHE_BIND`, `src/madc_cir.cpp`) is not staged for an instrumented TU — its compiled cache bodies carry no hooks.
+- Tests: `testinstrumentboundinline` (C++, `--finstrument-functions --std=gnu++17`) prints `abs 3`, `entries 1 exits 1`, `one address yes`, the output of g++ 13 and clang++ 18 (x86_64-w64-mingw32 g++ 13 the same). The archived v0.105.0 packed binary printed `entries 0 exits 0` / `one address no`.
+
 ### The Windows release set carries its modules where madc_module_dir looks
 
 - The packed Windows release set (`bin/release-windows/madc.exe`) now carries its module DLLs at `bin/release-windows/../lib/madc/modules`, the directory `madc_module_dir()` derives from the set's own `libmadc-0.dll`, so `import git;`, `import markdown;` and the `ui_web` target resolve. Before, `release-windows` built the module DLLs into `../lib/madc/modules` beside the dev hosted exe and never copied them where the release set looks; the 0.106.0 seam battery's headerless-win stage found every module unresolved (`testgit`, `testmarkdown`, `testmcp_git`, `testrepl_git`, `testrepl_gitimport`, `testwebviewrunstop`), where 0.105.0's headerless-win was clean.

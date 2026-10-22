@@ -17543,6 +17543,50 @@ node_t CirBuilder::synth_instr_exit_thunk()
 	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
 }
 
+// --finstrument-functions: does fd's definition get the hooks? Every
+// definition this module emits — the TU's own and a header's (gcc
+// instruments an inline body in each TU that emits it) — unless
+// no_instrument_function (parseFunction merges it from a prototype into the
+// definition's FuncDef) opts it out; the hooks themselves must carry it in
+// user code, as with gcc.
+bool CirBuilder::instruments(const FuncDef *fd) const
+{
+	return m_prog && m_prog->instrument_functions && fd && !fd->no_instrument_function;
+}
+
+// gcc-parity __cyg_profile hooks around a definition's body. The enter call
+// is the body's first statement; the exit hook rides a cleanup-attributed
+// pointer variable declared FIRST, so it fires LAST on every exit path (all
+// returns + fall-off-end), after user dtors — gcc's epilogue order. The exit
+// thunk is synthesized once per module (m_instr_thunk_def, flushed at Pass
+// 1.95) and calls the possibly user-defined hook. `self` is the symbol the
+// definition declares.
+node_t CirBuilder::instrumented_body(node_t body, const char *self, TokenBase *origin)
+{
+	if (!m_instr_thunk_def)
+		m_instr_thunk_def = synth_instr_exit_thunk();
+	referenced_funcs.insert("__cyg_profile_func_enter");
+	need_output_extern("__cyg_profile_func_enter", false,
+			   { { {N_VOID}, true }, { {N_VOID}, true } });
+	// void *__madc_instr_self __attribute__((cleanup(
+	//     __madc_cyg_exit_thunk))) = (void *)<self>;
+	node_t isd = cleanup_guard_local("__madc_instr_self",
+		node2(N_CAST, void_ptr_type(), id(self, origin), origin),
+		"__madc_cyg_exit_thunk", origin);
+	// __cyg_profile_func_enter((void *)<self>, (void *)0);
+	node_t eargs = list();
+	append(eargs, node2(N_CAST, void_ptr_type(), id(self, origin), origin));
+	append(eargs, node2(N_CAST, void_ptr_type(), integer(0, origin), origin));
+	node_t ecall = node2(N_CALL,
+			     id("__cyg_profile_func_enter", origin), eargs, origin);
+	CIR_NODE(ecall)->synth_from_origin = true;
+	node_t iouter = list();
+	append(iouter, isd);
+	append(iouter, node2(N_EXPR, list(), ecall, origin));
+	append(iouter, body);
+	return node2(N_BLOCK, list(), iouter, origin);
+}
+
 // void Cls___dtor_deleting(struct Cls *__this) { <complete-dtor>(__this); free(__this); }
 // Itanium D0 (deleting) destructor: complete-object destruction, then operator
 node_t CirBuilder::base_object_alias_def(const madc::dis::istring &alias,
@@ -34022,46 +34066,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// runtime init — both paths share the one implementation. (Scope-exit
 	// destruction of file-scope objects stays deferred: program teardown
 	// reclaims the memory.)
-	// --finstrument-functions (task #66): gcc-parity __cyg_profile hooks.
-	// The enter call is the body's first statement; the exit hook rides a
-	// cleanup-attributed pointer variable declared FIRST, so it fires LAST
-	// on every exit path (all returns + fall-off-end), after user dtors —
-	// gcc's epilogue order. The exit thunk is synthesized once per module
-	// (m_instr_thunk_def, flushed at Pass 1.95) and calls the possibly
-	// user-defined hook. no_instrument_function (parseFunction merges it
-	// from a prototype into the definition's FuncDef) opts a function out;
-	// the hooks themselves must carry it in user code, as with gcc. For
-	// main, the prologue block below wraps THIS block, so global init
-	// still precedes the enter hook (C++ runtime order).
-	if (m_prog && m_prog->instrument_functions
-	    && fd && !fd->no_instrument_function) {
-		if (!m_instr_thunk_def)
-			m_instr_thunk_def = synth_instr_exit_thunk();
-		referenced_funcs.insert("__cyg_profile_func_enter");
-		need_output_extern("__cyg_profile_func_enter", false,
-				   { { {N_VOID}, true }, { {N_VOID}, true } });
-		// void *__madc_instr_self __attribute__((cleanup(
-		//     __madc_cyg_exit_thunk))) = (void *)<self>;
-		// func_def_symbol: <self> must name the emitted definition (the
-		// declarator above) or the profiler tags the wrong symbol.
-		node_t isd = cleanup_guard_local("__madc_instr_self",
-			node2(N_CAST, void_ptr_type(),
-			      id(func_def_symbol(tf, fd).c_str(), tf), tf),
-			"__madc_cyg_exit_thunk", tf);
-		// __cyg_profile_func_enter((void *)<self>, (void *)0);
-		node_t eargs = list();
-		append(eargs, node2(N_CAST, void_ptr_type(),
-				    id(func_def_symbol(tf, fd).c_str(), tf), tf));
-		append(eargs, node2(N_CAST, void_ptr_type(), integer(0, tf), tf));
-		node_t ecall = node2(N_CALL,
-				     id("__cyg_profile_func_enter", tf), eargs, tf);
-		CIR_NODE(ecall)->synth_from_origin = true;
-		node_t iouter = list();
-		append(iouter, isd);
-		append(iouter, node2(N_EXPR, list(), ecall, tf));
-		append(iouter, body);
-		body = node2(N_BLOCK, list(), iouter, tf);
-	}
+	// --finstrument-functions (task #66): instrumented_body. For main, the
+	// prologue block below wraps THIS block, so global init still precedes
+	// the enter hook (C++ runtime order).
+	// func_def_symbol: <self> must name the emitted definition (the
+	// declarator above) or the profiler tags the wrong symbol.
+	if (instruments(fd))
+		body = instrumented_body(body, func_def_symbol(tf, fd).c_str(), tf);
 
 	// madc::sys (task #91): a TU that included <ns_madc> populates the
 	// host system object from main's real arguments — the injected
@@ -35826,6 +35837,23 @@ static const char *cir_declared_id(node_t n)
 	return NULL;
 }
 
+// A loaded definition (a bound header's body, lowered when the pack was
+// built, without this TU's flags) gets the hooks here, as the TU's own
+// definitions get them in func_def — once: the body node is memoized, and
+// two registration keys can reach it. True when it did.
+bool CirBuilder::instrument_loaded_def(node_t def, const FuncDef *fd)
+{
+	if (!instruments(fd) || !m_instr_loaded_defs.insert(def).second)
+		return false;
+	const char *self = cir_declared_id(def);
+	node_t body = c2mir_node_op(def, 3);	// N_FUNC_DEF: specs, declarator, decls, body
+	if (!self || !*self || !body)
+		return false;
+	c2mir_op_remove(def, body);
+	append(def, instrumented_body(body, self, NULL));
+	return true;
+}
+
 // Plan §42 D27: does the top-level node declare (or define) a FUNCTION? A
 // definition always does. A declaration does when its declarator's first
 // derivation is a parameter list: c2mir lists the derivations outermost first
@@ -37129,6 +37157,7 @@ node_t CirBuilder::translate_module(Program *prog)
 					DBG(std::cout << "mir cache import: "
 					    << def_sym << std::endl);
 				} else {
+					instrument_loaded_def(bn, ffd);
 					func_def_nodes.push_back(bn);
 					// Rung 3: a loaded system-header body
 					// survives only while referenced (methods
@@ -38245,6 +38274,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		// module matches a live compile's source order byte-for-byte.
 		std::vector<node_t> forest_bodies;
 		std::vector<node_t> forest_protos;
+		bool hooked = false;	// a body got --finstrument-functions hooks
 		for (std::map<madc::dis::istring, DataDef *>::const_iterator si = prog->struct_map.begin();
 		     si != prog->struct_map.end(); ++si) {
 			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(si->second);
@@ -38267,6 +38297,25 @@ node_t CirBuilder::translate_module(Program *prog)
 				node_t proto = forest_fwd_proto(bn);
 				if (proto)
 					forest_protos.push_back(proto);
+				if (instrument_loaded_def(bn, fd))
+					hooked = true;
+			}
+		}
+		// This emission runs after Pass 1.95 and the extern flush: what
+		// instrumenting its bodies minted — the hooks' externs, then the
+		// exit thunk that calls one — goes here, ahead of every definition.
+		if (hooked) {
+			for (const char *hook : { "__cyg_profile_func_enter", "__cyg_profile_func_exit" }) {
+				auto xe = m_output_externs.find(hook);
+				if (xe == m_output_externs.end() || typed_proto_syms.count(xe->first)
+				    || !emitted_extern_syms.insert(xe->first).second)
+					continue;
+				append(top_list, xe->second);
+				cond_mark_sym(xe->second, xe->first);
+			}
+			if (m_instr_thunk_def) {
+				append(top_list, m_instr_thunk_def);
+				m_instr_thunk_def = NULL;
 			}
 		}
 		// Prototypes ahead of all definitions (matching the live proto pass) —

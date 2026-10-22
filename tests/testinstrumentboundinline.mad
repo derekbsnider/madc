@@ -1,0 +1,38 @@
+/* --finstrument-functions instruments a header's inline definition in the TU
+ * that emits it: <cstdlib>'s std::abs(long) (bits/std_abs.h) gets the enter
+ * and exit hooks, both passed its own address. madc's packed binary binds
+ * that body from the forest, lowered when the pack was built, and emitted it
+ * without the hooks: entries 0.
+ * Oracle: g++ 13 and clang++ 18, -std=gnu++17 -O0 -finstrument-functions:
+ * the lines below (x86_64-w64-mingw32 g++ 13 the same). */
+#include <cstdlib>
+#include <cstdio>
+
+static int entries, exits;
+static void *entered, *exited;
+extern "C" __attribute__((no_instrument_function)) void __cyg_profile_func_enter(void *fn, void *site)
+{
+	(void) site;
+	entries++;
+	entered = fn;
+}
+extern "C" __attribute__((no_instrument_function)) void __cyg_profile_func_exit(void *fn, void *site)
+{
+	(void) site;
+	exits++;
+	exited = fn;
+}
+
+int main() __attribute__((no_instrument_function));
+int main()
+{
+	long r = std::abs(-3L);
+	// Read before the first printf: mingw's <stdio.h> printf is an inline
+	// wrapper, instrumented too.
+	int in = entries, out = exits;
+	const char *pair = entered && entered == exited ? "yes" : "no";
+	printf("abs %ld\n", r);
+	printf("entries %d exits %d\n", in, out);
+	printf("one address %s\n", pair);
+	return 0;
+}

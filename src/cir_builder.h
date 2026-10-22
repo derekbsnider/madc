@@ -2915,9 +2915,16 @@ public:
 	// --finstrument-functions (task #66): the once-per-module exit thunk
 	// `__madc_cyg_exit_thunk` — the cleanup attribute's handler that calls
 	// __cyg_profile_func_exit with the instrumented function's own address.
-	// Demanded by the first instrumented func_def, flushed at Pass 1.95.
+	// Demanded by the first instrumented definition, flushed at Pass 1.95.
 	node_t m_instr_thunk_def = NULL;
 	node_t synth_instr_exit_thunk();
+	// Does fd's definition get the hooks; a body with the hooks around it
+	// (`self` = the symbol the definition declares); a loaded (bound)
+	// definition given them in place.
+	bool instruments(const FuncDef *fd) const;
+	node_t instrumented_body(node_t body, const char *self, TokenBase *origin);
+	bool instrument_loaded_def(node_t def, const FuncDef *fd);
+	std::set<node_t> m_instr_loaded_defs;	// loaded defs given the hooks
 	node_t synth_complete_dtor_def(DataDefCLASS *cdd);
 	node_t synth_deleting_dtor_def(DataDefCLASS *cdd);
 	// `void ALIAS(params) { TARGET(params); }`, linkonce — the Itanium

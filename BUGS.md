@@ -129,17 +129,6 @@ int main(void) { return 0; }
   with start words (forest format bump); the walk takes a nested inclusion
   at the edge the freeze took it and skips its range in the outer walk.
 
-### B224. win64: `-finstrument-functions` misses a bound header's inline body
-
-- Found 2026-10-22 by headerless-win (testnoinstrumentlead,
-  testprotoleadattrs: `entries 1`, the win64 oracle `entries 2`).
-- mingw `<stdio.h>` defines `printf` as an inline wrapper; x86_64-w64-mingw32
-  gcc 13 instruments it in the TU. A C program binding the win64 C layer
-  gets no enter hook for it: the instrumentation is added in the CIR
-  builder's function-definition arm (`cir_builder.cpp`, `instrument_functions`),
-  which the bound body does not pass through. Live parse (before the C
-  layer, J5) instrumented it.
-
 ### B214. A global `using std::abs;` does not add std's overloads to `::abs`
 
 ```cpp

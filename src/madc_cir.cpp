@@ -1661,6 +1661,7 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     // The system pack's module cache (the opt-in bind lane).
     if (prog && prog->forest_system.forest && !prog->forest_system.chain.empty()
 	&& !madc_object_mode   // object emit captures everything itself
+	&& !prog->instrument_functions	// its compiled bodies carry no hooks
 	&& getenv("MADC_MIR_CACHE_BIND")
 	&& !getenv("MADC_NO_MIR_CACHE")) {
 	std::vector<uint8_t> mblob;
