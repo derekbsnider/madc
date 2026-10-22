@@ -461,6 +461,9 @@ endif
 WIN_UCRT_LIBSTDCXX ?= /workspace/win-ucrt-libstdc++/stage
 # The Windows release set's directory (release-windows below).
 WIN_RELEASE_DIR = ../bin/release-windows
+# The set's module directory: libmadc-0.dll's ../lib/madc/modules
+# (madc_module_dir), where the package installs them too.
+WIN_RELEASE_MODULE_DIR = $(WIN_RELEASE_DIR)/../lib/madc/modules
 # _USE_MATH_DEFINES: mingw math.h hides M_PI (and friends) under
 # __STRICT_ANSI__, which the captured -std=c++17 posture defines. On
 # glibc targets g++ always predefines _GNU_SOURCE, so the Linux lane
@@ -1122,10 +1125,9 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # The madc modules a hosted madc.exe finds by name in lib/madc/modules/:
 # what release-windows builds and the package ships, and what the wine lane's
 # hosted exe imports (scripts/remote_build.sh wine) — one list.
+WIN_MODULES = ui_web git markdown
 modules-windows:
-	$(MAKE) ui_web-windows
-	$(MAKE) git-windows
-	$(MAKE) markdown-windows
+	for m in $(WIN_MODULES); do $(MAKE) $$m-windows || exit 1; done
 release-windows:
 	$(MAKE) hosted-x86-64-windows
 	$(MAKE) modules-windows
@@ -1133,6 +1135,8 @@ release-windows:
 	x86_64-w64-mingw32-strip $(WIN_RELEASE_DIR)/madc.exe
 	x86_64-w64-mingw32-strip -o $(WIN_RELEASE_DIR)/libmadc-0.dll ../bin/libmadc-0.dll
 	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll $(WIN_RELEASE_DIR)/
+	mkdir -p $(WIN_RELEASE_MODULE_DIR)
+	cp -p $(patsubst %,../lib/madc/modules/%.dll,$(WIN_MODULES)) $(WIN_RELEASE_MODULE_DIR)/
 	rm -f ../bin/madc-release-x86-64-windows.exe
 	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" MADC_WIN_PACK_CFLAGS="$(WIN_UCRT_FLAGS)" bash scripts/forest_pack_windows.sh --image bin/release-windows/libmadc-0.dll bin/release-windows/madc.exe
 	cd .. && bash scripts/verify_pe_release.sh bin/release-windows/madc.exe

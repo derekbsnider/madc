@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### The Windows release set carries its modules where madc_module_dir looks
+
+- The packed Windows release set (`bin/release-windows/madc.exe`) now carries its module DLLs at `bin/release-windows/../lib/madc/modules`, the directory `madc_module_dir()` derives from the set's own `libmadc-0.dll`, so `import git;`, `import markdown;` and the `ui_web` target resolve. Before, `release-windows` built the module DLLs into `../lib/madc/modules` beside the dev hosted exe and never copied them where the release set looks; the 0.106.0 seam battery's headerless-win stage found every module unresolved (`testgit`, `testmarkdown`, `testmcp_git`, `testrepl_git`, `testrepl_gitimport`, `testwebviewrunstop`), where 0.105.0's headerless-win was clean.
+- `WIN_MODULES = ui_web git markdown` is the one module list: `modules-windows` builds each `$m-windows` from it, and `release-windows` installs `../lib/madc/modules/%.dll` for each into `WIN_RELEASE_MODULE_DIR` after copying the runtime DLLs.
+- The lookup rule (`madc_module_dir()` in `src/madc_modules.cpp`) and the package layout (`scripts/package_release_windows.sh` installs `lib/madc/modules/*.dll` beside `bin/`) were already right; only the battery's in-tree release target lacked the copy.
+
 ### A member template's placement new constructs at a typed address
 
 - A placement new-expression inside a member template now constructs the object at the placement address cast to the constructed class pointer, so the emitted C11 passes `struct S *` where the constructor and the result expect it ([expr.new]: a placement new-expression yields a `S *`). Before, the tsubst copy of a deferred placement new handed the relower the raw translated placement expression (`unsigned char *buf`) as the object's `this` and as the yielded value, and `S *p = new (buf) S(std::forward<T>(t))` emitted four c2mir warnings (`incompatible argument type for pointer type parameter`, `incompatible types in assignment to a pointer`, twice each over the two `place<T>` instances). The output was correct; the warning ratchet (`scripts/warn_census.sh`) caught it.
