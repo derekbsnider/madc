@@ -3100,6 +3100,7 @@ public:
 	node_t throw_payload_call(class TokenTHROW *th);
 	node_t throw_object_items(class TokenTHROW *th);
 	bool thrown_operand_is_implicitly_movable(DataDefCLASS *cdd, TokenBase *src);
+	bool declared_within_innermost_try_body(const Variable &v) const;
 	// The Itanium type-name string a handler and a thrown object match by.
 	madc::dis::istring exception_type_name(DataDef *object);
 	void exception_match_subobjects(DataDefCLASS *cls,
@@ -3108,12 +3109,16 @@ public:
 	// `(void *)<complete-object dtor>` of cdd, declared and referenced.
 	node_t class_dtor_address(DataDefCLASS *cdd, TokenBase *origin);
 	int m_try_ctx_counter = 0;
-	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in
-	// translate_try): a throw operand there is copied, never moved
-	// (thrown_operand_is_implicitly_movable). An object constructed anywhere
+	// The try BODIES being lowered, innermost last (pushed around
+	// translate_stmt(tt->try_body) in translate_try; NULL for a body that is
+	// no compound): a handler is not its try's body, so the last entry is the
+	// try whose compound-statement holds a throw lowered now
+	// (declared_within_innermost_try_body). An object constructed anywhere
 	// is a cleanup variable armed after its construction: a region of its
 	// frame, which the unwind runs (B205).
-	int m_try_body_depth = 0;
+	std::vector<class TokenCpnd *> m_try_bodies;
+	// The blocks open while translate_block lowers them, innermost last.
+	std::vector<class TokenCpnd *> m_open_blocks;
 	// Range-based for over a madc array (madc::value): `for (T x : arr) body`. The loop
 	// variable is declared in the enclosing scope by the parser, so this only
 	// emits the index loop + per-iteration element fill (php_array_get /

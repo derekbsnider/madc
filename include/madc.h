@@ -6903,6 +6903,11 @@ public:
     // Range-for arrived in C++11; the madc dialect also provides it.
     bool range_for_enabled() const
     { return language_std == STD_MADC || (is_cpp_mode() && language_std >= STD_CPP11); }
+    // An rvalue reference to a non-volatile object is an implicitly movable
+    // entity ([class.copy.elision]/3) from C++20 (P1825R0) — g++ moves
+    // through one from -std=c++20 on; the madc dialect too.
+    bool rvalue_reference_implicitly_movable() const
+    { return language_std == STD_MADC || (is_cpp_mode() && language_std >= STD_CPP20); }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
     // Trigraphs (C11 5.2.1.1; C++ until C++17 removed them) are replaced in
     // the ISO dialects only — gcc's -std=c89 … c17 and c++98 … c++14. A GNU

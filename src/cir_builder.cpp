@@ -29294,23 +29294,49 @@ node_t CirBuilder::exception_match_guard(TokenTRY *tt, size_t ci)
 	return call;
 }
 
-// [class.copy.elision]/3: a throw operand naming a non-volatile automatic
-// object (not a parameter) whose scope does not extend beyond the innermost
-// enclosing try block is moved into the exception object. The scope test is
-// kept to "no try block encloses the throw in this function"; inside a try
-// body the object is copied.
+// [class.copy.elision]/3 (P1825R0): a throw operand naming an implicitly
+// movable entity — a non-volatile automatic object (not a parameter), or from
+// C++20 an rvalue reference to one — that belongs to a scope not containing
+// the compound-statement of the innermost try-block whose compound-statement
+// holds the throw is moved into the exception object.
 bool CirBuilder::thrown_operand_is_implicitly_movable(DataDefCLASS *cdd,
 						      TokenBase *src)
 {
 	TokenVar *tv = src ? src->as_var_tok() : NULL;
-	if (!tv || m_try_body_depth > 0)
+	if (!tv)
 		return false;
 	const Variable &v = tv->var;
-	if (!(v.flags & vfLOCAL) || (v.flags & (vfPARAM | vfSTATIC)))
+	if (!(v.flags & vfLOCAL) || (v.flags & (vfPARAM | vfSTATIC)) || !v.type)
 		return false;
-	if (!v.type || v.type->is_reference() || v.is_reference())
+	DataDef *object = v.type;
+	if (object->is_reference()) {
+		if (!object->is_rvalue_reference()
+		    || !m_prog->rvalue_reference_implicitly_movable())
+			return false;
+		object = TokenSubscript::referent_type(object);
+	}
+	if (!object || object->is_volatile() || as_class_instance(object) != cdd)
 		return false;
-	return as_class_instance(v.type) == cdd;
+	return declared_within_innermost_try_body(v);
+}
+
+// Whether `v` is declared in the compound-statement of the innermost try
+// whose compound-statement holds the throw being lowered, or in a block
+// nested in it (true when no try in this function holds the throw): the
+// block declaring `v` is open, and that try body is it or encloses it.
+bool CirBuilder::declared_within_innermost_try_body(const Variable &v) const
+{
+	if (m_try_bodies.empty())
+		return true;
+	const TokenCpnd *body = m_try_bodies.back();
+	for (size_t i = m_open_blocks.size(); i--; ) {
+		const std::vector<Variable *> &vars = m_open_blocks[i]->variables;
+		if (std::find(vars.begin(), vars.end(), &v) == vars.end())
+			continue;
+		auto end = m_open_blocks.begin() + i + 1;
+		return body && std::find(m_open_blocks.begin(), end, body) != end;
+	}
+	return false;
 }
 
 // `(void *)dtor` — the complete-object destructor of `cdd`, declared and
@@ -29441,9 +29467,9 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	append(then_items, cleanup_guard_local(framename,
 		node2(N_CAST, void_ptr_type(), node1(N_ADDR, id(ctxname, tt), tt), tt),
 		"__madc_try_leave", tt));
-	m_try_body_depth++;
+	m_try_bodies.push_back(tt->try_body ? tt->try_body->as_cpnd_tok() : NULL);
 	node_t body = translate_stmt(tt->try_body);
-	m_try_body_depth--;
+	m_try_bodies.pop_back();
 	if (body) append(then_items, body);
 	node_t then_blk = node2(N_BLOCK, list(), then_items, tt);
 
@@ -31619,6 +31645,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 	const bool has_defers = !tc->deferred.empty();
 	if (has_defers)
 		m_defer_scopes.push_back(tc);
+	m_open_blocks.push_back(tc);
 
 	std::set<madc::dis::istring> decl_vars;
 	for (auto *ts : tc->statements) {
@@ -31859,6 +31886,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		append_deferred_stmts(items, m_defer_scopes.size() - 1);
 		m_defer_scopes.pop_back();
 	}
+	m_open_blocks.pop_back();
 
 	// No manual scope-exit destruction: each eligible class object's storage
 	// decl carries a cleanup attribute, so the c2mir fork emits
