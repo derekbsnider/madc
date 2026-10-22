@@ -180,7 +180,7 @@ gate_applies() {
 check() {
 	local promote_gate="${1:-}"
 	ensure_ledger
-	local rc=0 lane promote sha date tally reason stale_batch=""
+	local rc=0 stale_gated=0 lane promote sha date tally reason stale_batch=""
 	printf '%-16s %-8s %-14s %-12s %s\n' LANE PROMOTE STATE LAST-GREEN TALLY
 	while IFS=$'\t' read -r lane promote sha date tally; do
 		case "$lane" in ''|'#'*) continue;; esac
@@ -193,6 +193,7 @@ check() {
 				"$lane" "$promote" STALE "$date" "$tally" "$reason"
 			if gate_applies "$promote_gate" "$promote"; then
 				rc=1
+				stale_gated=1
 			fi
 			[ "$promote" = batch ] && stale_batch="$stale_batch $lane"
 		fi
@@ -212,7 +213,9 @@ check() {
 			rc=1
 		fi
 	fi
-	if [ "$rc" -ne 0 ]; then
+	# Name only what blocked: an incomplete archive with every lane fresh is
+	# not a stale lane.
+	if [ "$stale_gated" -ne 0 ]; then
 		echo "lane_ledger: ${promote_gate#--} BLOCKED — stale gated" \
 		     "lane(s) above must re-run on current content" >&2
 	fi
