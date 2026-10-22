@@ -6280,8 +6280,11 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 	// content expands them.
 	for ( size_t i = 0; i < differing.size(); ++i )
 	    w.differs.insert(strpool.intern(differing[i].str()));
-	// K2d: the declarations the arm made are not this consumer's.
-	if ( c[CIR_COND_TOK_BEGIN] < c[CIR_COND_TOK_END] )
+	// K2d: the declarations the arm made are not this consumer's — unless an
+	// earlier walk of this TU bound the unit: this is a re-include (a guard
+	// that does not span the file is read again, gcc's multiple-include
+	// rule), and the first inclusion's declarations stand.
+	if ( c[CIR_COND_TOK_BEGIN] < c[CIR_COND_TOK_END] && !w.s.chain_set.count(unit) )
 	    w.withdrawn.push_back(ForestSide::WithdrawnArm{ unit, c[CIR_COND_TOK_BEGIN],
 							    c[CIR_COND_TOK_END] });
 	i_ev = std::max(i_ev, c[CIR_COND_EV_END]);

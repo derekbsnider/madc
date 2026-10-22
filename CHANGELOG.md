@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### A re-included unit keeps the declarations its first inclusion made
+
+- A guard that does not span its file is read again on a re-include, and the re-walk skips the guarded arm. Before, the skipped arm withdrew every name it declares, including names the first inclusion of the same unit had restored, so `#include <cstdlib>` followed by `using std::div_t;` was refused with "'div_t' is not a member of namespace 'std'" on the packed binaries. The arm is now withdrawn only when this translation unit has not already bound the unit.
+- The forest bind gate's case `k2d-reinclude` binds a consumer that includes `<cstdlib>` twice; it requires the output `3 1` and no "cstdlib withdraws" line in the `-v` trace.
+
 ### A forest freeze's source arm is staged before the parse
 
 - `--freeze-sources=LIST` is read before the translation unit is tokenized, so the frozen unit answers `__has_include` and reads headers from the listed source arm, as every consumer of the pack does. Before, the arm joined after the parse, and a darwin freeze (`--no-sysroot-includes`) answered `__has_include(<sys/_types/_mbstate_t.h>)` with 0. Consumers answered 1, the bind declined libc++'s `<string>` root, and the whole translation unit parsed live.

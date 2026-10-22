@@ -1723,6 +1723,47 @@ grep -aq "DECLINE root.*fbgate_k2d_osroot\.h" "$kd_dir/stream.log" \
 rm -rf "$kd_dir"
 echo "forest_bind_gate: [k2d] OK — a run arm's #include is an edge of the walk (no serving completes there), and a frozen arm the walk skips withdraws its declarations"
 
+# --- case: k2d-reinclude ---
+# libstdc++'s <cstdlib> opens its guard after `#include <bits/c++config.h>`,
+# so a re-include reads it again (gcc's multiple-include rule) and the
+# re-walk skips the guard's arm. That arm was taken by this TU's first
+# inclusion: the skip declares nothing and withdraws nothing. The mingw
+# shape is libstdc++'s <stdlib.h> wrapper, parsed live after <cstdlib> bound,
+# re-including <cstdlib> ahead of `using std::div_t;`.
+# g++ and clang++: 3 1.
+kr_dir=tmp/fbgate_k2d_reinclude
+rm -rf "$kr_dir"
+mkdir -p "$kr_dir"
+cat > "$kr_dir/producer.cpp" <<'EOF'
+#include <cstdlib>
+int main() { return 0; }
+EOF
+cat > "$kr_dir/reinclude.cpp" <<'EOF'
+#include <cstdlib>
+#include <cstdlib>
+#include <cstdio>
+using std::div_t;
+using std::div;
+int main() { div_t d = div(7, 2); std::printf("%d %d\n", d.quot, d.rem); return 0; }
+EOF
+kr_snap=$kr_dir/k2d_reinclude.msnap
+timeout 600 "$BIN" --std=gnu++17 --freeze="$kr_snap" "$kr_dir/producer.cpp" \
+    >"$kr_dir/freeze.log" 2>&1 || fail "[k2d-reinclude] the --freeze FAILED: $(tail -n 3 "$kr_dir/freeze.log")"
+if command -v g++ >/dev/null 2>&1; then
+    g++ -std=gnu++17 -o "$kr_dir/reinclude.gxx" "$kr_dir/reinclude.cpp" 2>"$kr_dir/reinclude.gxx.err" \
+	|| fail "[k2d-reinclude] g++ compile FAILED: $(head -n 2 "$kr_dir/reinclude.gxx.err")"
+    [ "$("$kr_dir/reinclude.gxx")" = "3 1" ] || fail "[k2d-reinclude] g++ output is not '3 1' — the reducer is wrong"
+fi
+kr_out=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$kr_snap" "$kr_dir/reinclude.cpp" 2>&1)
+[ "$kr_out" = "3 1" ] || fail "[k2d-reinclude] output '$(printf '%s' "$kr_out" | head -n 2)' != '3 1' (g++)"
+timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$kr_snap" "$kr_dir/reinclude.cpp" >"$kr_dir/reinclude.log" 2>/dev/null
+[ "$(grep -ac "#include <cstdlib> bound to grove unit" "$kr_dir/reinclude.log")" -ge 2 ] \
+    || fail "[k2d-reinclude] <cstdlib> was not bound and then re-walked"
+grep -aq "cstdlib withdraws" "$kr_dir/reinclude.log" \
+    && fail "[k2d-reinclude] the re-walk withdrew what the first inclusion declared: $(grep -a -m1 'cstdlib withdraws' "$kr_dir/reinclude.log")"
+rm -rf "$kr_dir"
+echo "forest_bind_gate: [k2d-reinclude] OK — a re-include's skipped guard arm withdraws nothing the first inclusion declared"
+
 # --- case: k2e (docs/plans/2026-10-18-verified-cxx-bind.md, K2e) ---
 # A taken single arm the walk skips as masked (its sub-block guard is live)
 # may write a macro the consumer holds differently; that name joins the
