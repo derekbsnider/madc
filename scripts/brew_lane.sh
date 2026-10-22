@@ -34,6 +34,10 @@ fi
 # Formulae resolve through Homebrew's API, as on a user's machine (no
 # homebrew/core clone); the local tap is the one formula read from disk.
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1
+# The formula builds with Homebrew's make_jobs, sized by cores: on the build
+# container that is the memory exhaustion build_jobs.sh exists to stop
+# (cc1plus killed at the cores' count, 2026-10-22). HOMEBREW_MAKE_JOBS sets it.
+export HOMEBREW_MAKE_JOBS="${HOMEBREW_MAKE_JOBS:-$(bash scripts/build_jobs.sh)}"
 BPREFIX=$("$BREW" --prefix)
 VER=$(cat VERSION)
 TAP=madc-local/madc
