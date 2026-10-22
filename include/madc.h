@@ -7338,6 +7338,11 @@ public:
     // it reads the registries.
     void activate_forest_member(const madc::dis::istring &ns,
 	const madc::dis::istring &display_name);
+    // One restored using-declaration import: namespace_map[ns][name] -> the
+    // function registered as key, joined to ns::name's overload set when
+    // ov_member. False: key names no function yet.
+    bool bind_forest_ns_import(const madc::dis::istring &ns, const madc::dis::istring &name,
+	const madc::dis::istring &key, bool ov_member);
     // A free operator's lookup: the same, for every namespace.
     void activate_forest_function_display(const madc::dis::istring &display_name);
     // Phase 6 (forest = serialized Tree-1): RECONSTRUCT symbol tables from a
@@ -7708,6 +7713,16 @@ public:
     std::map<const FuncDef *, std::pair<CirFrozenForest *, size_t> > forest_unsettled_defaults;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> >
 	forest_deferred_func_families;
+    // K2d: a restored using-declaration import (`namespace std { using
+    // ::abort; }`) whose target no function names when the bind flushes — a
+    // live arm the walk ran declares it later in the token stream — keyed
+    // "ns::name"; activate_forest_member binds it at the member's first lookup.
+    struct ForestDeferredNsImport
+    {
+	madc::dis::istring ns, name, key;
+	bool ov_member;
+    };
+    std::map<madc::dis::istring, std::vector<ForestDeferredNsImport> > forest_deferred_ns_imports;
     unsigned long long _forest_funcs_eager = 0;
     unsigned long long _forest_funcs_deferred = 0;
     unsigned long long _forest_funcs_activated = 0;

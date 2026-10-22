@@ -27654,6 +27654,18 @@ static void forest_withdrawn_declarers(CirFrozenForest &forest, const Program::F
     }
 }
 
+// K2d: a program-scope name some bound unit's skipped arm withdrew (the
+// restore filter forest_withdrawn_declarers built).
+static bool forest_name_withdrawn(const Program::ForestSide &s, const char *nm)
+{
+    if ( !s.restore_filter || !nm )
+	return false;
+    for ( const auto &uw : s.restore_filter->withdrawn )
+	if ( CirMaterializeFilter::withdraws(uw.second, NULL, nm) )
+	    return true;
+    return false;
+}
+
 void Program::forest_restore_side(ForestSide &s, CirFrozenForest &forest)
 {
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
@@ -29057,10 +29069,69 @@ Variable *Program::activate_forest_func(const madc::dis::istring &name)
     return var;
 }
 
+bool Program::bind_forest_ns_import(const madc::dis::istring &ns, const madc::dis::istring &name,
+				    const madc::dis::istring &key, bool ov_member)
+{
+    Variable *v = findVariable(key);
+    if ( !v || !v->type || !v->type->is_function() )
+	return false;
+    variable_map_t &m = namespace_variables_for_write(ns);
+    if ( m.find(name) == m.end() )
+    {
+	m[name] = v;
+	DBG(std::cout << "forest ns import " << ns << "::" << name << " -> " << key << std::endl);
+    }
+    // [namespace.udecl] twin of the live using-arm (TokenUSING::parse): a
+    // FLAGGED record's import ALSO joins the target's overload set — the SAME
+    // two registrations a declaration written in that namespace gets, join
+    // unconditional even when the map binding already exists. Without it a
+    // bound consumer ranks against a SMALLER set than the freezing parse and
+    // mints a DIFFERENT instantiation identity (LOADED == parsed violation;
+    // stl_vector.h:428 "conversion of non-scalar value requested" in the
+    // release pack's verify). Bind-only records (the inline-ns mirror's
+    // redundant entries) must NOT join: the live mirror grows no sets.
+    if ( !ov_member )
+	return true;
+    std::vector<NamespaceFnOverload> &ovset = namespace_fn_overload_sets[ns + "::" + name];
+    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+	if ( ovset[oi].var == v )
+	    return true;
+    NamespaceFnOverload e;
+    e.var = v;
+    ovset.push_back(e);
+    return true;
+}
+
 void Program::activate_forest_member(const madc::dis::istring &ns,
 				     const madc::dis::istring &display_name)
 {
     dialect_demand(ns, display_name);
+    if ( !forest_deferred_ns_imports.empty() )
+    {
+	// K2d: a deferred using-declaration import of ns::name, or of a member
+	// of ns's inline namespace set (find_namespace_member reads both).
+	std::vector<madc::dis::istring> scopes(1, ns);
+	const std::vector<madc::dis::istring> inl = inline_namespace_descendants(ns);
+	scopes.insert(scopes.end(), inl.begin(), inl.end());
+	for ( size_t si = 0; si < scopes.size(); ++si )
+	{
+	    std::map<madc::dis::istring, std::vector<ForestDeferredNsImport> >::iterator di =
+		forest_deferred_ns_imports.find(scopes[si] + "::" + display_name);
+	    if ( di == forest_deferred_ns_imports.end() )
+		continue;
+	    std::vector<ForestDeferredNsImport> &pending = di->second;
+	    for ( size_t k = 0; k < pending.size(); )
+	    {
+		const ForestDeferredNsImport &d = pending[k];
+		if ( bind_forest_ns_import(d.ns, d.name, d.key, d.ov_member) )
+		    pending.erase(pending.begin() + k);
+		else
+		    ++k;
+	    }
+	    if ( pending.empty() )
+		forest_deferred_ns_imports.erase(di);
+	}
+    }
     if ( forest_deferred_func_families.empty() )
 	return;
     madc::dis::istring family = ns + "::" + display_name;
@@ -29645,47 +29716,27 @@ void Program::forest_apply_pending()
 	CirFrozenForest &forest = *bound;
 	// Using-declaration fn imports (`namespace std { using ::abort; }`):
 	// rebind namespace_map[ns][name] to the restored fn's program-scope
-	// Variable — the exact registration the live using-decl performs. A
-	// fenced/unrestored target cleanly lacks; first-wins matches live.
+	// Variable — the exact registration the live using-decl performs
+	// (bind_forest_ns_import). K2d: a target no function names yet may be
+	// a live arm's declaration, parsed after this flush (mingw's
+	// <process.h> arm declaring abort, whose <stdlib.h> twin the walk
+	// withdrew): the namespace is the frozen code's, and the import binds
+	// at the member's first lookup (activate_forest_member).
 	const std::vector<CirRestoredNsBind> &binds = forest.restored_nsbinds();
 	for ( size_t i = 0; i < binds.size(); ++i )
 	{
 	    const CirRestoredNsBind &b = binds[i];
-	    Variable *v = findVariable(b.key);
-	    if ( !v || !v->type || !v->type->is_function() )
+	    if ( bind_forest_ns_import(b.ns, b.name, b.key, b.ov_member) )
 		continue;
-	    variable_map_t &m = namespace_variables_for_write(b.ns);
-	    if ( m.find(b.name) == m.end() )
-	    {
-		m[b.name] = v;
-		DBG(std::cout << "flush_forest_pending_globals: ns import "
-		    << b.ns << "::" << b.name << " -> " << b.key << std::endl);
-	    }
-	    // [namespace.udecl] twin of the live using-arm (TokenUSING::parse):
-	    // a FLAGGED record's import ALSO joins the target's overload set —
-	    // the SAME two registrations a declaration written in that
-	    // namespace gets, join unconditional even when the map binding
-	    // already exists. Without it a bound consumer ranks against a
-	    // SMALLER set than the freezing parse and mints a DIFFERENT
-	    // instantiation identity (LOADED == parsed violation;
-	    // stl_vector.h:428 "conversion of non-scalar value requested" in
-	    // the release pack's verify). Bind-only records (the inline-ns
-	    // mirror's redundant entries) must NOT join: the live mirror
-	    // grows no sets.
-	    if ( !b.ov_member )
-		continue;
-	    std::vector<NamespaceFnOverload> &ovset =
-		namespace_fn_overload_sets[std::string(b.ns) + "::" + b.name];
-	    bool known = false;
-	    for ( size_t oi = 0; oi < ovset.size(); ++oi )
-		if ( ovset[oi].var == v )
-		    known = true;
-	    if ( !known )
-	    {
-		NamespaceFnOverload e;
-		e.var = v;
-		ovset.push_back(e);
-	    }
+	    const bool withdrawn = forest_name_withdrawn(forest_system, b.key);
+	    DBG(std::cout << "forest ns import " << b.ns << "::" << b.name << " -> " << b.key
+		<< (withdrawn ? ": deferred, a live arm declares it" : ": lacks (fenced)")
+		<< std::endl);
+	    if ( !withdrawn )
+		continue;	// a fenced target cleanly lacks
+	    namespace_variables_for_write(b.ns);
+	    const ForestDeferredNsImport d = { b.ns, b.name, b.key, b.ov_member };
+	    forest_deferred_ns_imports[madc::dis::istring(b.ns) + "::" + b.name].push_back(d);
 	}
 	// Inline-namespace links: restore inline_namespace_children VERBATIM,
 	// then RE-RUN the one live derivation (mirror_inline_namespace_into_

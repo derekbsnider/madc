@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### A bound using-declaration import binds a target a live arm declares
+
+- A restored using-declaration import (`namespace std { using ::abort; }`) whose target function no name holds when the bind flushes is deferred and bound at the member's first lookup, rather than dropped. The target is a declaration a live arm the walk ran contributes later in the token stream. Before, every C++ program that `#include <iostream>` then `#include <stdlib.h>` was refused on the packed win64 binary with "'abort' is not a member of namespace 'std'" (and the same for `exit`, `quick_exit`, `system`): mingw's `<process.h>` and `<stdlib.h>` share a `#ifndef _CRT_TERMINATE_DEFINED` block declaring `abort`; the freeze read `<stdlib.h>` first, and the consumer's `<iostream>` walk reaches `<process.h>` first, ran its arm live, and withdrew `<stdlib.h>`'s frozen `abort` record.
+- A fenced (not withdrawn) target still cleanly lacks, as before. The deferred import joins the target's overload set as `[namespace.udecl]` prescribes when its record is flagged.
+- `bind_forest_ns_import()` is the one registration for a restored import, called from the flush loop and from `activate_forest_member()`. `forest_name_withdrawn()` reads the restore filter's withdrawn-name set to tell a live-arm target from a fenced one.
+- The forest bind gate's case `k2d-import` freezes a producer that reads the `<stdlib.h>` twin first and binds a consumer that reaches the `<process.h>` twin first; it requires the output `called=7` (the output of g++ 13), the withdraw line, and the "deferred" line in the `-v` trace.
+
 ### A re-included unit keeps the declarations its first inclusion made
 
 - A guard that does not span its file is read again on a re-include, and the re-walk skips the guarded arm. Before, the skipped arm withdrew every name it declares, including names the first inclusion of the same unit had restored, so `#include <cstdlib>` followed by `using std::div_t;` was refused with "'div_t' is not a member of namespace 'std'" on the packed binaries. The arm is now withdrawn only when this translation unit has not already bound the unit.

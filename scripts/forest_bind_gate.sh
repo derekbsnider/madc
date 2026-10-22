@@ -1764,6 +1764,84 @@ grep -aq "cstdlib withdraws" "$kr_dir/reinclude.log" \
 rm -rf "$kr_dir"
 echo "forest_bind_gate: [k2d-reinclude] OK — a re-include's skipped guard arm withdraws nothing the first inclusion declared"
 
+# --- case: k2d-import ---
+# mingw's <process.h> and <stdlib.h> hold the same `#ifndef
+# _CRT_TERMINATE_DEFINED` block declaring abort; libstdc++'s <cstdlib> imports
+# it, `namespace std { using ::abort; }`. The freeze reads stdlib first. A
+# consumer reaching process.h first runs its arm live, the walk withdraws
+# stdlib's frozen abort, and the bound import's target is the live
+# declaration — declared after the restore, so the import binds when the
+# member is first looked up.
+# g++ and clang++: called=7.
+ki_dir=tmp/fbgate_k2d_import
+rm -rf "$ki_dir"
+mkdir -p "$ki_dir"
+cat > "$ki_dir/fbgate_ki_proc.h" <<'EOF'
+#ifndef FBG_KI_PROC_H
+#define FBG_KI_PROC_H
+#ifndef FBG_KI_TERMINATE_DEFINED
+#define FBG_KI_TERMINATE_DEFINED
+extern "C" int fbg_ki_term(int);
+#endif
+#endif
+EOF
+cat > "$ki_dir/fbgate_ki_stdlib.h" <<'EOF'
+#ifndef FBG_KI_STDLIB_H
+#define FBG_KI_STDLIB_H
+#ifndef FBG_KI_TERMINATE_DEFINED
+#define FBG_KI_TERMINATE_DEFINED
+extern "C" int fbg_ki_term(int);
+#endif
+#endif
+EOF
+cat > "$ki_dir/fbgate_ki_cstdlib.h" <<'EOF'
+#ifndef FBG_KI_CSTDLIB_H
+#define FBG_KI_CSTDLIB_H
+#include <fbgate_ki_stdlib.h>
+namespace fbg_ki { struct fbg_ki_pair { int a, b; }; using ::fbg_ki_term; }
+#endif
+EOF
+cat > "$ki_dir/fbgate_ki_top.h" <<'EOF'
+#ifndef FBG_KI_TOP_H
+#define FBG_KI_TOP_H
+#include <fbgate_ki_proc.h>
+#include <fbgate_ki_cstdlib.h>
+#endif
+EOF
+cat > "$ki_dir/producer.cpp" <<'EOF'
+#include <fbgate_ki_stdlib.h>
+#include <fbgate_ki_proc.h>
+#include <fbgate_ki_cstdlib.h>
+#include <fbgate_ki_top.h>
+int main() { fbg_ki::fbg_ki_pair p = { 1, 2 }; return fbg_ki::fbg_ki_term(p.a); }
+EOF
+cat > "$ki_dir/import.cpp" <<'EOF'
+#include <fbgate_ki_top.h>
+#include <stdio.h>
+using fbg_ki::fbg_ki_term;
+extern "C" int fbg_ki_term(int x) { return x + 4; }
+int main() { fbg_ki::fbg_ki_pair p = { 3, 0 }; printf("called=%d\n", fbg_ki::fbg_ki_term(p.a)); return 0; }
+EOF
+ki_snap=$ki_dir/k2d_import.msnap
+timeout 600 "$BIN" --std=gnu++17 --freeze="$ki_snap" -I "$ki_dir" "$ki_dir/producer.cpp" \
+    >"$ki_dir/freeze.log" 2>&1 || fail "[k2d-import] the --freeze FAILED: $(tail -n 3 "$ki_dir/freeze.log")"
+if command -v g++ >/dev/null 2>&1; then
+    g++ -std=gnu++17 -I "$ki_dir" -o "$ki_dir/import.gxx" "$ki_dir/import.cpp" 2>"$ki_dir/import.gxx.err" \
+	|| fail "[k2d-import] g++ compile FAILED: $(head -n 2 "$ki_dir/import.gxx.err")"
+    [ "$("$ki_dir/import.gxx")" = "called=7" ] || fail "[k2d-import] g++ output is not 'called=7' — the reducer is wrong"
+fi
+ki_out=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$ki_snap" -I "$ki_dir" "$ki_dir/import.cpp" 2>&1)
+[ "$ki_out" = "called=7" ] || fail "[k2d-import] output '$(printf '%s' "$ki_out" | head -n 2)' != 'called=7' (g++)"
+timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$ki_snap" -I "$ki_dir" "$ki_dir/import.cpp" >"$ki_dir/import.log" 2>/dev/null
+grep -aq "bound to grove unit.*fbgate_ki_top\.h" "$ki_dir/import.log" \
+    || fail "[k2d-import] fbgate_ki_top.h did not bind — $(grep -a -m1 'DECLINE root' "$ki_dir/import.log")"
+grep -aq "withdraws 'fbg_ki_term'" "$ki_dir/import.log" \
+    || fail "[k2d-import] the walk did not withdraw fbgate_ki_stdlib.h's frozen fbg_ki_term"
+grep -aq "fbg_ki::fbg_ki_term -> fbg_ki_term: deferred" "$ki_dir/import.log" \
+    || fail "[k2d-import] the import was not deferred to its first lookup"
+rm -rf "$ki_dir"
+echo "forest_bind_gate: [k2d-import] OK — a bound using-declaration whose target a live arm declares binds at its first lookup"
+
 # --- case: k2e (docs/plans/2026-10-18-verified-cxx-bind.md, K2e) ---
 # A taken single arm the walk skips as masked (its sub-block guard is live)
 # may write a macro the consumer holds differently; that name joins the
