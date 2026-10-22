@@ -926,6 +926,22 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B227. Throwing or catching an aggregate class (no user-declared constructor) is refused
+
+```cpp
+#include <cstdio>
+struct E { int v; };
+int main() { try { throw E{7}; } catch (E &e) { std::printf("%d\n", e.v); } }
+```
+
+- g++ 13 and clang++ 18 (`-std=gnu++17`): `7`. madc 0.106.0 and 0.105.0
+  (`--std=gnu++17`): `error: member reference is not a structure or union`
+  at `e.v`; with no member use (`catch (E &e) { std::printf("caught\n"); }`)
+  c2mir's check refuses the throw: `incompatible argument type for arithmetic
+  type parameter`. `throw E()` and an lvalue throw (`E t; t.v = 7; throw t;`)
+  fail the same way; with a constructor (`E(int x) : v(x) {}`) it prints `7`.
+- Found 2026-10-22 writing a dependency probe. Not a regression.
+
 ### B215. `typeid(ns::S)` of a namespace-scope struct that is not a class is refused
 
 ```cpp
@@ -2847,6 +2863,19 @@ int main(void) { return x; }
   length. Owner 2026-10-22: after 0.106.0 — a `src/` change now restales
   every lane.
 
+### B228. MIR's `except` benchmark runs at half its September speed
+
+- `third_party/mir/c-benchmarks/except.c`, argument 200000000, `-O2` native
+  binaries: 2026-09-21 (`b3dc26b79`, docs/benchmarks) gcc 3487 ms, madc
+  1775 ms (0.51×); 2026-10-22 gcc 3453 ms, madc ~3390 ms (0.97×). madc
+  0.101.0 through 0.106.0 all ~3370 ms; archived releases before 0.101.0 no
+  longer compile the file (`jmp_buf` unresolved), so the bisect stops there.
+- Both madc and gcc binaries call `_setjmp` / `longjmp` from libc: the
+  September gain was generated code (MIR's README: "except was considerably
+  improved by inlining"), not a different library call.
+- It alone moves the exec-c geometric mean from 1.24× to 1.30× (81% → 77%
+  of gcc). Not a regression from 0.105.0.
+
 ## madcide (the editor)
 
 ### B88. vi NORMAL mode's Enter and Backspace edit the buffer
@@ -2889,6 +2918,32 @@ int main(void) { return x; }
   `madc_self_exe_path()` callers).
 
 ## Build and packaging
+
+### B229. A C++ program with a destructor needs libmadc (regression from 0.105.0)
+
+```cpp
+#include <iostream>
+#include <string>
+int main() { std::string who = "world"; std::cout << "Hello, " << who << "!\n"; }
+```
+
+- `madc -o hello hello.cpp` (0.106.0 package): `readelf -d` NEEDED
+  `libmadc.so.0` (the compiler library), `__madc_personality` undefined.
+  0.105.0, the same file: NEEDED libstdc++, libgcc_s, libm, libc only (the
+  README's "needs only the C and C++ runtime libraries, not madc").
+  `madc -c hello.cpp; g++ -o linked hello.o`: 0.105.0 links;
+  0.106.0 `undefined reference to '__madc_personality'` (links with
+  `-lmadc_rt`). A C program, or C++ with no destructor (`std::puts` only),
+  is unaffected. A program that throws needed libmadc in 0.105.0 as well.
+- g++ names `__gxx_personality_v0` (libstdc++, which every C++ link already
+  carries). madc 0.106 (B205 step 6) names `__madc_personality` in every
+  frame with a cleanup region; it is defined in `src/rt/rt_except.c`, i.e.
+  libmadc and libmadc_rt.a, and nothing pulls it into an image.
+- Layer: the image/object writer's runtime members — `src/madc_crt.cpp`'s
+  linkonce crt members, pulled when an image imports their symbol
+  (`cir_ledger_pull`), are how `__dso_handle` / `__madc_dso_fini` already
+  reach `-o` images and `-c` objects without libmadc.
+- Found 2026-10-22 checking the README commands on the 0.106.0 package.
 
 ### B194. A native executable's RUNPATH names the building madc's install and `/usr/local/lib`
 
