@@ -1,0 +1,84 @@
+/* __attribute__((cleanup)): a return statement's value is read before the
+ * scope's cleanups run — gcc and clang load it into the return register (or
+ * the result object) first. A cleanup that frees or scribbles the object the
+ * value lives in must not change what the function returns. madc's c2mir
+ * passed `return p->i;`'s memory operand straight to the ret insn and ran the
+ * cleanup call in between, so the caller read the scribbled (or freed)
+ * memory. Every return shape: an int, a double, a struct returned in
+ * registers, a struct returned through the hidden result pointer, a return
+ * from a block nested in the cleanup's.
+ * Oracle: gcc 13 and clang 18 (-std=gnu17 -O0): the .expect lines. */
+#include <stdio.h>
+#include <string.h>
+
+struct small { long a, b; };
+struct big { long v[6]; };
+struct obj { int i; double d; struct small s; struct big g; };
+
+static struct obj store;
+
+static void scrub(struct obj **pp)
+{
+	memset(*pp, 0xff, sizeof **pp);
+}
+
+static struct obj *fresh(void)
+{
+	store.i = 5;
+	store.d = 2.5;
+	store.s.a = 7;
+	store.s.b = 8;
+	for (int k = 0; k < 6; k++)
+		store.g.v[k] = k + 10;
+	return &store;
+}
+
+static int ret_int(void)
+{
+	struct obj *p __attribute__((cleanup(scrub))) = fresh();
+	return p->i;
+}
+
+static double ret_double(void)
+{
+	struct obj *p __attribute__((cleanup(scrub))) = fresh();
+	return p->d;
+}
+
+static struct small ret_small(void)
+{
+	struct obj *p __attribute__((cleanup(scrub))) = fresh();
+	return p->s;
+}
+
+static struct big ret_big(void)
+{
+	struct obj *p __attribute__((cleanup(scrub))) = fresh();
+	return p->g;
+}
+
+static int ret_nested(void)
+{
+	struct obj *p = fresh();
+	{
+		struct obj *q __attribute__((cleanup(scrub))) = p;
+		{
+			return q->i;
+		}
+	}
+}
+
+int main(void)
+{
+	int i = ret_int();
+	double d = ret_double();
+	struct small s = ret_small();
+	struct big g = ret_big();
+	int n = ret_nested();
+	printf("int %d\n", i);
+	printf("double %.1f\n", d);
+	printf("small %ld %ld\n", s.a, s.b);
+	printf("big %ld %ld %ld %ld %ld %ld\n", g.v[0], g.v[1], g.v[2], g.v[3], g.v[4], g.v[5]);
+	printf("nested %d\n", n);
+	return 0;
+}

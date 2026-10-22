@@ -21181,12 +21181,26 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         val = promote (c2m_ctx, val, t, FALSE);
       }
     }
-    /* __attribute__((cleanup)): run cleanups AFTER the value is computed (it
-       stays live in a register across the calls) and BEFORE the ret insn. */
-    for (node_t cl = NL_EL (r->u.ops, 2); cl != NULL; cl = NL_NEXT (cl))
-      gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
+    /* __attribute__((cleanup)): run cleanups AFTER the returned value is
+       read and BEFORE the ret insn. The ret operands are built first, and a
+       memory operand among them (`return p->i;` passes `i32:(p):i` through)
+       is loaded into a register: a cleanup that frees or overwrites the
+       object would otherwise change what the ret reads. */
     VARR_TRUNC (MIR_op_t, ret_ops, 0);
     target_add_ret_ops (c2m_ctx, func_type->u.func_type->ret_type, val);
+    if (NL_EL (r->u.ops, 2) != NULL) {
+      for (size_t i = 0; i < VARR_LENGTH (MIR_op_t, ret_ops); i++) {
+        MIR_op_t op = VARR_GET (MIR_op_t, ret_ops, i);
+        op_t temp;
+
+        if (op.mode != MIR_OP_MEM) continue;
+        temp = get_new_temp (c2m_ctx, promote_mir_int_type (op.u.mem.type));
+        emit2 (c2m_ctx, tp_mov (op.u.mem.type), temp.mir_op, op);
+        VARR_SET (MIR_op_t, ret_ops, i, temp.mir_op);
+      }
+      for (node_t cl = NL_EL (r->u.ops, 2); cl != NULL; cl = NL_NEXT (cl))
+        gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
+    }
     emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_RET, VARR_LENGTH (MIR_op_t, ret_ops),
                                           VARR_ADDR (MIR_op_t, ret_ops)));
     break;
