@@ -30,6 +30,46 @@ and `--std=gnu++17` for `.cpp`, against `gcc -std=gnu17` / `g++ -std=gnu++17`.
 
 ## Silent wrong answers
 
+### B224. A one-element row of a multi-dimensional array MEMBER loses its braces
+
+```c
+#include <stdio.h>
+struct S { int n; int m[2][4]; };
+struct S s = { 1, {{3},{4}} };
+int main(void)
+{
+	printf("%d %d\n", s.m[0][1], s.m[1][0]);
+	return 0;
+}
+```
+
+- Found 2026-10-22: the benchmark lane's `oggenc` (MIR c-benchmarks) is
+  MADC-FAIL — `oggenc.c:7361` `{{3},{4,5},...}` on `int
+  class_subbook[VIF_CLASS][8]`, "excess elements in scalar initializer"
+  (c2mir check). v0.105.0 the same: not a regression.
+- gcc 13 and clang 18: `0 4`. madc (HEAD and v0.105.0): `4 0`. `--emit=c11`
+  shows `{ 3, { 4 } }` for `{{3},{4}}`: the one-element row is unbraced, so
+  brace elision moves every later row. A mixed row (`{{3},{4,5}}`) is refused
+  instead (the `oggenc` form). A file-scope `int g[2][4] = {{3},{4}}` is right.
+- Layer: cir `unwrap_scalar_braces_list`'s counted-array-member branch
+  unwraps each sub-brace against the member's ELEMENT type (`int`; the member
+  is stored flattened, `member_counts` 8) — a row's slot type is the ROW
+  (`int[4]`, the member's extents: `DataDefSTRUCT::m_array_dims` /
+  `member_array_type`), an aggregate, never a braced scalar.
+
+### B225. A pack-bound struct's multi-dimensional member reads as one extent (latent)
+
+- The forest record `madc::dis::memberrec` (`include/cir_arena.h`) holds a
+  member's array flag and flat count, not its extents: a header member
+  `T m[R][C]` thaws (`src/cir_freeze.cpp`) with `member_dims` `{R*C}`, so
+  `s.m[i][j]` mis-types against a pack-bound struct. Live parsing records
+  `{R, C}`.
+- Latent: no struct the C or C++ packs freeze has a multi-dimensional
+  instance member (2026-10-22: glibc + libstdc++ 13 scan — only tr1/tr2
+  static members). The fix is a dims run in the record (a format bump).
+- Found 2026-10-22 fixing the one-element / flexible member thaw
+  (`tests/testpackarraymember_c`).
+
 ### B217. The address of an overload set ignores the target type ([over.over])
 
 ```cpp
