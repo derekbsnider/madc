@@ -144,10 +144,13 @@ if [ "$interop" = 1 ]; then
 		|| { diff "$out/oracle_a.out" "$out/lane_a.out" | head -20; fail "[interop] lane A output differs from the all-g++ build (< oracle, > madc-defined)"; }
 	echo "mangle_abi_gate: [interop] lane A OK — madc-defined class linked into a g++ program, output identical ($(grep -c . "$out/madc_def.syms") symbols, set-equal with g++, none bound stronger)"
 
-	# Lane B: g++ defines, madc (--std=c++20 this time) uses.
+	# Lane B: g++ defines, madc (--std=c++20 this time) uses. madc's object
+	# names madc's runtime as a g++ object names libstdc++: a function with
+	# cleanups carries __madc_personality (B205), which libmadc_rt.a defines
+	# (the foreign-link runtime archive, emitc_sret_gate's leg 2b).
 	"$MADC_BIN" --std=c++20 -fno-eval-shims -c -o "$out/madc_use.o" $abi/interop_madc_use.mad \
 		|| fail "[interop] madc could not compile the user TU to an object"
-	g++ -o "$out/lane_b" "$out/gxx_def.o" "$out/madc_use.o" \
+	g++ -o "$out/lane_b" "$out/gxx_def.o" "$out/madc_use.o" -Llib -lmadc_rt \
 		|| fail "[interop] lane B did not LINK — madc's user TU imports symbols g++'s definer does not export"
 	"$out/lane_b" > "$out/lane_b.out" || fail "[interop] lane B ran but failed (rc=$?)"
 	cmp -s "$out/lane_b.out" "$out/oracle_b.out" \
