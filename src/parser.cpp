@@ -5662,7 +5662,7 @@ struct TokenBufferView
 bool Program::pack_output_at_declaration_scope()
 {
     if ( !pack_scope_delims )
-	pack_scope_delims = std::make_shared<DelimDepth>();
+	pack_scope_delims.reset(new DelimDepth());
     DelimDepth &d = *pack_scope_delims;
     const TokenBufferView view = { tokens };
     while ( pack_scope_scanned < view.size() )

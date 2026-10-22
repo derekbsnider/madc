@@ -4331,15 +4331,18 @@ void CirFrozenForest::materialize_pass()
 			sdd->member_offsets.push_back(mr.offset);
 			// A declared array loads VERBATIM: its flag (bit0) and its count,
 			// so `char _shortbuf[1]` stays an array and a flexible member
-			// (`__cmsg_data[]`) keeps count 0 — and its extent is that count,
-			// the parser's shape for a one-dimension member (the record
-			// carries no multi-dimension shape).
+			// (`__cmsg_data[]`) keeps count 0. A one-dimension extent reads as
+			// the count where member_dims holds none (m_array_dims, the
+			// emitter); only the flexible member's {0} is recorded — the
+			// record carries no multi-dimension shape (B225).
 			bool declared_array = (mr.flags & 1u) != 0;
 			sdd->member_counts.push_back(declared_array || mr.count ? mr.count : 1);
 			sdd->member_array_flags.push_back(declared_array);
-			sdd->member_dims.push_back(declared_array
-				? std::vector<carray_dim_t>(1, (carray_dim_t)mr.count)
-				: std::vector<carray_dim_t>());
+			if (declared_array && !mr.count) {
+				while (sdd->member_dims.size() < sdd->members.size())
+					sdd->member_dims.push_back(std::vector<carray_dim_t>());
+				sdd->member_dims.back().assign(1, 0);
+			}
 			sdd->member_access.push_back(mr.access);
 			sdd->member_origin.push_back((int)mr.origin);
 			DataDefSTRUCT::BitFieldInfo bf;

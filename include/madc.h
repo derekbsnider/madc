@@ -3815,7 +3815,7 @@ protected:
     // include site, so only such an arm's tokens replay (K2, v76). The scan
     // resumes where the last call stopped.
     bool pack_output_at_declaration_scope();
-    std::shared_ptr<DelimDepth> pack_scope_delims;
+    std::unique_ptr<DelimDepth> pack_scope_delims;	// complete where Program is built and destroyed (parser.cpp)
     size_t pack_scope_scanned = 0;
     std::vector<bool> pack_scope_linkage;	// per open brace: a linkage specification's
     bool evaluateIfCondition();
