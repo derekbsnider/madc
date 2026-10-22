@@ -1,5 +1,24 @@
 # Test Status
 
+0.106.0 seam battery, with the release-seam fixes (2026-10-22, `085b0f3b0` content on
+`feature/dialect-faces-claude`: the `Release v0.106.0` commit `c056a3937` plus the pack
+fixes `ecb30bafd` (a pack-bound struct's one-element / flexible array member) and
+`2ad1c9428` (forest v76: an arm inside a declaration does not replay at the include site),
+and their cost refinement `085b0f3b0`): static gates 0 red of 117, `make gates` green
+(forest_bind_gate 48/48), parse-cost 0 red of 21. Linux packed madc-release 0.106.0
+headerless 2109 passed, 0 failed, 69 skipped + ondisk 60/0; exeobj JIT 2169/0/9skip, EXE
+1942/0, OBJ 1942/0. headerless-win (packed PE under wine) 2049/0/129skip + ondisk-win
+27/0/33skip; wine64 (hosted PE) 2076/0/102skip; genuine Windows 11 full suite 2048/0/130skip.
+darwin-suite native libc++: arm64 Mac Mini (macOS 14) 2122/0/56skip + mac battery 12/0, Intel
+MacBook (macOS 15) 2125/0/53skip + mac battery 12/0. Interactive subset: Linux 61/0 + units
+7/0 (packed 61/0), Windows 55/0/6skip, both Macs 59/0/2skip. Homebrew lane 2169/0/9skip.
+Fast lanes at baseline (c-testsuite 220/0, c-torture 1620 with 5 baseline, c2mir 368/0/4,
+gui 13/13, gxx-c++11 1505, index-c 50/50, commonmark 664/6). macOS build and aarch64-ld
+green. tests-jit (batch) = the exeobj stage, 2169/0/9skip. A C-pack differential (6 feature
+macros x every ordered pair of the 30 C-pack headers, 5220 compiles) has no compile the live
+headers accept and the pack refuses. Untracked known-RED `testnoreturn_c11` excluded
+throughout.
+
 0.105.0 seam battery (2026-10-14, `a2a6d317c` content on `feature/pack-slices-claude`: the REPL live
 reparse and the pack slices): static gates 0 red of 98, `make gates` green, parse-cost 0 red of
 14. Linux packed madc-release headerless 2000 passed, 0 failed, 43 skipped + ondisk 34/0;

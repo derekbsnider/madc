@@ -1,21 +1,21 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
-c-testsuite	commit	b6eaa13b0c3a	2026-10-15	220 passed, 0 failed (0 outside baseline) — fix lane at f45eca6e4 content
-c-torture	commit	b6eaa13b0c3a	2026-10-15	1617 passed, 7 failing (0 outside baseline) — fix lane at f45eca6e4 content
-c2mir-tests	commit	b6eaa13b0c3a	2026-10-15	368 passed, 0 failed, 4 skipped — fix lane at f45eca6e4 content
-gui	commit	b6eaa13b0c3a	2026-10-15	15 passed, 0 failed | EXE 15/0 | OBJ 15/0 (dev) — fix lane at f45eca6e4 content
-gxx-c++11	no	b6eaa13b0c3a	2026-10-15	1505 passed, 441 compile-failed (0 outside baseline) — fix lane at f45eca6e4 content
-index-c	yes	b6eaa13b0c3a	2026-10-15	50/50 tasks OK [-O2] — fix lane at f45eca6e4 content
-commonmark	commit	b6eaa13b0c3a	2026-10-15	664 passed, 6 failed (0 outside baseline) — fix lane at f45eca6e4 content
-interactive	yes	b6eaa13b0c3a	2026-10-15	60/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT) + the same subset 60/0 on the packed madc-release, at f45eca6e4 content
-interactive-win	release	b6eaa13b0c3a	2026-10-15	54 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at f45eca6e4 content
-interactive-darwin	release	b6eaa13b0c3a	2026-10-15	arm64 Mac Mini 58/0/0TO/2skip + Intel MacBook 58/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.105.0 at f45eca6e4 content; madcide 0.8.0 (84fbb13) 67/0 + check_install PASS on both
-linux-battery	yes	e09316d0dc71	2026-10-15	seam_battery.sh at e09316d0d (0.105.0 release seam, after the dialect-faces commit f45eca6e4): headerless 2005/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2039/0/9skip, EXE 1830/0, OBJ 1830/0; parse-cost 0 red of 14; static gates 0 red of 99 + make gates green
-headerless-win	yes	e09316d0dc71	2026-10-15	1964/0/0TO/84skip at e09316d0d + ondisk-win 1/0 — packed PE under wine (seam_battery.sh)
-macos	yes	e09316d0dc71	2026-10-15	BUILD lane: macos-build + macos stages rc=0 at e09316d0d (seam_battery.sh, 0.105.0 release seam)
-genuine-win	release	e09316d0dc71	2026-10-15	1963/0/0TO/85skip — the FULL suite on the owner Windows 11 box at e09316d0d content (scripts/win_suite.sh, the release-seam packed PE)
-brew-linux	release	e09316d0dc71	2026-10-15	2039/0/0TO/9skip - scripts/brew_lane.sh at e09316d0d content (bottle + pour + brew test, keg-masked runpath gate)
-darwin-suite	release	e09316d0dc71	2026-10-15	darwin-suite native libc++ at e09316d0d content: arm64 Mac Mini (macOS 14) 2005/0/0TO/43skip + mac battery 12/0; Intel MacBook (macOS 15) 2008/0/0TO/40skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>); EXE advisory 291/297 failed (D5 class)
-aarch64-ld	yes	ed6d6f131c75	2026-10-20	aarch64_ldouble_lane GREEN (control; aot + jit on every fixture, nansl jit skipped by reason; bootstrap)
-tests-jit	batch	01ad985f120f	2026-10-21	2148 passed, 2 failed (untracked pending-gate reducers testnoreturn_c11, testthrow_through_frame), 9 skipped
-wine64	yes	4ed893d64225	2026-10-21	2062 passed, 0 tracked failed (untracked known-RED testnoreturn_c11, testthrow_through_frame), 99 skipped -- JIT, B205 6.3 step 3
+darwin-suite	release	085b0f3b0fa2	2026-10-22	darwin-suite native libc++ at 085b0f3b0: arm64 Mac Mini (macOS 14) 2122/0/0TO/56skip + mac battery 12/0; Intel MacBook (macOS 15) 2125/0/0TO/53skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>; untracked known-RED testnoreturn_c11 excluded); EXE advisory (D5 class)
+interactive-darwin	release	085b0f3b0fa2	2026-10-22	arm64 Mac Mini 59/0/0TO/2skip + Intel MacBook 59/0/0TO/2skip - interactive_lane.sh's tests/ subset on the darwin -O2 madc-release-<arch>-macos at 085b0f3b0
+linux-battery	yes	085b0f3b0fa2	2026-10-22	seam_battery.sh at 085b0f3b0 (v0.106.0 release candidate: c056a3937 + ecb30bafd + 2ad1c9428 + 085b0f3b0): headerless 2109/0/0TO/69skip + ondisk 60/0 on packed -O2 madc-release 0.106.0; exeobj JIT 2169/0/9skip, EXE 1942/0, OBJ 1942/0; parse-cost 0 red of 21; static gates 0 red of 117 + make gates green (untracked known-RED testnoreturn_c11 excluded)
+headerless-win	yes	085b0f3b0fa2	2026-10-22	2049/0/0TO/129skip at 085b0f3b0 + ondisk-win 27/0/33skip - packed PE under wine (seam_battery.sh; untracked known-RED testnoreturn_c11 excluded)
+macos	yes	085b0f3b0fa2	2026-10-22	BUILD lane: macos-build + macos stages rc=0 at 085b0f3b0 (seam_battery.sh, v0.106.0 release candidate)
+aarch64-ld	yes	085b0f3b0fa2	2026-10-22	aarch64_ldouble_lane GREEN at 085b0f3b0 (seam_battery.sh aarch64-build + aarch64-ld stages rc=0)
+tests-jit	batch	085b0f3b0fa2	2026-10-22	2169 passed, 0 tracked failed (untracked known-RED testnoreturn_c11), 9 skipped - the seam battery's exeobj stage (tests/ JIT on the packed madc-release, + EXE 1942/0, OBJ 1942/0) at 085b0f3b0
+c-testsuite	commit	085b0f3b0fa2	2026-10-22	220 passed, 0 failed (0 outside baseline) - fast lanes at 085b0f3b0
+c-torture	commit	085b0f3b0fa2	2026-10-22	1620 passed, 5 failing (0 outside baseline) - fast lanes at 085b0f3b0
+c2mir-tests	commit	085b0f3b0fa2	2026-10-22	368 passed, 0 failed, 4 skipped (0 outside baseline) - fast lanes at 085b0f3b0
+gui	commit	085b0f3b0fa2	2026-10-22	13 passed, 0 failed | EXE 13/0 | OBJ 13/0 (dev) - fast lanes at 085b0f3b0
+gxx-c++11	no	085b0f3b0fa2	2026-10-22	1505 passed, 441 failing (0 outside baseline) - fast lanes at 085b0f3b0
+index-c	yes	085b0f3b0fa2	2026-10-22	50/50 tasks OK, 0 failed [-O2] - fast lanes at 085b0f3b0
+commonmark	commit	085b0f3b0fa2	2026-10-22	664 passed, 6 failed (0 outside baseline) - fast lanes at 085b0f3b0
+interactive	yes	085b0f3b0fa2	2026-10-22	61/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT) + the same subset 61/0 on the packed madc-release 0.106.0, at 085b0f3b0
+genuine-win	release	085b0f3b0fa2	2026-10-22	2048/0/0TO/130skip - the FULL suite on the owner Windows 11 box at 085b0f3b0 (scripts/win_suite.sh, the release-seam packed PE 0.106.0; untracked known-RED testnoreturn_c11 excluded)
+interactive-win	release	085b0f3b0fa2	2026-10-22	55 passed, 0 failed, 0 timed out, 6 skipped - win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at 085b0f3b0
+wine64	yes	085b0f3b0fa2	2026-10-22	2076 passed, 0 tracked failed (untracked known-RED testnoreturn_c11), 102 skipped -- JIT, the hosted PE under a persistent wineserver (remote_build.sh wine) at 085b0f3b0
+brew-linux	release	085b0f3b0fa2	2026-10-22	2169/0/0TO/9skip - scripts/brew_lane.sh at 085b0f3b0 content (madc 0.106.0: bottle + pour + brew test, keg-masked runpath gate; untracked known-RED testnoreturn_c11 excluded)
