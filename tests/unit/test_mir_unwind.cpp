@@ -2,9 +2,10 @@
 // unwinding.md): the per-call regions MIR_gen records, the region table a
 // function's FDE hands its personality (MIR_UNWIND_TABLE_VERSION), the
 // regions c2mir opens for cleanup variables, and the runtime's own personality
-// and forced unwind (src/rt/rt_except.c). A test that runs the generated
-// code raises an exception through the generated frames with the host
-// unwinder (_Unwind_RaiseException), as the runtime's throw will: the unwinder
+// (src/rt/rt_personality.c) and forced unwind (src/rt/rt_except.c). A test
+// that runs the generated code raises an exception through the generated
+// frames with the host unwinder (_Unwind_RaiseException), as the runtime's
+// throw will: the unwinder
 // calls the test's personality for each frame whose FDE names it, with that
 // frame's region table; the personality finds the call site, the frame base
 // (the table's register in that frame + its offset), and in the cleanup phase
@@ -868,7 +869,7 @@ TEST_CASE("__builtin_cleanup_arm of a variable without a cleanup does nothing; o
 
 }
 
-// The runtime's personality (src/rt/rt_except.c): madc's own try shape -- the
+// The runtime's personality (src/rt/rt_personality.c): madc's own try shape -- the
 // try context, its setjmp, the guard whose cleanup is __madc_try_leave --
 // compiled by c2mir with regions naming __madc_personality, and a throw
 // through __madc_throw_int, which force-unwinds to the try. Only the runtime

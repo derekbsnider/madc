@@ -2941,32 +2941,6 @@ int main() { std::string who = "world"; std::cout << "Hello, " << who << "!\n"; 
   runtime libraries" holds on Linux and Windows only.
 - Found 2026-10-22 checking B229 on macOS. Not a regression.
 
-### B229. A C++ program with a destructor needs libmadc (regression from 0.105.0)
-
-```cpp
-#include <iostream>
-#include <string>
-int main() { std::string who = "world"; std::cout << "Hello, " << who << "!\n"; }
-```
-
-- `madc -o hello hello.cpp` (0.106.0 package): `readelf -d` NEEDED
-  `libmadc.so.0` (the compiler library), `__madc_personality` undefined.
-  0.105.0, the same file: NEEDED libstdc++, libgcc_s, libm, libc only (the
-  README's "needs only the C and C++ runtime libraries, not madc").
-  `madc -c hello.cpp; g++ -o linked hello.o`: 0.105.0 links;
-  0.106.0 `undefined reference to '__madc_personality'` (links with
-  `-lmadc_rt`). A C program, or C++ with no destructor (`std::puts` only),
-  is unaffected. A program that throws needed libmadc in 0.105.0 as well.
-- g++ names `__gxx_personality_v0` (libstdc++, which every C++ link already
-  carries). madc 0.106 (B205 step 6) names `__madc_personality` in every
-  frame with a cleanup region; it is defined in `src/rt/rt_except.c`, i.e.
-  libmadc and libmadc_rt.a, and nothing pulls it into an image.
-- Layer: the image/object writer's runtime members — `src/madc_crt.cpp`'s
-  linkonce crt members, pulled when an image imports their symbol
-  (`cir_ledger_pull`), are how `__dso_handle` / `__madc_dso_fini` already
-  reach `-o` images and `-c` objects without libmadc.
-- Found 2026-10-22 checking the README commands on the 0.106.0 package.
-
 ### B194. A native executable's RUNPATH names the building madc's install and `/usr/local/lib`
 
 ```c

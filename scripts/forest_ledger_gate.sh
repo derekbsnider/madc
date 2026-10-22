@@ -25,6 +25,11 @@
 #      helpers exist only as host C++ objects) refuses, NAMING symbols
 #   6b the other side — a plain <iostream>/<string> program IS fully coverable:
 #      it emits, keeps no libmadc dependency, and matches its JIT output
+#   6c the same program WITHOUT the flag: its destructors' unwind personality
+#      rides the image like libgcc's, so it needs no libmadc, and its -c
+#      object links with plain g++
+#   6d a g++ throw crossing a madc object's frame runs the frame's destructor
+#      (the object's own personality copy; oracle: g++ alone)
 #   7  no-ledger carrier: a container packed without --freeze-ledger= refuses
 #      with the build-side message, never the Tier-B one
 #   8  -static-libmadc -c refuses at the CLI (the runtime merges at the link)
@@ -363,6 +368,79 @@ elif [ -z "$cpp_aot" ] || [ "$cpp_jit" != "$cpp_aot" ]; then
 	diff <(echo "$cpp_jit") <(echo "$cpp_aot") | head -6
 else
 	pass "plain C++ program is fully ledger-coverable"
+fi
+
+# --- leg 6c: the same program WITHOUT the flag needs no madc library -------
+# A C++ frame with a destructor names madc's unwind personality (B205), the
+# role __gxx_personality_v0 plays for g++. It rides every image and object
+# the way libgcc's personality does, so a program whose only runtime need is
+# its destructors' unwinding keeps no libmadc dependency and its -c object
+# links with plain g++ (B229: 0.106.0 shipped needing both).
+emit_and_inspect "$D/cpp.mad" cppdyn
+# The personality's references into the exception runtime are weak: null in
+# a program that never throws (ld's undefined weak), so only a STRONG
+# __madc_* import is a dependency.
+UND=$(readelf --dyn-syms -W "$D/cppdyn" 2>/dev/null \
+      | awk '$7=="UND" && $5!="WEAK"{print $8}' | grep -a '^__madc_' | sort -u)
+cppdyn_aot=$(run "$D/cppdyn" 2>/dev/null)
+run "$MADC" --forest-bind="$D/madc.forest" -c -o "$D/cppdyn.o" "$D/cpp.mad" \
+	> "$D/cppdyn_o.emit" 2>&1
+obj_rc=$?
+g++ -o "$D/cppdyn_gxx" "$D/cppdyn.o" > "$D/cppdyn_gxx.link" 2>&1
+gxx_rc=$?
+cppdyn_gxx=$(run "$D/cppdyn_gxx" 2>/dev/null)
+if [ $EMIT_RC -ne 0 ]; then
+	fail "plain C++ program emits without -static-libmadc (rc=$EMIT_RC)"
+	sed -n '1,10p' "$D/cppdyn.emit"
+elif [ -n "$NEEDED" ]; then
+	fail "plain C++ image without -static-libmadc needs '$NEEDED'"
+elif [ -n "$UND" ]; then
+	fail "plain C++ image without -static-libmadc imports: $(tr '\n' ' ' <<<"$UND")"
+elif [ -z "$cppdyn_aot" ] || [ "$cppdyn_aot" != "$cpp_jit" ]; then
+	fail "plain C++ image output matches the JIT run"
+elif [ $obj_rc -ne 0 ] || [ $gxx_rc -ne 0 ]; then
+	fail "plain C++ -c object links with plain g++ (madc rc=$obj_rc, g++ rc=$gxx_rc)"
+	sed -n '1,6p' "$D/cppdyn_o.emit" "$D/cppdyn_gxx.link"
+elif [ "$cppdyn_gxx" != "$cpp_jit" ]; then
+	fail "plain C++ -c object linked by g++ matches the JIT run"
+else
+	pass "plain C++ program needs no madc library: image and g++-linked object"
+fi
+
+# --- leg 6d: a g++ throw crossing a madc object's frame runs its destructor -
+# The object's own personality copy runs the frame's cleanup for a foreign
+# exception, as g++ destroys a frame's objects for any exception. Oracle: the
+# same two files built by g++ alone.
+cat > "$D/xframe.cpp" <<'EOF'
+#include <cstdio>
+struct D { ~D() { std::puts("dtor"); } };
+void g();
+void f() { D d; g(); std::puts("not reached"); }
+EOF
+cat > "$D/xmain.cpp" <<'EOF'
+#include <cstdio>
+void g() { throw 1; }
+void f();
+int main() { try { f(); } catch (int) { std::puts("caught"); } return 0; }
+EOF
+g++ -c -o "$D/xframe_g.o" "$D/xframe.cpp" && g++ -c -o "$D/xmain.o" "$D/xmain.cpp" \
+	&& g++ -o "$D/xoracle" "$D/xframe_g.o" "$D/xmain.o"
+xoracle=$(run "$D/xoracle" 2>/dev/null)
+run "$MADC" --forest-bind="$D/madc.forest" --std=gnu++17 -c -o "$D/xframe_m.o" \
+	"$D/xframe.cpp" > "$D/xframe.emit" 2>&1
+xobj_rc=$?
+g++ -o "$D/xmixed" "$D/xframe_m.o" "$D/xmain.o" > "$D/xmixed.link" 2>&1
+xlink_rc=$?
+xmixed=$(run "$D/xmixed" 2>/dev/null)
+if [ "$xoracle" != "$(printf 'dtor\ncaught')" ]; then
+	fail "foreign-throw oracle (g++ alone) prints dtor, caught (got '$xoracle')"
+elif [ $xobj_rc -ne 0 ] || [ $xlink_rc -ne 0 ]; then
+	fail "foreign-throw madc object links with plain g++ (madc rc=$xobj_rc, g++ rc=$xlink_rc)"
+	sed -n '1,6p' "$D/xframe.emit" "$D/xmixed.link"
+elif [ "$xmixed" != "$xoracle" ]; then
+	fail "a g++ throw through a madc frame runs its destructor (got '$xmixed')"
+else
+	pass "a g++ throw through a madc object's frame runs its destructor"
 fi
 
 # --- leg 7: a carrier with no ledger gets the BUILD-side message ----------

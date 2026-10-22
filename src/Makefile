@@ -1606,6 +1606,16 @@ $(OBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
+# The unwind personality's startup member (madc_crt.cpp) is rt_personality.c's
+# own text — rt_unwind.h inlined, MADC_RT_IMAGE defined — generated into the
+# obj tree, so the member and libmadc's copy are one source.
+RT_PERSONALITY_TEXT = $(OBJDIR)/rt_personality_text.inc
+$(RT_PERSONALITY_TEXT): rt/rt_personality.c rt/rt_unwind.h ../scripts/gen_rt_text.sh
+	@mkdir -p $(OBJDIR)
+	bash ../scripts/gen_rt_text.sh rt/rt_personality.c $@
+$(OBJDIR)/madc_crt.o $(PICOBJDIR)/madc_crt.o: $(RT_PERSONALITY_TEXT)
+$(OBJDIR)/madc_crt.o $(PICOBJDIR)/madc_crt.o: DEFINES += -I$(OBJDIR)
+
 # The dialect is builtin (docs/plans/2026-10-17-dialect-builtin-registration.md):
 # its registration code is generated from include/madc/ns_* and bits/* by a
 # STAGE-ONE madc — the same objects, linked with the empty table

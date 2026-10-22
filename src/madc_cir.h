@@ -403,6 +403,9 @@ struct cir_ledger_module
 // pulled. `init` names the member's image init (an executable's or shared
 // object's init array runs it), NULL = none; `fini` its image fini (DT_FINI:
 // ld.so calls it when it unloads the image or the process exits), NULL = none.
+// `image_only`: pulled for -o / -c output alone; a JIT session resolves the
+// member's names out of the libmadc it runs inside (libgcc's personality
+// role: the image carries it, the host already has it).
 struct madc_crt_member
 {
 	const char *name;
@@ -410,7 +413,18 @@ struct madc_crt_member
 	const char *init;
 	const char *fini;
 	const char *source;
+	bool image_only;
 };
+
+// The routine every generated function with unwind regions names (B205): the
+// DWARF personality, or on Windows x64 the language-specific handler; both
+// run the function's region table (src/rt/rt_personality.c). Host == target,
+// as the try lowering's setjmp.
+#ifdef _WIN32
+#define MADC_UNWIND_PERSONALITY "__madc_seh_handler"
+#else
+#define MADC_UNWIND_PERSONALITY "__madc_personality"
+#endif
 // The target's members, ended by an all-NULL row.
 extern const madc_crt_member madc_crt_members[];
 

@@ -94,16 +94,7 @@ c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p)
     return c2mir_init_compile(mir_ctx, opts);
 }
 
-// The routine every generated function with unwind regions names: the DWARF
-// personality, or on Windows x64 the language-specific handler; both run the
-// function's region table (src/rt/rt_except.c). Host == target, as the try
-// lowering's setjmp.
-static const char *const cir_unwind_personality =
-#ifdef _WIN32
-    "__madc_seh_handler";
-#else
-    "__madc_personality";
-#endif
+static const char *const cir_unwind_personality = MADC_UNWIND_PERSONALITY;
 
 int cir_compile(MIR_context_t mir_ctx, c2m_ctx_t c2m, node_t tree,
 		const char *module_name, bool unwind_p)
@@ -402,7 +393,7 @@ static void cir_bind_trap_module(MIR_context_t ctx,
     MIR_load_module(ctx, DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)));
 }
 
-static bool cir_crt_indexed(const char *name);
+static bool cir_crt_indexed(const char *name, bool images);
 
 // Does the link resolve `name` without a trap? The import resolver's names
 // (the host, the opened runtime), and a startup member's: the archive every
@@ -410,9 +401,10 @@ static bool cir_crt_indexed(const char *name);
 // imports AFTER the traps bind. A trap for a member's name would define it
 // first and the pull would never select the member (Windows: no DLL exports
 // __cxa_atexit, so a frozen module's static object reached the trap).
-static bool cir_link_resolves(const char *name)
+// `images`: an -o / -c link, whose archive also holds the image-only members.
+static bool cir_link_resolves(const char *name, bool images)
 {
-    return cir_import_resolver(name) || cir_crt_indexed(name);
+    return cir_import_resolver(name) || cir_crt_indexed(name, images);
 }
 
 static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
@@ -428,7 +420,7 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
 	if (it->binding == MIR_ITEM_BIND_WEAK) continue;
 	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || !seen.insert(nm).second) continue;
-	if (cir_link_resolves(nm.c_str())) continue;
+	if (cir_link_resolves(nm.c_str(), false)) continue;
 	undef.push_back(nm);
     }
     if (undef.empty()) return;
@@ -466,7 +458,7 @@ static void cir_prebind_cache_traps(MIR_context_t ctx, MIR_module_t cache_mod,
 	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || consumer_imports.count(nm)
 	    || !seen.insert(nm).second) continue;
-	if (cir_link_resolves(nm.c_str())) continue;
+	if (cir_link_resolves(nm.c_str(), false)) continue;
 	undef.push_back(nm);
     }
     if (undef.empty()) return;
@@ -657,11 +649,19 @@ static const std::vector<std::pair<madc::dis::istring, size_t> > &cir_crt_index(
     return index;
 }
 
-// Does a member define `name`? (A link that imports none skips the pull.)
-static bool cir_crt_indexed(const char *name)
+// Is member `i` a candidate of this link? `images`: an -o / -c link, which
+// also pulls the image-only members.
+static bool cir_crt_candidate(size_t i, bool images)
+{
+    return images || !madc_crt_members[i].image_only;
+}
+
+// Does a member this link pulls define `name`? (A link that imports none
+// skips the pull.)
+static bool cir_crt_indexed(const char *name, bool images)
 {
     for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
-	if (e.first == name)
+	if (e.first == name && cir_crt_candidate(e.second, images))
 	    return true;
     return false;
 }
@@ -774,9 +774,10 @@ static bool cir_ledger_read_module(MIR_context_t ctx,
 // identical: one pull implementation, two shapes of program.
 //
 // The startup members (madc_crt.cpp) are candidates in every link, the
-// archive the link always searches (libc_nonshared.a's place); the ledger's
-// modules join under -static-libmadc when `prog` can provide them.
-static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
+// archive the link always searches (libc_nonshared.a's place) — the
+// image-only ones in an -o / -c link (`images`) alone; the ledger's modules
+// join under -static-libmadc when `prog` can provide them.
+static void cir_ledger_pull(MIR_context_t ctx, Program *prog, bool images,
 			    const std::vector<madc::dis::istring> *seed = NULL)
 {
     size_t ncrt = 0;
@@ -791,7 +792,8 @@ static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
     // ledger's modules
     std::map<madc::dis::istring, size_t> owner;
     for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
-	owner.insert(std::make_pair(e.first, e.second));
+	if (cir_crt_candidate(e.second, images))
+	    owner.insert(std::make_pair(e.first, e.second));
     for (size_t i = 0; i < ledger.size(); i++)
 	for (const madc::dis::istring &s : ledger[i].syms)
 	    owner.insert(std::make_pair(s, ncrt + i));
@@ -829,10 +831,10 @@ static void cir_crt_pull_for(MIR_context_t ctx, MIR_module_t m)
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it))
 	if (it->item_type == MIR_import_item && it->u.import_id
-	    && cir_crt_indexed(it->u.import_id))
+	    && cir_crt_indexed(it->u.import_id, false))
 	    seed.push_back(it->u.import_id);
     if (!seed.empty())
-	cir_ledger_pull(ctx, NULL, &seed);
+	cir_ledger_pull(ctx, NULL, false, &seed);
 }
 
 // --- AOT ledger as a RELOCATABLE (the .o link lane, -static-libmadc) -------
@@ -883,7 +885,7 @@ static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
     }
     cir_mir_error_armed = true;
     MIR_gen_set_object_mode(ctx, 1);
-    cir_ledger_pull(ctx, prog, &seed);
+    cir_ledger_pull(ctx, prog, true, &seed);
     cir_mir_error_armed = false;
     return true;
 }
@@ -1584,7 +1586,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
     // the capture. Object mode only — the JIT lane resolves the same symbols
     // out of the live libmadc it is already running inside.
     if (madc_object_mode)
-	cir_ledger_pull(ctx, prog);
+	cir_ledger_pull(ctx, prog, true);
     mc_lap("ledger pull");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
     cir_active_cells = live_mode ? &late_cell_slots : NULL;
@@ -3045,7 +3047,7 @@ static bool cir_undefined_references(const std::vector<madc::dis::istring> &impo
     }
     size_t undefined = 0;
     for (const madc::dis::istring &imp : imports)
-	if (!cir_link_resolves(imp.c_str())) {
+	if (!cir_link_resolves(imp.c_str(), true)) {
 	    fprintf(stderr, "madc: %s: undefined reference to `%s'\n",
 		    out_path, imp.c_str());
 	    undefined++;
@@ -3247,9 +3249,12 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				   MadcNativeKind kind, const CirImageTraits &traits)
 {
     bool shared = kind == mnkShared;
-    // Conditional runtime dependency: a program whose every dynamic import
-    // resolves within the base C/C++ and user -l libraries gets no
-    // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed.
+    // Conditional runtime dependency: a program whose every strong dynamic
+    // import resolves within the base C/C++ and user -l libraries gets no
+    // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed. A
+    // weak reference never makes the runtime needed (ld --as-needed): it
+    // binds when a program's strong ones brought libmadc, and is null
+    // otherwise (the unwind personality's view of the throw side).
     std::vector<std::string> other;
     bool have_madc = cir_split_needed(needed, other);
     std::vector<madc::dis::istring> imports, strong;
@@ -3265,7 +3270,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 	return false;
     bool drop_madc = have_madc
 		     && (madc_static_libmadc
-			 || !cir_imports_need_madc_runtime(imports, other));
+			 || !cir_imports_need_madc_runtime(strong, other));
     DBG(std::cout << "native image DT_NEEDED: libmadc.so.0 "
 		  << (drop_madc ? "dropped (runtime-free)"
 				: (have_madc ? "kept" : "absent"))
@@ -3816,7 +3821,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	}
 	bool drop_madc = have_madc
 			 && (madc_static_libmadc
-			     || !cir_imports_need_madc_runtime(imports, other));
+			     || !cir_imports_need_madc_runtime(strong, other));
 	DBG(std::cout << "linked image DT_NEEDED: libmadc.so.0 "
 		      << (drop_madc ? "dropped (runtime-free)"
 				    : (have_madc ? "kept" : "absent"))
@@ -8681,7 +8686,7 @@ int madc_project_emit_native(MadcEngine &engine,
 	// above. Any TU's Program answers for the carrier; they share one
 	// installation.
 	if (!parsed.empty())
-		cir_ledger_pull(ctx, parsed[0].prog.get());
+		cir_ledger_pull(ctx, parsed[0].prog.get(), true);
 	MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
 	if (madc_debug_info)
 		c2mir_object_attach_debug(ctx);   // R5: whole-program DWARF
