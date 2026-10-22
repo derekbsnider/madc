@@ -7184,6 +7184,8 @@ public:
     };
     PreludeRelocation prelude_relocation = { false, 0, 0, 0 };
     void end_include_serving();
+    madc::dis::istring note_include_once_key(const madc::dis::istring &path);
+    void note_bound_include_key(const char *unit_name, const madc::dis::istring &incfile);
     bool relocate_include_for_prelude(const madc::dis::istring &key);
     // Identifiers this TU declares in a declarator position (after a type
     // or a struct/class/enum tag keyword): the auto-include scan never

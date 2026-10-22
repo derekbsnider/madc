@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### A bound include's served tokens keep the auto-include prelude's parse order
+
+- A program's own `#include` of a header the auto-include prelude also includes, nested (`<string>` -> `<cwchar>` -> `<wchar.h>`) and written after the use that queued the prelude, now reads the header's tokens from the prelude's inclusion, which is first in parse order. Before, a bound include served its replayed arms and posix supplement under no once-only key, so the prelude's later skip of the same header could not move those tokens ahead of the unit. On the packed win64 binary the nested reducers were refused with `cwchar:144:11: error: 'fgetwc' is not a declaration in '::'` — `using ::fgetwc;` preceding `fgetwc`'s replayed declaration. The 0.106.0 seam battery's headerless-win stage found this where 0.105.0's headerless-win was clean; Linux packed and dev passed before and after.
+- `Program::note_include_once_key()` holds the key computation and the `include_once_key` / `include_serving.back().key` writes, extracted unchanged from `should_tokenize_include` (which now calls it). `Program::note_bound_include_key()` notes that key for a bound unit's include — the unit's path when it is one (`madc::detail::host_path_absolute`), else `<incfile>` for a named unit — only when the dialect surface is enabled and not while the prelude lexes, so the per-include path canonicalization stays off the C/C++ parse path. Both forest-bind arms in the `#include` handler call it before `include_completed_token`.
+- Relocation arming is unchanged: it arms only for a first range at or after the prelude's insertion point, so a unit's top-of-file bound includes cost nothing.
+- Tests: `testautoinclude_later_nested` prints `len 3` and `testautoinclude_mid_nested` prints `len 3 wide 2`, the output of g++ 13 and clang++ 18 with the includes at the top. The archived v0.105.0 packed win64 binary refused both.
+
 ### -finstrument-functions instruments a bound header's inline definition
 
 - Under `--finstrument-functions`, a function definition bound from the forest pack now gets the `__cyg_profile_func_enter`/`__cyg_profile_func_exit` hooks when this translation unit emits it, as gcc instruments an inline body in each TU that emits it. Before, the packed binary bound `<cstdlib>`'s `std::abs(long)` (`bits/std_abs.h`) from the forest — lowered when the pack was built, without the TU's flags — and emitted it hook-less, so a program calling it read `entries 0 exits 0`. On win64 the C layer (J5) did the same for mingw's inline `printf` wrapper.

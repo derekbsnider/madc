@@ -2601,6 +2601,34 @@ void Program::end_include_serving()
     }
 }
 
+// B198: `path`'s once-only key — "<name>" for a named include, else the path
+// in the canonicalization the search-dir prefixes get (they are compared
+// against each other, so one owner, canonical_path_for_compare, or they
+// drift) — noted as the key the directive in flight is served under.
+madc::dis::istring Program::note_include_once_key(const madc::dis::istring &path)
+{
+    madc::dis::istring key = path;
+    if ( !path.empty() && path[0] != '<' )
+	key = canonical_include_key(path);
+    include_once_key = key;
+    if ( !include_serving.empty() )
+	include_serving.back().key = key;
+    return key;
+}
+
+// The once-only key a bound unit's include is served under — the key a later
+// include of the same header checks: its path, or the name of a named one.
+// Only a dialect unit's own includes keep a range (end_include_serving).
+void Program::note_bound_include_key(const char *unit_name, const madc::dis::istring &incfile)
+{
+    if ( !dialect_surface_enabled() || prelude_relocation.active )
+	return;
+    if ( unit_name && madc::detail::host_path_absolute(unit_name) )
+	note_include_once_key(unit_name);
+    else
+	note_include_once_key("<" + incfile.str() + ">");
+}
+
 // B198: the prelude skipped `key` as already included, but its first
 // inclusion lies in the unit AFTER the prelude's position — in parse order the
 // prelude's include is the first. Lexing in parse order would put that
@@ -7998,15 +8026,8 @@ bool Program::should_tokenize_include(const std::string &path)
     include_probe_text.clear();
     include_probe_path.clear();
     include_guard_watch_key = madc::dis::istring();
-    // Same canonicalization the search-dir prefixes get — they are compared
-    // against each other, so one owner (canonical_path_for_compare) or they drift.
-    madc::dis::istring canonical = path;
-    if ( !path.empty() && path[0] != '<' )
-	canonical = canonical_include_key(path);
     // B198: the key this check gates on is the directive's once-only key.
-    include_once_key = canonical;
-    if ( !include_serving.empty() )
-	include_serving.back().key = canonical;
+    madc::dis::istring canonical = note_include_once_key(path);
     if ( !path.empty() && path[0] == '<' )
     {
 	// Named (embedded/PCH) include keys: blanket once-only — the baked
@@ -9337,6 +9358,10 @@ TokenBase *Program::_getToken()
 				}
 				if ( bound_real_provider )
 				    tokenize_posix_header_supplement(incfile);
+				// B198: the replayed arms' tokens are this
+				// serving's range, under the key a later include
+				// of the header checks.
+				note_bound_include_key(bound_unit_name, incfile);
 				return include_completed_token();
 			    }
 			}
@@ -9471,6 +9496,7 @@ TokenBase *Program::_getToken()
 				tokenize_posix_header_supplement(incfile);
 			    // Item 5: decl restore rides the post-tokenize
 			    // flush (see the system-include bind site).
+			    note_bound_include_key(full_path.c_str(), incfile);	// B198, as above
 			    return include_completed_token();
 			}
 		    }
