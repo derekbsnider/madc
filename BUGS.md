@@ -2828,6 +2828,25 @@ int main(void) { return x; }
   record each one's C standard (`c_since`), which a C-side gate can read.
   `typeof`, `typeof_unqual` and `_BitInt` are C23's alone.
 
+## Performance
+
+### B226. The main source file's first buffer is read twice
+
+- `strace madc test.c` (one `#include`): `read` 8191, `lseek(0, SEEK_SET)`,
+  then `lseek` `SEEK_END` / `SEEK_CUR` / `SEEK_CUR` / `SEEK_SET`, then the
+  same `read` again. Found by the owner 2026-10-22 on 0.106.0.
+- `Program::tokenize` (`src/lexer.cpp`): a `getline` of the first line for
+  `adopt_shebang_standard` (6a21775f5, 2026-10-16 — new since 0.105.0), then
+  a rewind; then a seek-to-end / `tellg` byte count for `--show-stats`
+  (`_input_bytes`, every compile, not only under the flag); then
+  `source.copybuf` reads the file for real.
+- Cost: one extra `read` of the first ≤8 KB and five `lseek`s, page-cached —
+  microseconds. Not the whole file twice.
+- Fix: read once; take the shebang line from the buffer (it must still be
+  seen before `_tokenizer_init()`) and the byte count from the buffer's
+  length. Owner 2026-10-22: after 0.106.0 — a `src/` change now restales
+  every lane.
+
 ## madcide (the editor)
 
 ### B88. vi NORMAL mode's Enter and Backspace edit the buffer
