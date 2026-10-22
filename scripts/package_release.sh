@@ -210,11 +210,12 @@ mkdir -p "$SHLIB/debian"
 printf 'Source: madc\n\nPackage: madc\nArchitecture: any\n' > "$SHLIB/debian/control"
 DEBLIB="$PWD/$DEBROOT/usr/lib/x86_64-linux-gnu"
 DEBBIN="$PWD/$DEBROOT/usr/bin"
+DEBMOD="$PWD/$DEBROOT/usr/lib/madc/modules"	# absolute before the cd below
 DEPENDS=$(cd "$SHLIB" && dpkg-shlibdeps -O --ignore-missing-info -l"$DEBLIB" \
               "$DEBBIN/madc" \
               "$DEBLIB/libmadc.so.0" \
-              "$PWD/$DEBROOT/usr/lib/madc/modules/git.so" \
-              "$PWD/$DEBROOT/usr/lib/madc/modules/markdown.so" 2> shlibdeps.log |
+              "$DEBMOD/git.so" \
+              "$DEBMOD/markdown.so" 2> shlibdeps.log |
           sed -n 's/^shlibs:Depends=//p')
 if [ -z "$DEPENDS" ]; then
     echo "package_release: dpkg-shlibdeps named no dependencies (see $SHLIB/shlibdeps.log)" >&2
