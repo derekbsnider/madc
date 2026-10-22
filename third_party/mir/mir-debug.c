@@ -1229,7 +1229,7 @@ void MIR_object_destroy (MIR_object_t obj) {
 }
 
 size_t MIR_object_text_append (MIR_object_t obj, const void *bytes, size_t len) {
-  while (obj->text.len % 16 != 0) buf_u8 (&obj->text, 0);
+  while (obj->text.len % MIR_TARGET_CODE_ALIGN != 0) buf_u8 (&obj->text, 0);
   size_t off = obj->text.len;
   buf_bytes (&obj->text, bytes, len);
   return off;
@@ -1365,7 +1365,7 @@ static dwsec_t obj_elf_alloc_sec (MIR_object_t obj, int k) {
   dwsec_t s = {obj_elf_sec_name[k], SHT_PROGBITS, 0, 0, 8, SHF_ALLOC | SHF_WRITE, 0, 0, NULL, 0};
   switch (k) {
   case MIR_OBJ_SEC_TEXT:
-    s.align = 16;
+    s.align = MIR_TARGET_CODE_ALIGN;
     s.flags = SHF_ALLOC | SHF_EXECINSTR;
     break;
   case MIR_OBJ_SEC_DATA: s.align = (uint32_t) (obj->data_align > 8 ? obj->data_align : 8); break;
@@ -2201,10 +2201,12 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint64_t dynstr_off = off;
   off = OBJX_ALIGN (dynstr_off + dynstr.len, 8);
   uint64_t rela_off = off, rela_size = (uint64_t) n_dyn_rel * sizeof (Elf64_Rela);
-  off = OBJX_ALIGN (rela_off + rela_size, 16);
-  /* no _start stub/slot in a .so; text_off's 16-alignment already preserves
-     the captured code's SSE-constant alignment on its own */
+  /* no _start stub/slot in a .so.  The captured code (after the stub) starts
+     on MIR_TARGET_CODE_ALIGN, as in the object: its loop-head padding and
+     SSE-constant alignment are relative to that; the stub, a multiple of
+     16 bytes, stays 16-aligned ahead of it. */
   uint64_t text_bias = shared_p ? 0 : OBJX_TEXT_BIAS;
+  off = OBJX_ALIGN (rela_off + rela_size + text_bias, MIR_TARGET_CODE_ALIGN) - text_bias;
   uint64_t text_off = off, text_size = text_bias + obj->text.len;
   /* the unwind records follow the code, read-only: .eh_frame_hdr (the
      search table PT_GNU_EH_FRAME names), .eh_frame + its terminator, and
@@ -2952,8 +2954,9 @@ static int objin_from_elf (objin_t *v, const void *vbuf, size_t size, char *err_
   if (objx_scan (&sc, vbuf, size, err_msg, err_len) != 0) return -1;
   const Elf64_Shdr *sh = sc.sh;
 
-  /* Alloc-section bodies + alignments: powers of two; .text is fixed at the
-     emitter's 16 (MIR_object_text_append aligns to exactly that). */
+  /* Alloc-section bodies + alignments: powers of two; .text at most the
+     emitter's MIR_TARGET_CODE_ALIGN (MIR_object_text_append aligns to exactly
+     that). */
   const int *isec = sc.i_sec;
   for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) {
     v->sec[s].align = 1;
@@ -2968,9 +2971,9 @@ static int objin_from_elf (objin_t *v, const void *vbuf, size_t size, char *err_
     v->sec[s].size = sh[isec[s]].sh_size;
     if (s != MIR_OBJ_SEC_BSS) v->sec[s].body = sc.buf + sh[isec[s]].sh_offset;
   }
-  if (v->sec[MIR_OBJ_SEC_TEXT].align > 16) {
-    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is 16)",
-                 (unsigned long long) v->sec[MIR_OBJ_SEC_TEXT].align);
+  if (v->sec[MIR_OBJ_SEC_TEXT].align > MIR_TARGET_CODE_ALIGN) {
+    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is %d)",
+                 (unsigned long long) v->sec[MIR_OBJ_SEC_TEXT].align, MIR_TARGET_CODE_ALIGN);
     return -1;
   }
   if (v->sec[MIR_OBJ_SEC_INITARR].size % 8 != 0 || v->sec[MIR_OBJ_SEC_INITARR].align > 8) {

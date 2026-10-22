@@ -766,7 +766,9 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
 #define MACHO_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   /* ---- layout: identity fileoff <-> vaddr-base mapping through __DATA (the
      segments after it: below) */
-  uint64_t text_off = MACHO_ALIGN (32 + sizeofcmds, 16); /* keeps SSE pool alignment */
+  /* the code starts on MIR_TARGET_CODE_ALIGN, as in the object (its loop-head
+     padding and SSE pool alignment are relative to that) */
+  uint64_t text_off = MACHO_ALIGN (32 + sizeofcmds, MIR_TARGET_CODE_ALIGN);
   uint64_t text_end = text_off + obj->text.len;
   uint64_t except_off = MACHO_ALIGN (text_end, 4);
   uint64_t unwind_off = MACHO_ALIGN (except_off + obj->except.len, 4);
@@ -1582,7 +1584,8 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
 #define MACHO_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   /* ---- section table */
   macho_osec_t S[MACHO_OSEC_N];
-  macho_osec_set (&S[MACHO_OSEC_TEXT], "__text", "__TEXT", obj->text.p, obj->text.len, 16,
+  macho_osec_set (&S[MACHO_OSEC_TEXT], "__text", "__TEXT", obj->text.p, obj->text.len,
+                  MIR_TARGET_CODE_ALIGN,
                   MACHO_S_REGULAR | MACHO_S_ATTR_PURE_INSTRUCTIONS
                     | MACHO_S_ATTR_SOME_INSTRUCTIONS,
                   1, 0);
@@ -2061,9 +2064,9 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
     }
     off += cmdsize;
   }
-  if (v->sec[MIR_OBJ_SEC_TEXT].align > 16) {
-    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is 16)",
-                 (unsigned long long) v->sec[MIR_OBJ_SEC_TEXT].align);
+  if (v->sec[MIR_OBJ_SEC_TEXT].align > MIR_TARGET_CODE_ALIGN) {
+    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is %d)",
+                 (unsigned long long) v->sec[MIR_OBJ_SEC_TEXT].align, MIR_TARGET_CODE_ALIGN);
     return -1;
   }
   if (v->sec[MIR_OBJ_SEC_INITARR].size % 8 != 0) {

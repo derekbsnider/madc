@@ -138,6 +138,20 @@
 #define MIR_TARGET_IS_RISCV64 0
 #endif
 
+/* --- derived: function code alignment --- */
+
+/* Every function's code starts on this alignment: in the JIT's code pages
+   and in every object and executable the writers emit (madc fork).  A
+   generator's loop-head alignment is absolute only up to it.  x86-64: 32,
+   so an innermost loop head can start a 32-byte fetch block wherever the
+   function lands (mir-gen-x86_64.c); the other targets keep 16, gcc's and
+   clang's function alignment there. */
+#if MIR_TARGET_IS_X86_64
+#define MIR_TARGET_CODE_ALIGN 32
+#else
+#define MIR_TARGET_CODE_ALIGN 16
+#endif
+
 /* --- derived: target OS ABI variant --- */
 
 /* aarch64 has Darwin deviations (all varargs on stack, x18 reserved,

@@ -1389,6 +1389,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/sret_abi_gate.sh
 	@cd .. && bash scripts/vector_abi_gate.sh
 	@cd .. && bash scripts/c2m_initializer_override_gate.sh
+	@cd .. && bash scripts/loop_align_gate.sh
 	@cd .. && bash scripts/mangle_abi_gate.sh --selftest --interop
 	@cd .. && bash scripts/emitc_sret_gate.sh
 	@cd .. && bash scripts/emitcxx_roundtrip_gate.sh

@@ -3791,7 +3791,19 @@ static uint8_t *translate_finish (gen_ctx_t gen_ctx, size_t *len) {
 
 static void target_split_insns (gen_ctx_t gen_ctx MIR_UNUSED) {}
 
-#define LOOP_ALIGN 8
+/* Loop-head alignment (madc fork): an innermost loop's head starts a 32-byte
+   block, so a loop of up to 32 bytes runs from one fetch block wherever its
+   function lands; any other loop head goes to 16 when that costs at most 10
+   bytes of padding, else to 8 (gcc -O2's .p2align 4,,10 / .p2align 3; clang
+   pads loop heads to 16).  Absolute, because every function starts on
+   MIR_TARGET_CODE_ALIGN. */
+#define INNER_LOOP_ALIGN 32
+#define LOOP_ALIGN 16
+#define LOOP_ALIGN_MAX_SKIP 10
+#define LOOP_ALIGN_MIN 8
+#if MIR_TARGET_CODE_ALIGN < INNER_LOOP_ALIGN
+#error "x86-64 loop-head alignment needs functions aligned at least as strictly"
+#endif
 
 static const char *nop_pats[] = {
   "",
@@ -3802,7 +3814,30 @@ static const char *nop_pats[] = {
   "\x0f\x1f\x44\x00\x00" /* 5: nopl 0x0(%rax,%rax,1) */,
   "\x66\x0f\x1f\x44\x00\x00" /* 6: nopw   0x0(%rax,%rax,1) */,
   "\x0f\x1f\x80\x00\x00\x00\x00" /* 7: nopl 0x0(%rax) */,
+  "\x0f\x1f\x84\x00\x00\x00\x00\x00" /* 8: nopl 0x0(%rax,%rax,1) */,
+  "\x66\x0f\x1f\x84\x00\x00\x00\x00\x00" /* 9: nopw 0x0(%rax,%rax,1) */,
 };
+#define MAX_NOP_LEN ((int) (sizeof (nop_pats) / sizeof (char *)) - 1)
+
+static int align_pad (size_t pc, int align) { return (int) ((align - pc % align) % align); }
+
+/* the padding ahead of LABEL at code offset PC; with PC unknown (the size
+   estimation pass), its upper bound */
+static int loop_head_pad (gen_ctx_t gen_ctx, MIR_insn_t label, size_t pc, int bound_p) {
+  if (!gen_loop_label_p (gen_ctx, label)) return 0;
+  if (gen_nested_loop_label_p (gen_ctx, label))
+    return bound_p ? INNER_LOOP_ALIGN - 1 : align_pad (pc, INNER_LOOP_ALIGN);
+  if (bound_p) return LOOP_ALIGN_MAX_SKIP;
+  int pad = align_pad (pc, LOOP_ALIGN);
+  return pad <= LOOP_ALIGN_MAX_SKIP ? pad : align_pad (pc, LOOP_ALIGN_MIN);
+}
+
+static void put_nops (gen_ctx_t gen_ctx, int n) {
+  for (int len; n > 0; n -= len) {
+    len = n < MAX_NOP_LEN ? n : MAX_NOP_LEN;
+    VARR_PUSH_ARR (uint8_t, result_code, (uint8_t *) nop_pats[len], len);
+  }
+}
 
 static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -3817,7 +3852,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     if (insn->code == MIR_LABEL) {
-      if (gen_nested_loop_label_p (gen_ctx, insn)) curr_size += LOOP_ALIGN;
+      curr_size += loop_head_pad (gen_ctx, insn, 0, TRUE);
       set_label_disp (gen_ctx, insn, curr_size); /* estimation */
     } else if (insn->code != MIR_USE) {
       ind = find_insn_pattern (gen_ctx, insn, &max_insn_size);
@@ -3836,12 +3871,8 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     gen_cfi_note_insn (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
     if (insn->code == MIR_LABEL) {
-      if (gen_nested_loop_label_p (gen_ctx, insn)) {
-        int padn = LOOP_ALIGN - (int) (VARR_LENGTH (uint8_t, result_code) % LOOP_ALIGN);
-        if (padn == LOOP_ALIGN) padn = 0;
-        gen_assert ((size_t) padn < sizeof (nop_pats) / sizeof (char *));
-        if (padn != 0) VARR_PUSH_ARR (uint8_t, result_code, (uint8_t *) nop_pats[padn], padn);
-      }
+      put_nops (gen_ctx,
+                loop_head_pad (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code), FALSE));
       set_label_disp (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code));
     } else if (insn->code != MIR_USE) {
       ind = VARR_GET (int, insn_pattern_indexes, n++);

@@ -1,0 +1,37 @@
+/* Loop-head alignment reducer (BUGS.md B232): innermost loops, a loop nest
+   and a while loop, compiled -O2 by scripts/loop_align_gate.sh, which checks
+   the object's and the executable's function and loop-head addresses.  As a
+   test it prints the values gcc 13 and clang 18 print (.expect). */
+#include <stdio.h>
+
+static int a[64];
+
+int sum_inner (int n) {
+	int s = 0;
+	for (int i = 0; i < n; i++) s += a[i] * 3;
+	return s;
+}
+
+int nested (int n) {
+	int s = 0;
+	for (int i = 0; i < n; i++) {
+		s += i;
+		for (int j = 0; j < n; j++) s ^= a[j] + i;
+	}
+	return s;
+}
+
+int count_bits (unsigned x) {
+	int c = 0;
+	while (x != 0) {
+		c += x & 1;
+		x >>= 1;
+	}
+	return c;
+}
+
+int main (void) {
+	for (int i = 0; i < 64; i++) a[i] = i * 7 % 13;
+	printf ("%d %d %d\n", sum_inner (64), nested (64), count_bits (0xdeadbeefu));
+	return 0;
+}

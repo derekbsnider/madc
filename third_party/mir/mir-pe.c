@@ -13,7 +13,7 @@
 
    Mapping from the ELF relocatable emitter (MIR_object_emit):
 
-     .text          -> .text          (CODE, R+X, align 16)
+     .text          -> .text          (CODE, R+X, align MIR_TARGET_CODE_ALIGN)
      .mir.addrpool  -> .mir.addrpool  (DATA, R+W -- the addrpool-as-GOT
                        model; long name goes through the string table)
      .init_array    -> .CRT$XCU       (8-byte fn-pointer slots; a normal
@@ -215,7 +215,7 @@ static int pe_emit_object (MIR_object_t obj, void **buf, size_t *size) {
   /* ---- section table */
   pe_osec_t S[PE_OSEC_N];
   memset (S, 0, sizeof S);
-  S[PE_OSEC_TEXT] = (pe_osec_t) {obj->text.p, obj->text.len, 16,
+  S[PE_OSEC_TEXT] = (pe_osec_t) {obj->text.p, obj->text.len, MIR_TARGET_CODE_ALIGN,
                                  PE_SCN_CNT_CODE | PE_SCN_MEM_EXECUTE | PE_SCN_MEM_READ,
                                  0, 0, 0, 0, 1, 0};
   S[PE_OSEC_POOL]
@@ -580,9 +580,9 @@ static int objin_from_pe (objin_t *v, const void *vbuf, size_t size, char *err_m
     ovfl[sec] = (chars & PE_SCN_LNK_NRELOC_OVFL) != 0;
     if (s + 1 < 256) sec_of_ord[s + 1] = sec;
   }
-  if (v->sec[MIR_OBJ_SEC_TEXT].align > 16) {
-    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is 16)",
-                 (unsigned long long) v->sec[MIR_OBJ_SEC_TEXT].align);
+  if (v->sec[MIR_OBJ_SEC_TEXT].align > MIR_TARGET_CODE_ALIGN) {
+    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is %d)",
+                 (unsigned long long) v->sec[MIR_OBJ_SEC_TEXT].align, MIR_TARGET_CODE_ALIGN);
     return -1;
   }
   if (v->sec[MIR_OBJ_SEC_INITARR].size % 8 != 0) {
@@ -921,8 +921,8 @@ static const uint8_t pex_fixup_prologue[48]
 #define PEX_FIX_TAB_AT 0x03
 #define PEX_FIX_END_AT 0x0a
 
-/* The entry stub (gas-oracle encodings, tmp/win/w3/stub.s).  112 bytes,
-   16-aligned so the captured text keeps its own alignment right after.
+/* The entry stub (gas-oracle encodings, tmp/win/w3/stub.s).  112 bytes; with
+   the 48-byte prologue the captured text after it keeps its own alignment.
    Patch points are disp32 fields, each relative to the END of its
    instruction (rip-relative), except MAIN which is a call rel32.
    Offsets below are stub-relative; the fixup prologue precedes it, so
@@ -1025,6 +1025,12 @@ static const uint8_t pex_dll_stub[160]
      0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
      0xcc /* pad 0x96..0x9f = 160 bytes */};
 #define PEX_DLL_STUB_SIZE 160
+/* the entry region ahead of the captured code, at the page-aligned .text
+   start, keeps that code on MIR_TARGET_CODE_ALIGN (its loop-head padding is
+   relative to it) */
+#if PEX_ENTRY_SIZE % MIR_TARGET_CODE_ALIGN != 0 || PEX_DLL_STUB_SIZE % MIR_TARGET_CODE_ALIGN != 0
+#error "a PE entry region must be a multiple of MIR_TARGET_CODE_ALIGN"
+#endif
 /* DLL_PROCESS_DETACH calls the image's fini (exec params' `fini`, the
    role mingw's dllcrt plays: the DLL's exit handlers run at FreeLibrary and
    at process exit, while its code is mapped); with none, the first branch

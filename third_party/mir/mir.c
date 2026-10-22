@@ -5253,7 +5253,8 @@ static code_holder_t *get_last_code_holder (MIR_context_t ctx, size_t size) {
 
   if ((len = VARR_LENGTH (code_holder_t, code_holders)) > 0) {
     ch_ptr = VARR_ADDR (code_holder_t, code_holders) + len - 1;
-    ch_ptr->free = (uint8_t *) ((uint64_t) (ch_ptr->free + 15) / 16 * 16); /* align */
+    ch_ptr->free = (uint8_t *) ((uint64_t) (ch_ptr->free + MIR_TARGET_CODE_ALIGN - 1)
+                                / MIR_TARGET_CODE_ALIGN * MIR_TARGET_CODE_ALIGN); /* align */
     if (ch_ptr->free + size <= ch_ptr->bound) return ch_ptr;
   }
   npages = (size + page_size) / page_size;

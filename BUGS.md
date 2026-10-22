@@ -2891,23 +2891,6 @@ int main(void) { return x; }
 - It alone moves the exec-c geometric mean from 1.24× to 1.30× (81% → 77%
   of gcc). Not a regression from 0.105.0.
 
-### B232. MIR aligns no loop head, so a benchmark swings 18% with unrelated layout
-
-- `funnkuch-reduce` (MIR c-benchmarks, `-O2 -o`, i7-12700F): packaged 0.105.0
-  1951 ms, 0.106.0 2297 ms, best of 11 interleaved. The two binaries'
-  instructions are identical; 0.106.0's added sections (`.mir.addrpool`,
-  `.init_array`, `.dynamic`) start `.text` 0x30 later. Shifting 0.106.0's code
-  by 16-byte padding functions alternates 2302 / 1945 / 2317 / 1946 / 2300 ms
-  (`tk` at 0x760 / 0x770 / 0x780 / 0x790 / 0x7a0): slow when `tk` sits on a
-  32-byte boundary. Across the suite 0.106.0/0.105.0 is 1.014× (geometric
-  mean, 15 benchmarks); every other row is within ±5%.
-- gcc 13 `-O2`: `.p2align 4` per function and `.p2align 4,,10` /
-  `.p2align 3` before each loop head; clang 18 `-O2`: `.p2align 4, 0x90` NOP
-  padding before loop heads. MIR's generator emits neither.
-- Fix: in MIR's generator, function entry and loop-head alignment the way
-  gcc / clang do it, on every MIR target. Not a regression (code generation
-  is unchanged); found 2026-10-22 comparing the c-benchmarks across releases.
-
 ## madcide (the editor)
 
 ### B88. vi NORMAL mode's Enter and Backspace edit the buffer

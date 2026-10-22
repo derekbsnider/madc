@@ -120,6 +120,7 @@ static void *gen_malloc (gen_ctx_t gen_ctx, size_t size);
 static void gen_free (gen_ctx_t gen_ctx, void *ptr);
 static MIR_reg_t gen_new_temp_reg (gen_ctx_t gen_ctx, MIR_type_t type, MIR_func_t func);
 static int gen_nested_loop_label_p (gen_ctx_t gen_ctx, MIR_insn_t insn);
+static int gen_loop_label_p (gen_ctx_t gen_ctx, MIR_insn_t insn);
 static void set_label_disp (gen_ctx_t gen_ctx, MIR_insn_t insn, size_t disp);
 static size_t get_label_disp (gen_ctx_t gen_ctx, MIR_insn_t insn);
 static void create_new_bb_insns (gen_ctx_t gen_ctx, MIR_insn_t before, MIR_insn_t after,
@@ -1317,6 +1318,16 @@ static int MIR_UNUSED gen_nested_loop_label_p (gen_ctx_t gen_ctx, MIR_insn_t ins
        node = DLIST_NEXT (loop_node_t, node))
     if (node->bb == NULL) return FALSE; /* subloop */
   return TRUE;
+}
+
+/* The label starts a loop's header block -- any loop, innermost or not (madc
+   fork: the generators' loop-head alignment). */
+static int MIR_UNUSED gen_loop_label_p (gen_ctx_t gen_ctx, MIR_insn_t insn) {
+  gen_assert (insn->code == MIR_LABEL);
+  if (optimize_level <= 1) return FALSE;
+  bb_t bb = get_insn_bb (gen_ctx, insn);
+  if (bb->loop_node == NULL || bb->loop_node->parent == NULL) return FALSE;
+  return bb->loop_node->parent->entry == bb->loop_node;
 }
 
 static void set_label_disp (gen_ctx_t gen_ctx, MIR_insn_t insn, size_t disp) {
