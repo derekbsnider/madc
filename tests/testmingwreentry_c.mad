@@ -1,0 +1,18 @@
+/* B222: mingw's <_mingw.h> closes its include guard before a trailing block,
+ * and <vadefs.h>, which it includes, includes it again while it is still open.
+ * The outer inclusion's tail — after the nested one — defines the rest of its
+ * macros (_TRUNCATE, __CRTDECL, _CONST_RETURN). madc's win64 packed binary
+ * bound only the nested inclusion's range and lost the tail: _TRUNCATE was
+ * undefined after <stdio.h>. Elsewhere the test reads plain <stdio.h>.
+ * Oracle: gcc 13 (-std=gnu17) and x86_64-w64-mingw32 gcc 13: "ok". */
+#include <stdio.h>
+
+int main(void)
+{
+#if defined(_WIN32) && !defined(_TRUNCATE)
+	printf("_TRUNCATE missing\n");
+#else
+	printf("ok\n");
+#endif
+	return 0;
+}

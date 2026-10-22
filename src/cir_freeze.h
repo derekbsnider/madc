@@ -158,7 +158,7 @@ enum : uint32_t
 	// words — the edge count, then each edge's place among the unit's PP
 	// events; the condition count, then CIR_COND_WORDS words per condition
 	// (cir_forest_cond_field); v69: the inclusion count, then per inclusion
-	// its end (CIR_INCL_WORDS words: events, edges, conditions); then the
+	// (v75: in enter order) its begin and end (cir_forest_incl_field); then the
 	// consult word count and the #if / #elif consults (CIR_CONSULT_WORDS each);
 	// v71: the expansion point count, then CIR_POINT_WORDS words per point.
 	SNAP_KIND_CIR_UNIT_CONDS       = madc::dis::SNAP_KIND_CONSUMER + 32,
@@ -192,8 +192,14 @@ enum cir_forest_cond_field : uint32_t {
 	CIR_COND_TOK_END,	// decl index's coordinate (a skipped arm withdraws its declarations)
 	CIR_COND_WORDS
 };
-// v69: one inclusion's end in a unit's events, edges and condition records.
-enum : uint32_t { CIR_INCL_WORDS = 3 };
+// v75: one inclusion of a unit, in enter order: where it begins and ends in
+// the unit's events, edges and condition records. A nested inclusion's range
+// lies inside its outer one's.
+enum cir_forest_incl_field : uint32_t {
+	CIR_INCL_EV_BEGIN = 0, CIR_INCL_ED_BEGIN, CIR_INCL_REC_BEGIN,
+	CIR_INCL_EV_END, CIR_INCL_ED_END, CIR_INCL_REC_END,
+	CIR_INCL_WORDS
+};
 // v69: one macro an #if / #elif consulted: its name (pool id) and the freeze's
 // state hash (forest_macro_state_hash, low then high 32 bits).
 enum : uint32_t { CIR_CONSULT_WORDS = 3 };
@@ -755,7 +761,13 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // v74: a class's vslot run holds per-SIGNATURE slot keys
 // (FuncDef::virtual_slot_key: "f(i)", "h()K"); a v73 pack's run holds one
 // display name per overload set.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 74 };
+//
+// v75 (B222): a unit's inclusions are recorded in ENTER order, each with its
+// begin and end (cir_forest_incl_field) — a nested re-entry (mingw's
+// <_mingw.h> read again by <vadefs.h> while it is open) lies inside the outer
+// inclusion's range; a v74 pack holds the ends only, in leave order. An
+// expansion point names the innermost open inclusion of its unit.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 75 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies

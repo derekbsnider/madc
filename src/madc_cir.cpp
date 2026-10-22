@@ -8121,12 +8121,15 @@ int madc_cir_dump_forest(const char *container_path)
 		printf("condnest\t%s\t%u\t%u\ttok=%u-%u\n", uname ? uname : "?", c,
 		       w[CIR_COND_REC_END], w[CIR_COND_TOK_BEGIN], w[CIR_COND_TOK_END]);
 	    }
-	    // v69: where each inclusion ended (written only when there are several).
+	    // v69: each inclusion (written only when there are several); v75: in
+	    // enter order, from its begin to its end.
 	    const uint32_t ni = at < cw.size() ? cw[at++] : 0;
 	    for (uint32_t k = 0; k < ni && at + CIR_INCL_WORDS <= cw.size();
 		 ++k, at += CIR_INCL_WORDS)
-		printf("incl\t%s\t%u\tev=%u\ted=%u\tconds=%u\n", uname ? uname : "?", k,
-		       cw[at], cw[at + 1], cw[at + 2]);
+		printf("incl\t%s\t%u\tev=%u-%u\ted=%u-%u\tconds=%u-%u\n", uname ? uname : "?", k,
+		       cw[at + CIR_INCL_EV_BEGIN], cw[at + CIR_INCL_EV_END],
+		       cw[at + CIR_INCL_ED_BEGIN], cw[at + CIR_INCL_ED_END],
+		       cw[at + CIR_INCL_REC_BEGIN], cw[at + CIR_INCL_REC_END]);
 	    // v69: each #if / #elif's consulted macros (their state hashes elided).
 	    const uint32_t nw = at < cw.size() ? cw[at++] : 0;
 	    for (uint32_t k = 0; k + CIR_CONSULT_WORDS <= nw && at + CIR_CONSULT_WORDS <= cw.size();

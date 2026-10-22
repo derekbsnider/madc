@@ -2493,6 +2493,7 @@ void Program::tokenize_embedded_header_text(const madc::dis::istring &name,
 			pack_unit_subtree[pack_unit_stack[si]].insert(interned);
 		pack_unit_subtree[interned].insert(interned);
 		pack_unit_stack.push_back(interned);
+		pack_unit_enter(interned);
 	}
 	size_t groups_at_entry = cond_groups.size();
 	while ( (itb = getRealToken()) )
@@ -5879,14 +5880,55 @@ struct ForestUnitItems
     const uint32_t *cond(size_t c) const { return &words[conds_at + c * CIR_COND_WORDS]; }
     // No recorded inclusions: one over everything.
     size_t nincl() const { return nincl_recorded ? nincl_recorded : 1; }
-    // Where inclusion i ends — events, edges, records — within the unit's
-    // totals; the last one always ends at them.
-    void inclusion_end(size_t i, uint32_t end[CIR_INCL_WORDS]) const
+    // v75: inclusion i (enter order) — where its events, edges and records
+    // begin and end, within the unit's totals; the one that ended last ends
+    // at them.
+    uint32_t last_end[3] = { 0, 0, 0 };	// the latest recorded end (forest_unit_items)
+    void inclusion_range(size_t i, uint32_t lo[3], uint32_t hi[3]) const
     {
-	const uint32_t total[CIR_INCL_WORDS] = { nevents, (uint32_t)edges.size(), (uint32_t)nconds };
-	for ( uint32_t k = 0; k < CIR_INCL_WORDS; ++k )
-	    end[k] = i + 1 == nincl() ? total[k]
-		   : std::min<uint32_t>(words[incl_at + i * CIR_INCL_WORDS + k], total[k]);
+	const uint32_t total[3] = { nevents, (uint32_t)edges.size(), (uint32_t)nconds };
+	const uint32_t *r = nincl_recorded ? &words[incl_at + i * CIR_INCL_WORDS] : NULL;
+	for ( uint32_t k = 0; k < 3; ++k )
+	{
+	    lo[k] = r ? std::min<uint32_t>(r[CIR_INCL_EV_BEGIN + k], total[k]) : 0;
+	    hi[k] = !r || r[CIR_INCL_EV_END + k] >= last_end[k] ? total[k]
+		  : std::min<uint32_t>(r[CIR_INCL_EV_END + k], total[k]);
+	}
+    }
+    // Does recorded inclusion i begin at (ev, ed, rec)?
+    bool inclusion_begins_at(size_t i, uint32_t ev, uint32_t ed, uint32_t rec) const
+    {
+	if ( i >= nincl_recorded )
+	    return false;
+	uint32_t lo[3], hi[3];
+	inclusion_range(i, lo, hi);
+	return lo[0] == ev && lo[1] == ed && lo[2] == rec;
+    }
+    // Does (ev, ed, rec) lie at or past where recorded inclusion i begins? The
+    // walk's cursor and every inclusion's begin lie on the freeze's one
+    // ordered path, so a begin is either at, behind or ahead of it.
+    bool inclusion_begun(size_t i, uint32_t ev, uint32_t ed, uint32_t rec) const
+    {
+	uint32_t lo[3], hi[3];
+	inclusion_range(i, lo, hi);
+	return lo[0] <= ev && lo[1] <= ed && lo[2] <= rec;
+    }
+    // The first recorded inclusion after i that is not nested inside it.
+    size_t inclusion_after(size_t i) const
+    {
+	uint32_t lo[3], hi[3], mlo[3], mhi[3];
+	inclusion_range(i, lo, hi);
+	size_t m = i + 1;
+	for ( ; m < nincl_recorded; ++m )
+	{
+	    inclusion_range(m, mlo, mhi);
+	    bool inside = true;
+	    for ( uint32_t k = 0; k < 3 && inside; ++k )
+		inside = lo[k] <= mlo[k] && mhi[k] <= hi[k];
+	    if ( !inside )
+		break;
+	}
+	return m;
     }
     // Consulted macro k: [name pool id, hash low, hash high], or NULL.
     const uint32_t *consult(size_t k) const
@@ -5936,6 +5978,9 @@ static void forest_unit_items(CirFrozenForest *f, uint32_t unit, ForestUnitItems
     section(1, it.edge_pos_at, it.nedge_pos);
     section(CIR_COND_WORDS, it.conds_at, it.nconds);
     section(CIR_INCL_WORDS, it.incl_at, it.nincl_recorded);
+    for ( size_t i = 0; i < it.nincl_recorded; ++i )
+	for ( uint32_t k = 0; k < 3; ++k )
+	    it.last_end[k] = std::max(it.last_end[k], w[it.incl_at + i * CIR_INCL_WORDS + CIR_INCL_EV_END + k]);
     section(1, it.consults_at, it.nconsult_words);
     section(CIR_POINT_WORDS, it.points_at, it.npoints);
 }
@@ -5943,13 +5988,26 @@ static void forest_unit_items(CirFrozenForest *f, uint32_t unit, ForestUnitItems
 // One root's walk.
 struct ForestWalk
 {
-    ForestWalk(Program::ForestSide &side, uint32_t r) : s(side), root(r) {}
+    ForestWalk(Program::ForestSide &side, uint32_t r) : s(side), root(r) { open.reserve(32); }
     Program::ForestSide &s;
     const uint32_t root;
     ForestMacroUndo undo;
     std::map<uint32_t, ForestUnitItems> items;	// read once per walk
     std::map<uint32_t, uint32_t> next_inclusion;	// per unit: the inclusion its next edge reads
-    std::set<uint32_t> on_stack;	// include cycles
+    // The open inclusions' cursors, innermost last. An edge to an open unit
+    // is an include cycle — or (v75) a nested re-entry the freeze took
+    // there, when the unit's next inclusion begins at its cursor.
+    struct Frame { uint32_t unit; uint32_t *ev, *ed, *rec; };
+    std::vector<Frame> open;
+    // The unit's innermost open inclusion, or NULL (the stack is a walk's
+    // include depth: scanned, never indexed by unit).
+    Frame *open_frame(uint32_t unit)
+    {
+	for ( size_t i = open.size(); i--; )
+	    if ( open[i].unit == unit )
+		return &open[i];
+	return NULL;
+    }
     std::vector<uint32_t> bound;	// post-order: the chain's (and the decl restore's) order
     std::vector<double> bound_cost;	// each bound unit's own walk seconds (--show-stats)
     std::vector<TokenBase *> arm_tokens;	// a run arm's tokens, pushed when the walk commits
@@ -6216,10 +6274,11 @@ bool Program::forest_walk_points(ForestWalk &w, uint32_t unit, const ForestUnitI
     for ( ; i_p < it.npoints; ++i_p )
     {
 	const uint32_t *p = it.point(i_p);
-	if ( p[CIR_POINT_INCLUSION] < inc )
+	// v75: another inclusion's point — an earlier one's, or a nested one's
+	// inside this one, which its own walk checks.
+	if ( p[CIR_POINT_INCLUSION] != inc )
 	    continue;
-	if ( p[CIR_POINT_INCLUSION] > inc || p[CIR_POINT_EV] > i_ev || p[CIR_POINT_ED] > i_ed
-	  || p[CIR_POINT_REC] > i_c )
+	if ( p[CIR_POINT_EV] > i_ev || p[CIR_POINT_ED] > i_ed || p[CIR_POINT_REC] > i_c )
 	    return true;
 	if ( w.differs.empty() && w.s.macro_differs.empty() )
 	    continue;
@@ -6368,8 +6427,10 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 {
     ForestSide &s = w.s;
-    if ( (!reinclude && s.chain_set.count(unit)) || s.live_present.count(unit)
-      || w.on_stack.count(unit) )
+    if ( (!reinclude && s.chain_set.count(unit)) || s.live_present.count(unit) )
+	return true;
+    const ForestWalk::Frame *outer = w.open_frame(unit);
+    if ( outer && reinclude )
 	return true;
     const char *uname = s.forest->unit_name(unit);
     if ( uname && is_posix_compat_header_name(uname) )
@@ -6382,13 +6443,17 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
     ForestUnitItems &it = w.items[unit];
     if ( !it.read )
 	forest_unit_items(s.forest, unit, it);
+    // v75 (B222): an edge to an open unit is an include cycle — unless the
+    // freeze re-entered the unit here, its next inclusion beginning at the
+    // open one's cursor (<vadefs.h> reading <_mingw.h> again while it is
+    // open: _mingw.h's guard does not span the file).
+    if ( outer && !it.inclusion_begins_at(w.next_inclusion[unit], *outer->ev, *outer->ed, *outer->rec) )
+	return true;
     const uint32_t inc = reinclude ? 0 : w.next_inclusion[unit]++;
     if ( inc >= it.nincl() )
 	return true;	// the freeze read no more of this unit: its include was skipped
-    uint32_t hi[CIR_INCL_WORDS], lo[CIR_INCL_WORDS] = { 0, 0, 0 };
-    it.inclusion_end(inc, hi);
-    if ( inc )
-	it.inclusion_end(inc - 1, lo);
+    uint32_t hi[3], lo[3];
+    it.inclusion_range(inc, lo, hi);
     uint32_t i_ev = lo[0], i_ed = lo[1], i_c = lo[2];
     const uint32_t ev_hi = hi[0], ed_hi = hi[1], c_hi = hi[2];
     size_t i_p = 0;	// K2c: the inclusion's next expansion point
@@ -6426,13 +6491,42 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 	    << strpool.c_str(s.unit_program_macro[unit]) << "'" << std::endl);
 	return false;
     }
-    w.on_stack.insert(unit);
+    w.open.push_back(ForestWalk::Frame{ unit, &i_ev, &i_ed, &i_c });
     double children = 0;
+    // v75: the next recorded inclusion after this one the walk has not
+    // passed — nested inside this one while it begins before this range ends.
+    size_t nest = inc + 1;
     while ( i_ev < ev_hi || i_ed < ed_hi || i_c < c_hi )
     {
+	// A nested inclusion is walked at the edge the freeze took it (the
+	// cursor resumes at its end); one this walk did not take — its edge in
+	// a skipped arm, or a pruned unit's — is jumped: its items are its own.
+	if ( nest < it.nincl_recorded )
+	{
+	    if ( !reinclude && nest < w.next_inclusion[unit] )
+		nest = w.next_inclusion[unit];
+	    bool jumped = false;
+	    while ( nest < it.nincl_recorded && it.inclusion_begun(nest, i_ev, i_ed, i_c) )
+	    {
+		if ( it.inclusion_begins_at(nest, i_ev, i_ed, i_c) )
+		{
+		    uint32_t nlo[3], nhi[3];
+		    it.inclusion_range(nest, nlo, nhi);
+		    i_ev = nhi[0];
+		    i_ed = nhi[1];
+		    i_c = nhi[2];
+		    jumped = true;
+		}
+		nest = it.inclusion_after(nest);
+		if ( !reinclude && w.next_inclusion[unit] < nest )
+		    w.next_inclusion[unit] = nest;
+	    }
+	    if ( jumped )
+		continue;
+	}
 	if ( i_p < it.npoints && !forest_walk_points(w, unit, it, inc, i_p, i_ev, i_ed, i_c) )
 	{
-	    w.on_stack.erase(unit);
+	    w.open.pop_back();
 	    return false;
 	}
 	if ( i_c < c_hi )
@@ -6443,7 +6537,7 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 	    {
 		if ( !forest_walk_condition(w, unit, it, i_c, i_ev, i_ed) )
 		{
-		    w.on_stack.erase(unit);
+		    w.open.pop_back();
 		    return false;
 		}
 		continue;
@@ -6456,7 +6550,7 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 	    children += forest_stat_now() - c0;
 	    if ( !ok )
 	    {
-		w.on_stack.erase(unit);
+		w.open.pop_back();
 		return false;
 	    }
 	    continue;
@@ -6464,9 +6558,16 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 	cur.seek(i_ev++);
 	forest_apply_event(*this, s.forest, it.ev, cur.word);
     }
-    w.on_stack.erase(unit);
+    w.open.pop_back();
     if ( !forest_walk_points(w, unit, it, inc, i_p, UINT32_MAX, UINT32_MAX, UINT32_MAX) )
 	return false;
+    // v75: a nested inclusion's walk is done — the open one resumes after it.
+    if ( ForestWalk::Frame *resume = w.open_frame(unit) )
+    {
+	*resume->ev = ev_hi;
+	*resume->ed = ed_hi;
+	*resume->rec = c_hi;
+    }
     if ( !reinclude && inc == 0 )
     {
 	w.bound.push_back(unit);
@@ -7841,7 +7942,10 @@ void Program::pack_note_expansion(uint32_t sid)
 	return;
     PackExpansionPoint p;
     p.sid = sid;
-    p.inclusion = pack_unit_count(pack_unit_inclusions, unit) / CIR_INCL_WORDS;
+    // v75: the unit's innermost open inclusion (enter order).
+    std::map<const char *, std::vector<uint32_t> >::const_iterator oi = pack_unit_open_inclusions.find(unit);
+    p.inclusion = oi != pack_unit_open_inclusions.end() && !oi->second.empty()
+	? oi->second.back() : pack_unit_count(pack_unit_inclusions, unit) / CIR_INCL_WORDS;
     p.ev = pack_unit_count(pack_pp_exports, unit);
     p.ed = pack_unit_count(pack_unit_edges, unit);
     p.rec = pack_unit_count(pack_unit_conds, unit);
@@ -7850,30 +7954,46 @@ void Program::pack_note_expansion(uint32_t sid)
     pack_unit_points[unit].push_back(p);
 }
 
-// v69: one inclusion of a unit ended (its include returned): where its events,
-// edges and condition records stop.
-void Program::pack_unit_leave(const char *unit)
+// v75 (B222): one inclusion of a unit begins (its include is read): where its
+// events, edges and condition records start, in enter order — a nested
+// re-entry (<vadefs.h> reading <_mingw.h> again while it is open) begins
+// inside the open inclusion's range.
+void Program::pack_unit_enter(const char *unit)
 {
     std::vector<uint32_t> &incl = pack_unit_inclusions[unit];
+    pack_unit_open_inclusions[unit].push_back((uint32_t)(incl.size() / CIR_INCL_WORDS));
+    const uint32_t ev = (uint32_t)pack_pp_exports[unit].size(), ed = (uint32_t)pack_unit_edges[unit].size(),
+		   rec = (uint32_t)pack_unit_conds[unit].size();
+    const uint32_t r[CIR_INCL_WORDS] = { ev, ed, rec, ev, ed, rec };
+    incl.insert(incl.end(), r, r + CIR_INCL_WORDS);
+}
+
+// v69: one inclusion of a unit ended (its include returned): where its events,
+// edges and condition records stop (v75: in the record pack_unit_enter began).
+void Program::pack_unit_leave(const char *unit)
+{
+    std::vector<uint32_t> &open = pack_unit_open_inclusions[unit];
+    if ( open.empty() )
+	return;
+    uint32_t *r = &pack_unit_inclusions[unit][open.back() * CIR_INCL_WORDS];
+    open.pop_back();
     // v73 (K2e): the inclusion's own include guard — an `#ifndef` taken over
     // all of it, the shape the walk's include-once prune reads — is no masked
     // arm: its writes (the whole header's) are not watched.
     {
-	const size_t n = incl.size();
-	const uint32_t ev0 = n ? incl[n - CIR_INCL_WORDS] : 0, ed0 = n ? incl[n - CIR_INCL_WORDS + 1] : 0,
-		       rec0 = n ? incl[n - CIR_INCL_WORDS + 2] : 0;
 	std::vector<PackCondRecord> &recs = pack_unit_conds[unit];
-	if ( rec0 < recs.size() )
+	if ( r[CIR_INCL_REC_BEGIN] < recs.size() )
 	{
-	    PackCondRecord &g = recs[rec0];
-	    if ( g.kind == CondDirective::Ifndef && g.outcome && g.ev_begin == ev0 && g.ed_begin == ed0
+	    PackCondRecord &g = recs[r[CIR_INCL_REC_BEGIN]];
+	    if ( g.kind == CondDirective::Ifndef && g.outcome && g.ev_begin == r[CIR_INCL_EV_BEGIN]
+	      && g.ed_begin == r[CIR_INCL_ED_BEGIN]
 	      && g.ev_end == pack_pp_exports[unit].size() && g.ed_end == pack_unit_edges[unit].size() )
 		g.arm_writes.clear();
 	}
     }
-    incl.push_back((uint32_t)pack_pp_exports[unit].size());
-    incl.push_back((uint32_t)pack_unit_edges[unit].size());
-    incl.push_back((uint32_t)pack_unit_conds[unit].size());
+    r[CIR_INCL_EV_END] = (uint32_t)pack_pp_exports[unit].size();
+    r[CIR_INCL_ED_END] = (uint32_t)pack_unit_edges[unit].size();
+    r[CIR_INCL_REC_END] = (uint32_t)pack_unit_conds[unit].size();
     ++pack_point_epoch;
 }
 
@@ -9603,6 +9723,7 @@ TokenBase *Program::_getToken()
 			    pack_unit_subtree[pack_unit_stack[si]].insert(_interned2);
 			pack_unit_subtree[_interned2].insert(_interned2);
 			pack_unit_stack.push_back(_interned2);
+			pack_unit_enter(_interned2);
 		    }
 		    size_t groups_at_entry = cond_groups.size();
 		    source.guard_watch.base = groups_at_entry;

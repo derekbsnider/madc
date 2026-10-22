@@ -102,33 +102,6 @@ int main()
   B220 / the KG gap `libstdcxx_optional_payload_get_unresolved`. Home:
   `methodrec.flags` bits 4/5 (`MF_` 0..3 taken), with a forest format bump.
 
-### B222. win64: a bound `_mingw.h` replays only its first 45 macro events
-
-```c
-#include <_mingw.h>
-#ifndef _TRUNCATE
-int truncate_missing;	/* madc (win64 packed): declared; gcc: not */
-#endif
-int main(void) { return 0; }
-```
-
-- Found 2026-10-22 by the 0.106.0 seam battery's headerless-win stage
-  (testprogmacrobind_c). `<stdio.h>` then `<windows.h>` in C is refused
-  (`string.h:46: use of undeclared identifier '_CONST_RETURN'`).
-- mingw's `_mingw.h` guard does not span the file (its `MINGW_SDK_INIT`
-  block follows `#endif /* _INC__MINGW_H */`), so `vadefs.h`'s
-  `#include <_mingw.h>` re-reads it while the first inclusion is open. The
-  freeze numbers a unit's inclusions in LEAVE order
-  (`Program::pack_unit_leave`): the nested re-entry closes first and becomes
-  inclusion 0 (events 0-44); the outer inclusion's tail (events 45-101,
-  `__CRTDECL`, `_TRUNCATE`, `UNALIGNED`, `DUMMYUNIONNAME`...) becomes
-  inclusion 1. The bind walks inclusions in ENTER order
-  (`forest_walk_unit`), so a consumer replays inclusion 0 only. Dump:
-  `incl _mingw.h 0 ev=45`, `incl _mingw.h 1 ev=102`.
-- Fix (owner decision pending 2026-10-22): enter-ordered inclusion records
-  with start words (forest format bump); the walk takes a nested inclusion
-  at the edge the freeze took it and skips its range in the outer walk.
-
 ### B214. A global `using std::abs;` does not add std's overloads to `::abs`
 
 ```cpp

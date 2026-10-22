@@ -6074,9 +6074,14 @@ public:
     void pack_note_expansion(uint32_t sid);
     std::map<const char *, std::vector<PackCondRecord> > pack_unit_conds;
     std::map<const char *, std::vector<uint32_t> > pack_unit_edge_events;	// v68: per edge, the unit's events ahead of it
-    // v69: where each of a unit's inclusions ended — its event, edge and
-    // condition-record counts as the include returned (pack_unit_leave).
+    // v75: a unit's inclusions in enter order (cir_forest_incl_field words):
+    // its event, edge and condition-record counts as the include was read
+    // (pack_unit_enter) and as it returned (pack_unit_leave). A nested
+    // re-entry's range lies inside the open inclusion's; per unit, the open
+    // inclusions' indices, innermost last.
     std::map<const char *, std::vector<uint32_t> > pack_unit_inclusions;
+    std::map<const char *, std::vector<uint32_t> > pack_unit_open_inclusions;
+    void pack_unit_enter(const char *unit);
     void pack_unit_leave(const char *unit);
     // One open conditional group, parallel to cond_groups while freezing.
     struct PackCondFrame {
