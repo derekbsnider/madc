@@ -102,6 +102,44 @@ int main()
   B220 / the KG gap `libstdcxx_optional_payload_get_unresolved`. Home:
   `methodrec.flags` bits 4/5 (`MF_` 0..3 taken), with a forest format bump.
 
+### B222. win64: a bound `_mingw.h` replays only its first 45 macro events
+
+```c
+#include <_mingw.h>
+#ifndef _TRUNCATE
+int truncate_missing;	/* madc (win64 packed): declared; gcc: not */
+#endif
+int main(void) { return 0; }
+```
+
+- Found 2026-10-22 by the 0.106.0 seam battery's headerless-win stage
+  (testprogmacrobind_c). `<stdio.h>` then `<windows.h>` in C is refused
+  (`string.h:46: use of undeclared identifier '_CONST_RETURN'`).
+- mingw's `_mingw.h` guard does not span the file (its `MINGW_SDK_INIT`
+  block follows `#endif /* _INC__MINGW_H */`), so `vadefs.h`'s
+  `#include <_mingw.h>` re-reads it while the first inclusion is open. The
+  freeze numbers a unit's inclusions in LEAVE order
+  (`Program::pack_unit_leave`): the nested re-entry closes first and becomes
+  inclusion 0 (events 0-44); the outer inclusion's tail (events 45-101,
+  `__CRTDECL`, `_TRUNCATE`, `UNALIGNED`, `DUMMYUNIONNAME`...) becomes
+  inclusion 1. The bind walks inclusions in ENTER order
+  (`forest_walk_unit`), so a consumer replays inclusion 0 only. Dump:
+  `incl _mingw.h 0 ev=45`, `incl _mingw.h 1 ev=102`.
+- Fix (owner decision pending 2026-10-22): enter-ordered inclusion records
+  with start words (forest format bump); the walk takes a nested inclusion
+  at the edge the freeze took it and skips its range in the outer walk.
+
+### B224. win64: `-finstrument-functions` misses a bound header's inline body
+
+- Found 2026-10-22 by headerless-win (testnoinstrumentlead,
+  testprotoleadattrs: `entries 1`, the win64 oracle `entries 2`).
+- mingw `<stdio.h>` defines `printf` as an inline wrapper; x86_64-w64-mingw32
+  gcc 13 instruments it in the TU. A C program binding the win64 C layer
+  gets no enter hook for it: the instrumentation is added in the CIR
+  builder's function-definition arm (`cir_builder.cpp`, `instrument_functions`),
+  which the bound body does not pass through. Live parse (before the C
+  layer, J5) instrumented it.
+
 ### B214. A global `using std::abs;` does not add std's overloads to `::abs`
 
 ```cpp
@@ -950,6 +988,18 @@ int main()
 - Layer: the unary `*` over a call-expression operand of class type
   (`Program::build_indirection` / its class-operator arm). Parser — its own
   session.
+
+### B223. A bind whose only staged content is namespace imports drops them
+
+- Found 2026-10-22 writing the bind gate's k2d-import case.
+- `Program::forest_apply_pending` returns before the namespace-surface
+  restore (using-declaration imports, inline-namespace links, namespace
+  aliases) when no global, function or datatype is staged. A bound header
+  whose only content the TU uses is `namespace N { using ::f; }` leaves `N`
+  unknown (`Unknown namespace 'N'`). Every real libstdc++ / libc++ bind stages
+  content, so no shipped reducer shows it yet. The fix needs an "applied up to"
+  mark for the namespace surface (like `ForestSide::restored_chain_size`),
+  since the flush runs several times per TU.
 
 ### B220. C++20: `std::ostringstream::str()` is refused
 
