@@ -225,10 +225,11 @@
 # re-parse, KG Gap instantiation_body_templateid_ctor_call), 4 "Unexpected
 # keyword in expression", 3 undeclared identifiers, 1 "expecting addressable
 # expression", 1 unidentified member.
-# darwin 17 -> 16 (2026-10-22, release-macos arm64 native): the freeze sees its
-# staged --freeze-sources arm (libc++'s __has_include probes answer as the
-# consumers' do).
-16 darwin pack-errors
+# 2026-10-22 (6f7329dc0, the freeze sees its staged --freeze-sources arm):
+# arm64 16 (7 malformed), x86-64 17 (8 malformed) — one key for both arches
+# keeps the larger. Classes now: 8/7 malformed expression, 4 "subscripted
+# value is neither array nor pointer", 3 undeclared, 1 addressable, 1 member.
+17 darwin pack-errors
 1 darwin mir-blob-skips
 # The darwin C layer (J5; FOREST_C_LAYER's one gnu17 row, the embedded prelude,
 # scripts/forest_pack_c_headers_darwin.txt): quiet freeze, its size at its first
