@@ -2919,6 +2919,28 @@ int main(void) { return x; }
 
 ## Build and packaging
 
+### B230. macOS: a C++ program using a libc++ container needs libmadc
+
+```cpp
+#include <iostream>
+#include <string>
+int main() { std::string who = "world"; std::cout << "Hello, " << who << "!\n"; }
+```
+
+- `madc -o hx h.cpp` on the arm64 Mac mini (macOS 14), the published 0.105.0
+  tarball and 0.106.0 alike: `otool -L` lists `@rpath/libmadc-0.dylib`;
+  undefined `___madc_throw_object` / `___madc_try_push` / ... (0.106.0:
+  `___madc_throw_class`, `___madc_exception_alloc`, ...). The same file on
+  Linux and Windows (libstdc++) needs no madc library: libstdc++'s
+  `__throw_*` helpers are out of line in libstdc++.so, libc++'s are inline
+  header code with a `throw`, which madc compiles into the program.
+- clang++ (libc++): the throw is `__cxa_allocate_exception` /
+  `__cxa_throw` from libc++abi, which every C++ link carries. madc lowers a
+  `throw` to its own runtime (the setjmp/longjmp try model), so a libc++
+  inline throw imports libmadc. The README's "needs only the C and C++
+  runtime libraries" holds on Linux and Windows only.
+- Found 2026-10-22 checking B229 on macOS. Not a regression.
+
 ### B229. A C++ program with a destructor needs libmadc (regression from 0.105.0)
 
 ```cpp
