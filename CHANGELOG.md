@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### A forest freeze's source arm is staged before the parse
+
+- `--freeze-sources=LIST` is read before the translation unit is tokenized, so the frozen unit answers `__has_include` and reads headers from the listed source arm, as every consumer of the pack does. Before, the arm joined after the parse, and a darwin freeze (`--no-sysroot-includes`) answered `__has_include(<sys/_types/_mbstate_t.h>)` with 0. Consumers answered 1, the bind declined libc++'s `<string>` root, and the whole translation unit parsed live.
+- Include resolution falls back to the staged arm when no packed unit answers. A unit the freeze tokenized keeps its record.
+- Darwin forest degradation: the mac battery's forest leg goes from 11 passed / 1 failed to 12 / 0. The darwin pack's parse errors go from 17 to 16, and the baseline in `docs/parity/pack-degradation-baseline.txt` is lowered to match.
+- Tests: `test_cir_freeze` "v56: the source arm packs listed headers as source-only units" stages the list before tokenize and checks a header that exists only in the staged arm.
+
 ### Virtual functions take one vtable slot per signature
 
 - A class's vtable slots are keyed by signature, not by name. Overloads of one virtual name each take their own slot, in declaration order, as Itanium C++ ABI 2.5.2 lays them out. Before, all overloads of a name shared one slot, so overriding one overload redirected every overload of that name.

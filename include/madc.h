@@ -6132,10 +6132,23 @@ public:
     // definition. Freeze-time only, at most one read per unit. False when the
     // file cannot be read.
     bool pack_record_skipped_source(const madc::dis::istring &path);
-    // --freeze-sources=LIST: every file LIST names joins the container as a
-    // source-only unit (the pack's source arm). False, said, when the list or
-    // a file it names cannot be read.
-    bool pack_record_source_list(const std::string &list_path);
+    // --freeze-sources=LIST, read BEFORE the parse: the source arm a freeze
+    // packs is libmadc's, so the translation unit being frozen resolves, tests
+    // (__has_include) and reads it as every consumer of the pack will. Unit
+    // name -> the build host's file, in list order. False, said, when the list
+    // cannot be read.
+    std::vector<std::pair<madc::dis::istring, std::string>> staged_sources;
+    std::unordered_map<madc::dis::istring, size_t> staged_source_at;
+    bool pack_stage_source_list(const std::string &list_path);
+    // The staged unit a spelling names — forest_source_unit's order: the exact
+    // name, then (allow_tail) under a build include root, then the path tail.
+    // -1: none.
+    long staged_source_unit(const madc::dis::istring &spelling, bool allow_tail) const;
+    bool staged_source_text(size_t i, std::string &text) const;
+    // After the parse: every staged file joins the container as a source-only
+    // unit (the pack's source arm); a unit the freeze tokenized keeps that
+    // record. False, said, when a file cannot be read.
+    bool pack_record_staged_sources();
     // A conditional consulted `name` while freezing: the #if / #elif's consult
     // record takes it, and an EXTERNAL consult counts (pack_external_consults),
     // so the open conditional is recorded for the bind's walk. Inline: a
@@ -7800,6 +7813,7 @@ public:
     int forest_unit_for_include(const madc::dis::istring &incfile); // the unit an include BINDS; -1 miss or nothing frozen to bind
     int forest_unit_named_by_include(const madc::dis::istring &incfile); // spelling/path lookup; -1 miss
     int forest_unit_under_build_roots(CirFrozenForest *f, const madc::dis::istring &incfile); // spelling under a build include root; -1 none
+    void build_include_roots(std::vector<madc::dis::istring> &roots) const; // each -I dir, then the flavor's whole table
     int forest_source_unit(CirFrozenForest *f, const madc::dis::istring &spelling,
 			   bool allow_tail);	// the source arm's unit for a spelling; -1 none
     bool path_outside_language_view(const char *path) const;	// B199: in a table dir this compile's language view leaves out

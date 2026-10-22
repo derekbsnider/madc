@@ -1005,7 +1005,7 @@ TEST_CASE("v56: the source arm packs listed headers as source-only units") {
 	const std::string nested = root + "/bits/stdio.h";
 	const std::string deeper = root + "/c++/tr1/stdio.h";
 	const std::string staged = root + "/staged_extra.h";
-	const std::string renamed = "/v56/sdk/usr/include/extra.h";
+	const std::string renamed = "/v56/sdk/usr/include/v56_extra.h";
 	REQUIRE(system(("mkdir -p " + root + "/bits " + root + "/c++/tr1").c_str()) == 0);
 	{ std::ofstream f(top.c_str()); f << "int v56_top;\n"; }
 	{ std::ofstream f(nested.c_str()); f << "int v56_nested;\n"; }
@@ -1013,7 +1013,13 @@ TEST_CASE("v56: the source arm packs listed headers as source-only units") {
 	{ std::ofstream f(staged.c_str()); f << "int v56_extra;\n"; }
 	{
 		std::ofstream f(main_path.c_str());
-		f << "int v57_fn(int x) { return x; }\n"
+		// The staged arm is libmadc's to the TU being frozen too: a header
+		// only the arm carries answers __has_include as the pack's
+		// consumers will.
+		f << "#if !__has_include(<v56_extra.h>)\n"
+		     "#error the staged source arm is invisible to the frozen TU\n"
+		     "#endif\n"
+		     "int v57_fn(int x) { return x; }\n"
 		     "int v62_vfn(const char *fmt, ...);\n"
 		     "int main() { return v57_fn(0); }\n";
 	}
@@ -1023,21 +1029,26 @@ TEST_CASE("v56: the source arm packs listed headers as source-only units") {
 		  << top << "\n" << renamed << "\t" << staged << "\n";
 	}
 
+	// An unreadable list refuses when staged; a listed file that cannot be
+	// read refuses when the arm is recorded.
+	{
+		std::shared_ptr<Program> bad_prog = std::make_shared<Program>();
+		bad_prog->pack_recording = true;
+		CHECK_FALSE(bad_prog->pack_stage_source_list(list_path + ".absent"));
+		const std::string bad = list_path + ".bad";
+		{ std::ofstream f(bad.c_str()); f << root << "/absent.h\n"; }
+		REQUIRE(bad_prog->pack_stage_source_list(bad));
+		CHECK_FALSE(bad_prog->pack_record_staged_sources());
+		std::remove(bad.c_str());
+	}
 	std::shared_ptr<Program> prog = std::make_shared<Program>();
 	prog->pack_recording = true;	// what --freeze sets before tokenize
 	prog->forest_arena_enabled = true;
+	REQUIRE(prog->pack_stage_source_list(list_path));	// before the parse, as madc.cpp
 	TokenProgram *tp = prog->tokenize(main_path.c_str());
 	REQUIRE(tp != nullptr);
 	REQUIRE(prog->parse(tp));
-	// An unreadable list, and a list naming an unreadable file, refuse.
-	CHECK_FALSE(prog->pack_record_source_list(list_path + ".absent"));
-	{
-		const std::string bad = list_path + ".bad";
-		{ std::ofstream f(bad.c_str()); f << root << "/absent.h\n"; }
-		CHECK_FALSE(prog->pack_record_source_list(bad));
-		std::remove(bad.c_str());
-	}
-	REQUIRE(prog->pack_record_source_list(list_path));
+	REQUIRE(prog->pack_record_staged_sources());
 	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
 				snap_path.c_str(), /*append=*/false) == 0);
 	REQUIRE(system(("rm -rf " + root).c_str()) == 0);

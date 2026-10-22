@@ -1848,6 +1848,12 @@ int main(int argc, char **argv)
 	// runs (its threads may compile through eval).
 	std::unique_ptr<madc::dis::istring_table::hold> intern_hold(
 	    new madc::dis::istring_table::hold());
+	// --freeze-sources=: the source arm is staged BEFORE the parse — the TU
+	// being frozen sees libmadc's headers as the pack's consumers will.
+	if ( freeze_path )
+	    for ( const std::string &list : freeze_source_lists )
+		if ( !prog->pack_stage_source_list(list) )
+		    return 1;
 	// A NULL TokenProgram means a lexer-phase diagnostic already printed
 	// (failed #include, unterminated literal, bad PP directive) and
 	// compilation aborted — exit nonzero like every later phase does.
@@ -2176,12 +2182,11 @@ int main(int argc, char **argv)
 	// a forest snapshot container; do not run.
 	if ( freeze_path )
 	{
-	    // --freeze-sources=: the source arm joins AFTER the parse, so a
-	    // header the frozen TU tokenized keeps that record. An unreadable
-	    // list or file fails the freeze.
-	    for ( const std::string &list : freeze_source_lists )
-		if ( !prog->pack_record_source_list(list) )
-		    return 1;
+	    // --freeze-sources=: the staged arm's units join AFTER the parse, so
+	    // a header the frozen TU tokenized keeps that record. An unreadable
+	    // file fails the freeze.
+	    if ( !prog->pack_record_staged_sources() )
+		return 1;
 	    // --freeze-ledger=: compile the C-lane runtime sources into ledger
 	    // modules FIRST (each an independent compile with its own Program),
 	    // then pack them alongside the groves. A ledger failure fails the

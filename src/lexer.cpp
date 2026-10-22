@@ -5385,10 +5385,8 @@ int Program::forest_unit_under_build_roots(CirFrozenForest *f,
 {
     if ( !f || incfile.empty() || madc::detail::host_path_absolute(incfile) )
 	return -1;
-    std::vector<madc::dis::istring> roots(include_paths.begin(), include_paths.end());
-    const char *const *table = search_view(is_c_mode(), /*toolchain_only=*/false);
-    for ( ; *table; ++table )
-	roots.push_back(*table);
+    std::vector<madc::dis::istring> roots;
+    build_include_roots(roots);
     for ( size_t i = 0; i < roots.size(); ++i )
     {
 	std::string candidate = roots[i];
@@ -5400,6 +5398,14 @@ int Program::forest_unit_under_build_roots(CirFrozenForest *f,
 	    return u;
     }
     return -1;
+}
+
+void Program::build_include_roots(std::vector<madc::dis::istring> &roots) const
+{
+    roots.assign(include_paths.begin(), include_paths.end());
+    for ( const char *const *table = search_view(is_c_mode(), /*toolchain_only=*/false);
+	  *table; ++table )
+	roots.push_back(*table);
 }
 
 // B199: a path inside a directory of the flavor's table that this compile's
@@ -5446,11 +5452,16 @@ bool Program::forest_source_path(const std::string &candidate,
 				 bool allow_tail, madc::dis::istring &resolved)
 {
     CirFrozenForest *forest = ensure_source_forest();
-    if ( !forest )
-	return false;
-    int unit = forest_source_unit(forest, candidate, allow_tail);
+    int unit = forest ? forest_source_unit(forest, candidate, allow_tail) : -1;
     if ( unit < 0 )
-	return false;
+    {
+	// A freeze's staged source arm is libmadc's too (pack_stage_source_list).
+	const long s = staged_source_unit(candidate, allow_tail);
+	if ( s < 0 )
+	    return false;
+	resolved = staged_sources[(size_t)s].first;
+	return true;
+    }
     const char *name = forest->unit_name((uint32_t)unit);
     if ( !name || !*name )
 	return false;
@@ -5461,11 +5472,12 @@ bool Program::forest_source_path(const std::string &candidate,
 bool Program::forest_source_text(const madc::dis::istring &path, std::string &text)
 {
     CirFrozenForest *forest = ensure_source_forest();
-    if ( !forest )
-	return false;
-    int unit = forest_source_unit(forest, path, /*allow_tail=*/true);
+    int unit = forest ? forest_source_unit(forest, path, /*allow_tail=*/true) : -1;
     if ( unit < 0 )
-	return false;
+    {
+	const long s = staged_source_unit(path, /*allow_tail=*/true);
+	return s >= 0 && staged_source_text((size_t)s, text);
+    }
     std::map<uint32_t, madc::dis::istring>::iterator cached =
 	forest_source_cache.find((uint32_t)unit);
     if ( cached == forest_source_cache.end() )
@@ -7535,10 +7547,12 @@ bool Program::pack_record_skipped_source(const madc::dis::istring &path)
 // docs/plans/2026-10-13-pack-all-system-headers.md). A line may instead read
 // `unit-name<TAB>file`: the unit is named as the TARGET's search list spells
 // it while its text comes from where the build host keeps it (darwin's SDK
-// path vs the staged open-licensed tree). A unit the freeze already tokenized
-// keeps that record. Unreadable = false, said on stderr: a source arm that
-// silently lacks a header is the defect it exists to close.
-bool Program::pack_record_source_list(const std::string &list_path)
+// path vs the staged open-licensed tree). The list is STAGED before the parse,
+// so the frozen translation unit sees the arm as its consumers will: a
+// `__has_include(<sys/_types/_mbstate_t.h>)` the darwin freeze answered "no"
+// (its toolchain-only view) while every consumer answered "yes" from the pack
+// made the bind's walk decline libc++'s <string> root.
+bool Program::pack_stage_source_list(const std::string &list_path)
 {
     std::ifstream in(list_path.c_str());
     if ( !in )
@@ -7553,26 +7567,79 @@ bool Program::pack_record_source_list(const std::string &list_path)
 	if ( line.empty() || line[0] == '#' )
 	    continue;
 	const size_t tab = line.find('\t');
-	const std::string file = tab == std::string::npos ? line : line.substr(tab + 1);
-	bool ok;
-	if ( tab == std::string::npos )
-	    ok = pack_record_skipped_source(line);
-	else
-	{
-	    std::string text;
-	    ok = pack_recording && read_resolved_include(file, text);
-	    if ( ok )
-		pack_record_source(intern_file(line.substr(0, tab)), text);
-	}
-	if ( !ok )
-	{
-	    std::cerr << "madc: --freeze-sources: cannot read " << file
-		      << " (listed in " << list_path << ")" << std::endl;
-	    return false;
-	}
+	const madc::dis::istring name(tab == std::string::npos ? line : line.substr(0, tab));
+	if ( staged_source_at.emplace(name, staged_sources.size()).second )
+	    staged_sources.push_back(std::make_pair(name,
+		tab == std::string::npos ? line : line.substr(tab + 1)));
 	n++;
     }
-    DBG(std::cout << "freeze-sources: " << n << " file(s) from " << list_path << std::endl);
+    DBG(std::cout << "freeze-sources: " << n << " file(s) staged from " << list_path << std::endl);
+    return true;
+}
+
+long Program::staged_source_unit(const madc::dis::istring &spelling, bool allow_tail) const
+{
+    if ( staged_sources.empty() || spelling.empty() )
+	return -1;
+    std::unordered_map<madc::dis::istring, size_t>::const_iterator it = staged_source_at.find(spelling);
+    if ( it != staged_source_at.end() )
+	return (long)it->second;
+    if ( !allow_tail || madc::detail::host_path_absolute(spelling) )
+	return -1;
+    std::vector<madc::dis::istring> roots;
+    build_include_roots(roots);
+    for ( size_t i = 0; i < roots.size(); ++i )
+    {
+	const madc::dis::istring &r = roots[i];
+	it = staged_source_at.find(madc::dis::istring(
+	    r + (r.empty() || r.back() == '/' ? "" : "/") + spelling));
+	if ( it != staged_source_at.end() )
+	    return (long)it->second;
+    }
+    const size_t n = spelling.size();
+    for ( size_t i = 0; i < staged_sources.size(); ++i )
+    {
+	const madc::dis::istring &nm = staged_sources[i].first;
+	if ( nm.size() > n && nm[nm.size() - n - 1] == '/'
+	  && nm.compare(nm.size() - n, n, spelling.c_str()) == 0
+	  && !path_outside_language_view(nm.c_str()) )
+	    return (long)i;
+    }
+    return -1;
+}
+
+// The bytes of staged unit i: the build host's copy (never a system dir's).
+bool Program::staged_source_text(size_t i, std::string &text) const
+{
+    std::ifstream in(staged_sources[i].second.c_str(), std::ios::binary);
+    if ( !in )
+	return false;
+    std::ostringstream tmp;
+    tmp << in.rdbuf();
+    text = tmp.str();
+    return true;
+}
+
+// A unit the freeze already tokenized keeps that record (pack_record_source:
+// first wins). Unreadable = false, said on stderr: a source arm that silently
+// lacks a header is the defect it exists to close.
+bool Program::pack_record_staged_sources()
+{
+    for ( size_t i = 0; i < staged_sources.size(); ++i )
+    {
+	const char *interned = intern_file(staged_sources[i].first);
+	if ( interned && pack_unit_sources.count(interned) )
+	    continue;
+	std::string text;
+	if ( !pack_recording || !interned || !staged_source_text(i, text) )
+	{
+	    std::cerr << "madc: --freeze-sources: cannot read " << staged_sources[i].second
+		      << " (unit " << staged_sources[i].first << ")" << std::endl;
+	    return false;
+	}
+	pack_record_source(interned, text);
+    }
+    DBG(std::cout << "freeze-sources: " << staged_sources.size() << " file(s) recorded" << std::endl);
     return true;
 }
 
