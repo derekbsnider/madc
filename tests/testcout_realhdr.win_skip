@@ -1,0 +1,1 @@
+genuine Windows runs the packed PE HEADERLESS (no toolchain on the box): --no-embedded-headers reads every core header from disk, the same reason as its .headerless_skip (ondisk-win runs it under wine, where the staged mingw headers are on disk)

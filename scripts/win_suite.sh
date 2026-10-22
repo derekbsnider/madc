@@ -60,6 +60,22 @@ if [ ${#runtime_files[@]} -gt 0 ]; then
 		exit 3
 	fi
 fi
+# The release set's madc modules (`import git;`, `import markdown;`, the
+# ui_web target): madc_module_dir() is the library image's directory +
+# ../lib/madc/modules, so the stage carries them at that place beside bin/.
+module_files=()
+for module_file in "$(dirname "$PRODUCT")"/../lib/madc/modules/*.dll; do
+	if [ -f "$module_file" ]; then
+		module_files+=("$module_file")
+	fi
+done
+if [ ${#module_files[@]} -gt 0 ]; then
+	if ! ssh -o BatchMode=yes "$WIN_SSH" "mkdir -p '$STAGE/lib/madc/modules'" \
+	   || ! scp -q -o BatchMode=yes "${module_files[@]}" "$WIN_SSH:$STAGE/lib/madc/modules/"; then
+		echo "win_suite: module DLL copy failed" >&2
+		exit 3
+	fi
+fi
 # The suite's inputs beyond tests/: the ui tests read
 # examples/adventure/adventure.world and the examples' tests include their
 # example — the same trees the Mac suite stage carries. A missing tree fails

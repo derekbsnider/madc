@@ -386,6 +386,10 @@ for t in "$TEST_DIR"/*.mad; do
     # testgraphpast, whose 60 s fixture the JIT leg honoured).
     flags=("${fx_flags[@]}")
     envs=("${fx_envs[@]}")
+    # The names the .env sets, for a MADC_WRAPPER whose binary runs in an
+    # environment of its own (win_run.sh: a Win32 child sees only the
+    # variables WSLENV names).
+    [ ${#envs[@]} -gt 0 ] && envs+=("MADC_FIXTURE_ENV=${envs[*]%%=*}")
     args=("${fx_args[@]}")
     tmo=$fx_timeout
     # The exit status every run of the test (JIT, exe, obj) must end with:

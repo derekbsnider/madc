@@ -60,13 +60,16 @@ if [ -n "${MADC_WIN_STAGE:-}" ]; then
 	# that is set, MADC_SESSION_DIR (the discovery tests' — madc's
 	# discovery since split arc 1D; the box has no HOME/XDG_STATE_HOME, so
 	# without it session_dir is empty and nothing advertises) and
-	# MADC_HISTORY_FILE (the suite's REPL history, run_tests.sh's). WSLENV
-	# names them; each is set in the remote env with its verbatim value.
+	# MADC_HISTORY_FILE (the suite's REPL history, run_tests.sh's), and the
+	# variables the test's .env sets (run_tests.sh names them in
+	# MADC_FIXTURE_ENV). WSLENV names them; each is set in the remote env
+	# with its verbatim value.
 	fwd_names=(MADC_BIN)
 	fwd_assigns=""
 	fwd_vars=$(compgen -v MADCIDE_ 2>/dev/null)
 	[ -n "${MADC_SESSION_DIR:-}" ] && fwd_vars="$fwd_vars MADC_SESSION_DIR"
 	[ -n "${MADC_HISTORY_FILE:-}" ] && fwd_vars="$fwd_vars MADC_HISTORY_FILE"
+	fwd_vars="$fwd_vars ${MADC_FIXTURE_ENV:-}"
 	for var in $fwd_vars; do
 		fwd_names+=("$var")
 		printf -v one ' %s=%q' "$var" "${!var}"
