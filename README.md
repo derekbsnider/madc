@@ -50,9 +50,10 @@ madc                         # the REPL
 - **JIT.** `madc file.cpp` compiles into memory and runs — usually before
   g++ or clang++ would have finished linking (see [Speed](#speed)). A
   `#!/usr/bin/env madc` line makes a source file an executable script.
-- **AOT.** `-o` writes the executable itself; there is no linker to call. A
-  C++ hello-world is a 22 KB executable that needs only the C and C++
-  runtime libraries, not madc. `-c` objects use the Itanium C++ ABI and
+- **AOT.** `-o` writes the executable itself; there is no linker to call. On
+  Linux and Windows a C++ hello-world is a 22 KB executable that needs only
+  the C and C++ runtime libraries, not madc (on macOS it still needs
+  libmadc). `-c` objects use the Itanium C++ ABI and
   real mangled names, so they link with g++- and clang++-built code.
 - **C11 out.** `--emit=c11` renders any program, C++ included, as strict
   C11 that any C compiler accepts.
@@ -80,9 +81,9 @@ the Windows zip carries the DLLs it needs.
 
 | Platform | Packages | Download |
 |---|---|---:|
-| Linux x86-64 | `.deb` (Ubuntu 22.04, 24.04), `.rpm`, tarball | 18–19 MB |
-| Windows x86-64 | zip | 18 MB |
-| macOS (Apple silicon, Intel) | tarball | 16 MB |
+| Linux x86-64 | `.deb` (Ubuntu 22.04, 24.04), `.rpm`, tarball | 18–21 MB |
+| Windows x86-64 | zip | 19 MB |
+| macOS (Apple silicon, Intel) | tarball | 18 MB |
 
 ## Built on MIR
 
@@ -111,26 +112,26 @@ Fixes that belong to MIR itself are offered upstream as pull requests.
 
 ## Speed
 
-madc 0.105.0 against g++ 13.3 and clang++ 18.1 on the same machine
+madc 0.106.0 against g++ 13.3 and clang++ 18.1 on the same machine
 (Ubuntu 24.04, x86-64), in milliseconds, best of 7 runs, interleaved —
 lower is better:
 
 | task | madc | g++ / gcc | clang++ / clang |
 |---|---:|---:|---:|
-| `hello.cpp` (`<iostream>`), source to output | **83** | 170 | 207 |
-| `<vector>` + `<map>` + `<string>` program, source to output | **209** | 252 | 275 |
-| `hello.c` (`<stdio.h>`), source to output | **9** | 21 | 37 |
-| compile `hello.cpp` to an object | **93** | 144 | 171 |
-| compile `string-build.cpp` to an object | **56** | 93 | 111 |
-| compile `vector-sum.cpp` to an object | **51** | 82 | 92 |
-| compile SMAUG `act_wiz.c` (12,041 lines of C89) | 241 | 402 | **161** |
+| `hello.cpp` (`<iostream>`), source to output | **81** | 186 | 213 |
+| `<vector>` + `<map>` + `<string>` program, source to output | **202** | 251 | 275 |
+| `hello.c` (`<stdio.h>`), source to output | **7** | 23 | 43 |
+| compile `hello.cpp` to an object | **83** | 145 | 173 |
+| compile `string-build.cpp` to an object | **57** | 96 | 109 |
+| compile `vector-sum.cpp` to an object | **51** | 80 | 90 |
+| compile SMAUG `act_wiz.c` (12,041 lines of C89) | 199 | 386 | **156** |
 
 *Source to output* is madc's JIT against compiling and linking at `-O0`,
 then running. For objects, g++/gcc and clang++/clang run at `-O0` and madc
 at its default, `-O1`. madc's edge is C++ headers: they are parsed once,
 when madc is built, not on every compile. On large C files clang is faster.
 
-Generated code runs at about 81% of the speed of `gcc -O2` on MIR's C
+Generated code runs at about 78% of the speed of `gcc -O2` on MIR's C
 benchmark set (geometric mean; madc wins some). Method, every row and the
 history: [docs/benchmarks](docs/benchmarks/README.md).
 
