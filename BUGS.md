@@ -30,6 +30,78 @@ and `--std=gnu++17` for `.cpp`, against `gcc -std=gnu17` / `g++ -std=gnu++17`.
 
 ## Silent wrong answers
 
+### B217. The address of an overload set ignores the target type ([over.over])
+
+```cpp
+#include <cstdio>
+int f(int) { return 1; }
+int f(double) { return 2; }
+struct S { int m(int) { return 1; } int m(double) { return 2; } };
+int main()
+{
+	int (*pi)(int) = &f;
+	int (*pd)(double) = &f;
+	int (S::*mi)(int) = &S::m;
+	int (S::*md)(double) = &S::m;
+	S s;
+	std::printf("%d %d %d %d\n", pi(1), pd(2.0), (s.*mi)(1), (s.*md)(2.0));
+	return 0;
+}
+```
+
+- Found 2026-10-21 writing `tests/testvirtualoverloadslots` (per-signature
+  vtable slots, 5333f374c).
+- g++ 13 and clang++ 18: `1 2 1 2`. madc (HEAD and v0.105.0): `1 1 2 2` —
+  `&f` binds the first free overload, `&S::m` the one `findMethod` returns
+  (the last declared), whatever the target type. A virtual member pointer
+  then encodes the wrong slot too.
+- Layer: no [over.over] selection exists — `&C::m`
+  (`Program`'s member-pointer constant reader, `findMethod(member_name)`) and
+  `&f` / `f` take a by-name lookup. The fix selects against the target type
+  at every target (initializer, assignment, argument, cast, return). Parser
+  — its own session.
+
+### B218. An rvalue object does not select a `&&`-qualified member overload
+
+```cpp
+#include <cstdio>
+#include <utility>
+struct W {
+	int v;
+	int &get() & { return v; }
+	int &&get() && { return static_cast<int &&>(v); }
+};
+static const char *take(int &) { return "lvalue"; }
+static const char *take(int &&) { return "rvalue"; }
+int main()
+{
+	W w = { 5 };
+	std::printf("%s %s\n", take(w.get()), take(std::move(w).get()));
+	return 0;
+}
+```
+
+- Found 2026-10-21 probing ref-qualifier fidelity after 5333f374c.
+- g++ 13 and clang++ 18: `lvalue rvalue`. madc (HEAD and v0.105.0):
+  `lvalue lvalue` — `std::move(w).get()` calls `get() &`.
+- Layer: member overload ranking — the implicit object parameter of a
+  `&&`-qualified member binds an rvalue only ([over.match.funcs]/4-5,
+  [over.ics.rank]/3.2.3); the ranker does not read the object's value
+  category against `FuncDef::ref_qualifier`. Parser — its own session.
+  B220 is probably the same root.
+
+### B221. A method's ref-qualifier is not frozen (latent)
+
+- Found 2026-10-21 reading the freeze path for 5333f374c.
+- `FuncDef::ref_qualifier` (0 / `&` / `&&`) has no defrec or methodrec bit, so
+  a method restored from the pack reads as unqualified: a restored class's
+  `&` / `&&` overload pair (libc++ `__optional_storage_base::__get`, C++20
+  `basic_stringbuf::str`) loses the distinction, and its virtual slot key
+  (`FuncDef::virtual_slot_key`) drops `R` / `O`.
+- No observable reducer yet: the live paths that would show it are B218 /
+  B220 / the KG gap `libstdcxx_optional_payload_get_unresolved`. Home:
+  `methodrec.flags` bits 4/5 (`MF_` 0..3 taken), with a forest format bump.
+
 ### B214. A global `using std::abs;` does not add std's overloads to `::abs`
 
 ```cpp
@@ -849,6 +921,60 @@ int main()
   so not a regression; `.libcxx_skip` (owner 2026-10-21).
 - Found 2026-10-21 on the native darwin lane. Layer: unknown — the CIR
   lowering of a libc++ `__tree` member body; recon first.
+
+### B219. Unary `*` on a call-expression class operand does not call `operator*`
+
+```cpp
+#include <cstdio>
+#include <utility>
+struct W {
+	int v;
+	int &operator*() & { return v; }
+	int &&operator*() && { return static_cast<int &&>(v); }
+};
+static const char *take(int &) { return "lvalue"; }
+static const char *take(int &&) { return "rvalue"; }
+int main()
+{
+	W w = { 5 };
+	std::printf("%s %s\n", take(*w), take(*std::move(w)));
+	return 0;
+}
+```
+
+- Found 2026-10-21 probing ref-qualifier fidelity after 5333f374c.
+- g++ 13 and clang++ 18: `lvalue rvalue`. madc (HEAD and v0.105.0):
+  `error: no matching overload for '::take' with argument types (W)` at
+  `take(*std::move(w))` — the operand keeps its class type, so no
+  `operator*` was applied. `*w` on the named object resolves.
+- Layer: the unary `*` over a call-expression operand of class type
+  (`Program::build_indirection` / its class-operator arm). Parser — its own
+  session.
+
+### B220. C++20: `std::ostringstream::str()` is refused
+
+```cpp
+#include <sstream>
+#include <string>
+#include <cstdio>
+int main()
+{
+	std::ostringstream o;
+	o << "abc";
+	std::string a = o.str();
+	std::string c = std::move(o).str();
+	std::printf("%s %s [%s]\n", a.c_str(), c.c_str(), o.str().c_str());
+	return 0;
+}
+```
+
+- Found 2026-10-21 probing ref-qualifier fidelity after 5333f374c.
+- `g++ -std=gnu++20`: `abc abc []`. madc `--std=gnu++20` (HEAD and
+  v0.105.0): `error: member reference is not a structure or union` at
+  `o.str().c_str()`. Under `--std=gnu++17` (one `str() const`) madc prints
+  g++'s `abc abc [abc]`.
+- Layer: C++20 declares `str() const &` and `str() &&`; the selection
+  between them (B218's ranker) is the likely root. Parser — its own session.
 
 ### B209. A braced single same-class element (`S q{s};`) is lowered as a member list
 
