@@ -1,0 +1,1 @@
+glibc's FILE (_shortbuf) and struct cmsghdr (__cmsg_data) layouts; mingw's FILE and winsock have neither member

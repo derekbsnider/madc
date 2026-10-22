@@ -4329,9 +4329,17 @@ void CirFrozenForest::materialize_pass()
 			}
 			sdd->members.push_back(memberpair_t(madc::dis::istring(mnm), mdd));
 			sdd->member_offsets.push_back(mr.offset);
-			sdd->member_counts.push_back(mr.count ? mr.count : 1);
-			// v6 parity: array flag derives from count (not the stored bit).
-			sdd->member_array_flags.push_back(mr.count > 1);
+			// A declared array loads VERBATIM: its flag (bit0) and its count,
+			// so `char _shortbuf[1]` stays an array and a flexible member
+			// (`__cmsg_data[]`) keeps count 0 — and its extent is that count,
+			// the parser's shape for a one-dimension member (the record
+			// carries no multi-dimension shape).
+			bool declared_array = (mr.flags & 1u) != 0;
+			sdd->member_counts.push_back(declared_array || mr.count ? mr.count : 1);
+			sdd->member_array_flags.push_back(declared_array);
+			sdd->member_dims.push_back(declared_array
+				? std::vector<carray_dim_t>(1, (carray_dim_t)mr.count)
+				: std::vector<carray_dim_t>());
 			sdd->member_access.push_back(mr.access);
 			sdd->member_origin.push_back((int)mr.origin);
 			DataDefSTRUCT::BitFieldInfo bf;

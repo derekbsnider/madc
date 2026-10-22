@@ -1,0 +1,19 @@
+/* A system-header struct's one-element and flexible array members keep their
+ * ARRAY type when the struct is bound from the C pack: glibc's
+ * FILE::_shortbuf[1] and struct cmsghdr's __cmsg_data[] (what CMSG_DATA()
+ * names) decay, subscript and size as arrays.
+ * gcc 13 / clang 18 -std=gnu17: "one-element 1 1", "flexible 16 16". */
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+
+int main(void)
+{
+	char *p = stdout->_shortbuf;
+	printf("one-element %zu %d\n", sizeof stdout->_shortbuf, p == &stdout->_shortbuf[0]);
+	struct cmsghdr *c = (struct cmsghdr *)calloc(1, CMSG_SPACE(sizeof(int)));
+	unsigned char *d = CMSG_DATA(c);
+	printf("flexible %zu %ld\n", sizeof(struct cmsghdr), (long)(d - (unsigned char *)c));
+	free(c);
+	return 0;
+}
