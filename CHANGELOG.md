@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### A member template's placement new constructs at a typed address
+
+- A placement new-expression inside a member template now constructs the object at the placement address cast to the constructed class pointer, so the emitted C11 passes `struct S *` where the constructor and the result expect it ([expr.new]: a placement new-expression yields a `S *`). Before, the tsubst copy of a deferred placement new handed the relower the raw translated placement expression (`unsigned char *buf`) as the object's `this` and as the yielded value, and `S *p = new (buf) S(std::forward<T>(t))` emitted four c2mir warnings (`incompatible argument type for pointer type parameter`, `incompatible types in assignment to a pointer`, twice each over the two `place<T>` instances). The output was correct; the warning ratchet (`scripts/warn_census.sh`) caught it.
+- The deferred call site types the address through `class_ptr_type`, the one owner of `struct Cls *` spellings — the typing the non-template `TokenNEW` arm and `tsubst_scalar_placement_store` already apply.
+- Tests: `testmembertmpl_dependent_ctor` (C++, `--std=gnu++17`) now compiles with no warning on stderr; it prints `member: copy move`, `placement: copy move`, `named: copy copy`, `free: copy move`, the output of g++ 13 and clang++ 18.
+
 ### A bound using-declaration import binds a target a live arm declares
 
 - A restored using-declaration import (`namespace std { using ::abort; }`) whose target function no name holds when the bind flushes is deferred and bound at the member's first lookup, rather than dropped. The target is a declaration a live arm the walk ran contributes later in the token stream. Before, every C++ program that `#include <iostream>` then `#include <stdlib.h>` was refused on the packed win64 binary with "'abort' is not a member of namespace 'std'" (and the same for `exit`, `quick_exit`, `system`): mingw's `<process.h>` and `<stdlib.h>` share a `#ifndef _CRT_TERMINATE_DEFINED` block declaring `abort`; the freeze read `<stdlib.h>` first, and the consumer's `<iostream>` walk reaches `<process.h>` first, ran its arm live, and withdrew `<stdlib.h>`'s frozen `abort` record.

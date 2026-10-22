@@ -4501,9 +4501,15 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				const bool by_dependent_args =
 					!template_param_under_type_layers(src->datadef())
 					&& !tsubst_args_have_pack_expansion(tn->ctor_args);
+				// The constructed object's address, as the placement
+				// arm types it: the raw expression may be char* / void*.
+				auto object_addr = [&]() -> node_t {
+					return node2(N_CAST, class_ptr_type(concrete_class),
+						     placement_addr(), tn);
+				};
 				if (cir_node *done = tsubst_relower_deferred_construction(
 						tn->ctor_args, tn, concrete_class,
-						subst, placement_addr,
+						subst, object_addr,
 						/*yield_this_addr=*/true,
 						/*relax_class_args=*/by_dependent_args))
 					return done;
