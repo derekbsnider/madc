@@ -3332,6 +3332,7 @@ public:
     {
 	return i < _buf.size() ? madc_token_for_slot(_buf[i]) : NULL;
     }
+    size_t buf_size() const { return _buf.size(); }
 
     // -- backtrack: save/restore is {cursor, pushback} — NEVER the buffer. A
     //    parser rewind goes through Program::mark_stream / rewind_stream,
@@ -3808,6 +3809,15 @@ protected:
     SkippedArmCapture *skip_arm_capture = NULL;
     TokenBase *skip_capturing_arm(SkippedArmCapture &cap);
     TokenBase *skip_recorded_arm();
+    // Is the lexer's output so far at DECLARATION scope — outside every ( [ {
+    // but a linkage specification's, after a declaration's end or at the
+    // stream's start? The bind pushes a replayed arm's tokens at the root's
+    // include site, so only such an arm's tokens replay (K2, v76). The scan
+    // resumes where the last call stopped.
+    bool pack_output_at_declaration_scope();
+    std::shared_ptr<DelimDepth> pack_scope_delims;
+    size_t pack_scope_scanned = 0;
+    std::vector<bool> pack_scope_linkage;	// per open brace: a linkage specification's
     bool evaluateIfCondition();
     std::string read_if_condition_text();
     bool evaluate_if_text(const std::string &raw_expr);
@@ -6038,6 +6048,7 @@ public:
 	uint32_t ev_end = 0, ed_end = 0;	// ... ahead of the arm's end (#elif, #else, #endif)
 	bool single_arm = false;	// the group's #endif ended the arm, no #elif / #else in it
 	bool arm_captured = false;	// a skipped single arm's body is in `arm`
+	bool arm_decl_scope = false;	// v76: ... and it sits at declaration scope
 	std::string arm;
 	uint32_t rec_end = 0;		// v69: the unit's record count at the arm's end
 	std::string arm_state;		// v69: the arm's written macros as the freeze held them (forest_macro_state_spelling)

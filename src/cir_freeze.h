@@ -215,7 +215,8 @@ enum cir_forest_point_field : uint32_t {
 enum : uint32_t {
 	CIR_COND_F_OUTCOME    = 1u,	// the arm was taken at freeze
 	CIR_COND_F_SINGLE_ARM = 2u,	// the group's #endif ended it (no #elif / #else)
-	CIR_COND_F_WATCHED    = 4u	// v73: the forest keeps the expansion points of the arm's writes
+	CIR_COND_F_WATCHED    = 4u,	// v73: the forest keeps the expansion points of the arm's writes
+	CIR_COND_F_DECL_SCOPE = 8u	// v76: a captured arm sits at declaration scope
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -767,7 +768,12 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // <_mingw.h> read again by <vadefs.h> while it is open) lies inside the outer
 // inclusion's range; a v74 pack holds the ends only, in leave order. An
 // expansion point names the innermost open inclusion of its unit.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 75 };
+//
+// v76: a captured arm at declaration scope carries CIR_COND_F_DECL_SCOPE — the
+// bind replays an arm's tokens at the root's include site, so an arm with
+// tokens inside an enum body, a class, a namespace or a parameter list
+// (glibc bits/socket.h's __USE_GNU enumerators) declines instead.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 76 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies

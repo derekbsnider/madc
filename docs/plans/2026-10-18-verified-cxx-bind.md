@@ -301,7 +301,13 @@ two include sites and the two posix-provider sites go through
     Source. Its directives write through `set_macro` (logged), and the names
     it writes must then match `CIR_COND_ARM_STATE` (as above). Its tokens are kept and
     pushed after the walk commits, at the root's include site. An arm with a
-    directive other than define, undef or a conditional is refused.
+    directive other than define, undef or a conditional is refused. v76
+    (2026-10-22): so is an arm whose tokens sit inside a declaration — an enum
+    or class body, a namespace, a parameter list (a linkage specification's
+    braces are transparent). The freeze marks a captured arm at declaration
+    scope (`CIR_COND_F_DECL_SCOPE`); glibc `bits/socket.h`'s `__USE_GNU`
+    enumerators under a C consumer's `_GNU_SOURCE` replayed at file scope and
+    the parse failed (`tests/testpackgnuenumarm_c`, gate `[nestedarm]`).
   - Anything else: verified → roll back and decline; knob off → follow the
     frozen outcome (today's knob-off behaviour).
 - Commit: units enter `chain` in post-order (the decl restore's order), the

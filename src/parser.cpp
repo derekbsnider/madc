@@ -5643,6 +5643,47 @@ static size_t delim_scan_step(const Seq &toks, size_t i, DelimDepth &d)
     return 1;
 }
 
+// The lexer's produced buffer as an index sequence: TokenStream's operator[]
+// and size() read from the parse cursor, this reads every produced token.
+struct TokenBufferView
+{
+    const TokenStream &s;
+    size_t size() const { return s.buf_size(); }
+    TokenBase *operator[](size_t i) const { return s.buf_at(i); }
+};
+
+// K2 (docs/plans/2026-10-18-verified-cxx-bind.md) pushes a replayed arm's
+// tokens at the root's include site, at file scope: an arm inside an enum body
+// (glibc bits/socket.h's `#ifdef __USE_GNU` enumerators), a class, a namespace
+// or a parameter list is not there. A linkage specification's braces
+// (`extern "C" {`, C++'s __BEGIN_DECLS) hold namespace-scope declarations, so
+// they are transparent. An index scan over a stored run, so no Program: only
+// ( [ { are read.
+bool Program::pack_output_at_declaration_scope()
+{
+    if ( !pack_scope_delims )
+	pack_scope_delims = std::make_shared<DelimDepth>();
+    DelimDepth &d = *pack_scope_delims;
+    const TokenBufferView view = { tokens };
+    while ( pack_scope_scanned < view.size() )
+    {
+	TokenBase *before = pack_scope_scanned ? view[pack_scope_scanned - 1] : NULL;
+	const int braces = d.brace;
+	pack_scope_scanned += delim_scan_step(view, pack_scope_scanned, d);
+	if ( d.brace > braces )
+	    pack_scope_linkage.push_back(before && before->type() == TokenType::ttString);
+	else if ( d.brace < braces && !pack_scope_linkage.empty() )
+	    pack_scope_linkage.pop_back();
+    }
+    if ( d.paren || d.square
+      || std::find(pack_scope_linkage.begin(), pack_scope_linkage.end(), false)
+	 != pack_scope_linkage.end() )
+	return false;
+    TokenBase *last = pack_scope_scanned ? view[pack_scope_scanned - 1] : NULL;
+    return !last || last->id() == TokenID::tkSemi || last->id() == TokenID::tkClBrc
+	|| last->id() == TokenID::tkOpBrc;	// a linkage specification just opened
+}
+
 // Read-only lookahead over a template-id in the LIVE token stream. The stream
 // begins at (or contains at lt_index) the opening '<'; return the token after
 // its balanced argument list without advancing the parser. DelimDepth is the

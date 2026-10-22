@@ -4225,7 +4225,8 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    w[CIR_COND_TEXT] = pool->intern(r.text);
 	    w[CIR_COND_FLAGS] = (r.outcome ? CIR_COND_F_OUTCOME : 0u)
 			      | (r.single_arm ? CIR_COND_F_SINGLE_ARM : 0u)
-			      | (!r.arm_writes.empty() ? CIR_COND_F_WATCHED : 0u);
+			      | (!r.arm_writes.empty() ? CIR_COND_F_WATCHED : 0u)
+			      | (r.arm_decl_scope ? CIR_COND_F_DECL_SCOPE : 0u);
 	    w[CIR_COND_EV_BEGIN] = r.ev_begin;
 	    w[CIR_COND_ED_BEGIN] = r.ed_begin;
 	    w[CIR_COND_EV_END] = r.ev_end;
@@ -8116,7 +8117,9 @@ int madc_cir_dump_forest(const char *container_path)
 		       (w[CIR_COND_FLAGS] & CIR_COND_F_SINGLE_ARM) ? 1u : 0u,
 		       w[CIR_COND_EV_BEGIN], w[CIR_COND_EV_END],
 		       w[CIR_COND_ED_BEGIN], w[CIR_COND_ED_END],
-		       w[CIR_COND_ARM] ? "captured" : "none",
+		       !w[CIR_COND_ARM] ? "none"
+		       : (w[CIR_COND_FLAGS] & CIR_COND_F_DECL_SCOPE) ? "captured"
+		       : "captured-nested",
 		       txt ? txt : "?");
 		printf("condnest\t%s\t%u\t%u\ttok=%u-%u\n", uname ? uname : "?", c,
 		       w[CIR_COND_REC_END], w[CIR_COND_TOK_BEGIN], w[CIR_COND_TOK_END]);

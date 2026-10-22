@@ -84,6 +84,14 @@ Conformance: c23-run 35 -> 40, torture-c23 1490 -> 1493
 - The record carries no multi-dimension shape; a bound multi-dimension array member is tracked as B225.
 - Tests: `testpackarraymember_c` (C, `--std=gnu17`) and `testpackarraymember` (C++, `--std=gnu++17`) each print `one-element 1 1` and `flexible 16 16`, the output of gcc 13 / clang 18 and g++ 13 / clang++ 18. The archived v0.105.0 release printed the same for C; both releases refused the C++ program.
 
+### A pack-bound arm whose tokens sit inside a declaration parses live, not replayed at the include site
+
+- A skipped arm whose tokens sit inside a declaration — an enum body, a class, a namespace or a parameter list — no longer replays at the include site when a consumer takes it; the unit declines and the header parses live. glibc's `bits/socket.h` puts its `#ifdef __USE_GNU` enumerators (`MSG_TRYHARD`, `MSG_CMSG_CLOEXEC`) inside its `MSG_*` enum body, so a C consumer that defines `_GNU_SOURCE` and includes `<sys/time.h>` then `<sys/socket.h>` now declares them and `struct ucred`. Before, the packed binary refused the program with `bits/socket.h:1:5: error: Expecting identifier after ',' in declaration` and `Unknown struct/union type in sizeof` for `struct ucred` — the arm's enumerators had replayed at file scope.
+- The bind pushes a replayed arm's tokens at the root's include site, which is file scope, so only an arm whose tokens sat at declaration scope can replay there. The freeze marks a captured arm at declaration scope (`CIR_COND_F_DECL_SCOPE`) — outside every `(` `[` `{` but a linkage specification's `extern "C" {` — and the bind declines a unit whose arm yields tokens without that flag. The scope test reuses the shared delimiter tracker (`DelimDepth` + `delim_scan_step`).
+- The forest format is version 76: a captured arm at declaration scope carries `CIR_COND_F_DECL_SCOPE`, and `--dump-forest` prints `arm=captured` / `captured-nested` / `none`.
+- On the packed binary the C program regressed from v0.105.0; the dev binary (live headers, no pack) declared the GNU names throughout.
+- Tests: `testpackgnuenumarm_c` (C, `--std=gnu17`) prints `tryhard 4 cloexec 1073741824`, `ucred 12`, `timeval 16`, the output of gcc 13 / clang 18 -std=gnu17; the forest bind gate's case `[nestedarm]` freezes an arm inside an enum body (captured-nested) and one after it (captured), binds the plain consumer and declines the one that takes both.
+
 ### A forest freeze's source arm is staged before the parse
 
 - `--freeze-sources=LIST` is read before the translation unit is tokenized, so the frozen unit answers `__has_include` and reads headers from the listed source arm, as every consumer of the pack does. Before, the arm joined after the parse, and a darwin freeze (`--no-sysroot-includes`) answered `__has_include(<sys/_types/_mbstate_t.h>)` with 0. Consumers answered 1, the bind declined libc++'s `<string>` root, and the whole translation unit parsed live.

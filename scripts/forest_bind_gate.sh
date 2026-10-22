@@ -1213,6 +1213,81 @@ cr_want "#if over FBG_CR_CFG: taken, an #elif follows, one define" \
 grep -aEq "^cond	${cr_u}	elif	" "$cr_dir/dump.txt" \
     && fail "[condrec] an #elif after a taken arm was recorded — it is never evaluated"
 rm -rf "$cr_dir"
+
+# --- case: nestedarm (forest v76) ---
+# The bind replays a skipped arm's tokens at the root's include site, so the
+# freeze marks the arms at declaration scope (CIR_COND_F_DECL_SCOPE). glibc
+# bits/socket.h's `#ifdef __USE_GNU` enumerators sit inside its MSG_* enum
+# body: a consumer defining _GNU_SOURCE replayed them at file scope and the
+# parse failed. fbgate_na.h, frozen without FBG_NA_GNU: an arm inside the enum
+# (captured-nested) and one after it (captured). Defining FBG_NA_GNU takes both:
+# the unit declines and parses live; without it, the unit binds.
+# gcc and clang: two=2 u=12 / end=2.
+na_dir=tmp/fbgate_na
+rm -rf "$na_dir"
+mkdir -p "$na_dir"
+cat > "$na_dir/fbgate_na.h" <<'EOF'
+#ifndef FBGATE_NA_H
+#define FBGATE_NA_H
+struct fbg_na_s { int v; };
+enum fbg_na_e {
+  FBG_NA_ONE = 1,
+#ifdef FBG_NA_GNU
+  FBG_NA_TWO = 2,
+#endif
+  FBG_NA_END
+};
+#ifdef FBG_NA_GNU
+struct fbg_na_u { int a, b, c; };
+#endif
+#endif
+EOF
+cat > "$na_dir/producer.c" <<'EOF'
+#include <fbgate_na.h>
+int main(void) { return 0; }
+EOF
+cat > "$na_dir/taken.c" <<'EOF'
+#define FBG_NA_GNU
+#include <fbgate_na.h>
+#include <stdio.h>
+int main(void) { printf("two=%d u=%zu\n", (int)FBG_NA_TWO, sizeof(struct fbg_na_u)); return 0; }
+EOF
+cat > "$na_dir/plain.c" <<'EOF'
+#include <fbgate_na.h>
+#include <stdio.h>
+int main(void) { printf("end=%d\n", (int)FBG_NA_END); return 0; }
+EOF
+na_snap=$na_dir/na.msnap
+timeout 600 "$BIN" --std=gnu17 --freeze="$na_snap" -I "$na_dir" "$na_dir/producer.c" \
+    >"$na_dir/freeze.log" 2>&1 || fail "[nestedarm] the --freeze FAILED: $(tail -n 3 "$na_dir/freeze.log")"
+timeout 60 "$BIN" --dump-forest="$na_snap" > "$na_dir/dump.txt" 2>&1 \
+    || fail "[nestedarm] --dump-forest FAILED"
+grep -aEq "^cond	[^	]*fbgate_na\.h	ifdef	0	1	.*arm=captured-nested	FBG_NA_GNU$" "$na_dir/dump.txt" \
+    || fail "[nestedarm] the arm inside the enum body is not marked captured-nested"
+grep -aEq "^cond	[^	]*fbgate_na\.h	ifdef	0	1	.*arm=captured	FBG_NA_GNU$" "$na_dir/dump.txt" \
+    || fail "[nestedarm] the arm after the enum is not marked captured (declaration scope)"
+na_case() {	# na_case <name> <expected output> <bind|decline>
+    if command -v gcc >/dev/null 2>&1; then
+	gcc -std=gnu17 -I "$na_dir" -o "$na_dir/$1.gcc" "$na_dir/$1.c" 2>"$na_dir/$1.gcc.err" \
+	    || fail "[nestedarm] $1: gcc compile FAILED: $(head -n 2 "$na_dir/$1.gcc.err")"
+	[ "$("$na_dir/$1.gcc")" = "$2" ] || fail "[nestedarm] $1: gcc output is not '$2' — the reducer is wrong"
+    fi
+    na_out=$(timeout 60 "$BIN" --std=gnu17 --forest-bind="$na_snap" -I "$na_dir" "$na_dir/$1.c" 2>&1)
+    [ "$na_out" = "$2" ] || fail "[nestedarm] $1: output '$na_out' != '$2' (gcc)"
+    timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$na_snap" -I "$na_dir" "$na_dir/$1.c" \
+	>"$na_dir/$1.log" 2>/dev/null
+    if [ "$3" = bind ]; then
+	grep -aq "bound to grove unit.*fbgate_na.h" "$na_dir/$1.log" \
+	    || fail "[nestedarm] $1: fbgate_na.h did not bind — $(grep -a -m1 'DECLINE root' "$na_dir/$1.log")"
+    else
+	grep -aq "DECLINE root.*fbgate_na.h" "$na_dir/$1.log" \
+	    || fail "[nestedarm] $1: fbgate_na.h did not decline — the nested arm replayed at file scope"
+    fi
+}
+na_case taken "two=2 u=12" decline
+na_case plain "end=2" bind
+rm -rf "$na_dir"
+echo "forest_bind_gate: [nestedarm] OK — an arm with tokens inside a declaration does not replay at the include site: the root declines and parses live"
 echo "forest_bind_gate: [condrec] OK — the freeze records each edge's place and each external conditional's outcome, arm and body (v68)"
 
 # --- case: k2walk (docs/plans/2026-10-18-verified-cxx-bind.md, K2 step 3) ---
@@ -3781,5 +3856,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 47/47 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + division + allornone + condrec + k2walk + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (missing content replayed from the skipped arm), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 48/48 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + division + allornone + condrec + nestedarm + k2walk + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (missing content replayed from the skipped arm), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

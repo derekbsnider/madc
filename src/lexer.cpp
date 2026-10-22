@@ -6402,6 +6402,8 @@ bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUn
 	forest_arm_walk = outer;
 	if ( !ran )
 	    why = w.arm_abort ? w.arm_abort : "has an arm the walk cannot run in place";
+	else if ( !toks.empty() && !(c[CIR_COND_FLAGS] & CIR_COND_F_DECL_SCOPE) )
+	    why = "has an arm whose tokens sit inside a declaration (v76: they cannot replay at the include site)";
 	else
 	{
 	    w.arm_tokens.insert(w.arm_tokens.end(), toks.begin(), toks.end());
@@ -8089,6 +8091,8 @@ TokenBase *Program::skip_capturing_arm(SkippedArmCapture &cap)
 	PackCondRecord &r = pack_unit_conds[rec_unit][rec];
 	r.arm_captured = true;
 	r.arm = cap.text;
+	// v76: the bind replays the arm's tokens at the root's include site.
+	r.arm_decl_scope = pack_output_at_declaration_scope();
 	// v69: the arm's writes as the freeze holds them here — the content after
 	// the arm was expanded with these values, so an arm the bind runs must
 	// leave the same state (CIR_COND_ARM_STATE).
