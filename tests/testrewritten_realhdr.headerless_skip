@@ -1,0 +1,1 @@
+passes --no-embedded-headers in .flags, which reads every core header from disk (d924c728b); this lane masks the disk include dirs by design, so the on-disk complement stage runs it
