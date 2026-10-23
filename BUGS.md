@@ -2984,6 +2984,25 @@ Same reducer as B234, without the `#line`.
 
 ## Build and packaging
 
+### B237. win64: a C program calling printf needs libmadc-0.dll
+
+```c
+#include <stdio.h>
+int main(void) { printf("hi\n"); return 0; }
+```
+
+- Found 2026-10-23 with issue #8's fixes (MIR's call helpers now ride the
+  image on win64 too): the madc-built PE still imports `libmadc-0.dll`, for
+  one name, `__mingw_vfprintf`.
+- madc's win64 headers are UCRT with `__USE_MINGW_ANSI_STDIO=1`
+  (`win_ucrt_gate.sh` W0.1: long double `%Lf`), so mingw's `<stdio.h>` makes
+  `printf` an inline wrapper over `__mingw_vfprintf`. gcc links that from
+  `libmingwex.a` into the image; madc binds it out of libmadc-0.dll, so every
+  such program loads all of libmadc — issue #8's cost, on Windows.
+- Where: the image needs mingwex's printf family the way it now carries
+  MIR's helpers (a startup member, or the ledger), or a UCRT entry that
+  formats x87 long double.
+
 ### B230. macOS: a C++ program using a libc++ container needs libmadc
 
 ```cpp
