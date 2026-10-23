@@ -13,7 +13,7 @@
 # Inputs, built before it runs (from the repo root): bin/madc-release,
 # lib/release/libmadc.so (the forest inside), lib/release/libmadc_rt.a. The
 # IDE is madcide's own package (github.com/derekbsnider/madcide), which
-# carries this madc. The madc modules (lib/madc/modules/: ui_web — a weak
+# carries this madc. The madc modules (<libdir>/madc/modules/: ui_web — a weak
 # dependency, git, markdown; a program that imports them loads them) are
 # staged when they were built;
 # MADC_STAGE_REQUIRE_MODULES=1 (the packages) makes a missing one an error.
@@ -73,12 +73,14 @@ fi
 # mac and win archives already ship it.
 install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
 # The madc modules (include/madc_module.h), found by NAME in madc's module
-# directory — the binary's ../lib/madc/modules — whatever the distribution's
-# library directory: <prefix>/lib/madc/modules.
+# directory — madc/modules BESIDE the libmadc image (madc_module_dir,
+# src/madc_modules.cpp): <libdir>/madc/modules, so /usr/lib/<multiarch>/ in
+# the deb, /usr/lib64/ in the rpm, lib/ in the tarball and the keg.
+mods="$root/$libdir/madc/modules"
 for m in ui_web git markdown; do
 	if [ -f "lib/madc/modules/$m.so" ]; then
-		install -d "$p/lib/madc/modules"
-		install -m 755 "lib/madc/modules/$m.so" "$p/lib/madc/modules/$m.so"
+		install -d "$mods"
+		install -m 755 "lib/madc/modules/$m.so" "$mods/$m.so"
 	elif [ -n "$MADC_STAGE_REQUIRE_MODULES" ]; then
 		echo "stage_install: missing lib/madc/modules/$m.so (the packages carry it)" >&2
 		exit 1
@@ -93,13 +95,13 @@ install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
 # from (src/git.mk's LIBGIT2_STAGE). A module built against a system
 # libgit2 (the Homebrew formula's; GITMOD_LIBGIT2 empty) links no copy, and
 # that library's own package carries its notice.
-if [ -f "$p/lib/madc/modules/git.so" ] && [ -n "$(make -C src -s print-GITMOD_LIBGIT2)" ]; then
+if [ -f "$mods/git.so" ] && [ -n "$(make -C src -s print-GITMOD_LIBGIT2)" ]; then
 	install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" "$p/share/doc/madc/libgit2-copyright"
 fi
 # A markdown module linked against the staged cmark-gfm carries its code
 # (BSD-2 and MIT), so the stage's notice ships beside it; one linked against a
 # system cmark-gfm (Homebrew) leaves the notice to that package.
-if [ -f "$p/lib/madc/modules/markdown.so" ]; then
+if [ -f "$mods/markdown.so" ]; then
 	notice=$(make -C src -s print-MARKDOWN_NOTICE)
 	if [ -n "$notice" ]; then
 		if [ ! -f "$notice" ]; then

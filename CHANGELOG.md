@@ -214,6 +214,12 @@ Conformance: c23-run 35 -> 40, torture-c23 1490 -> 1493
 - Linux output is unchanged: read back as glibc the generated dialect registry is byte-identical to the shipped v0.106.0 table (964 accessor sites), and `obj/modules/git/git.inc` likewise.
 - Gate: `scripts/check-neutral-tables.sh` (wired into `make gates` in `src/Makefile`) generates a module table from a face with bare, reference and function-pointer `int64_t` forms and fails on any `&ddINT64` / `&ddUINT64` or literal platform spelling; its negative control keeps plain `long` at `&ddINT64`. It passes on this build and FAILs on the shipped v0.106.0 madc.
 
+### A deb or rpm installs its modules beside libmadc, where madc looks for them
+
+- The madc `.deb` and `.rpm` now install the `git`, `markdown` and `ui_web` modules at `madc/modules` beside the libmadc image — `/usr/lib/x86_64-linux-gnu/madc/modules` in the deb, `/usr/lib64/madc/modules` in the rpm — where `madc_module_dir` (`src/madc_modules.cpp`) looks. Before, both packages shipped them under `/usr/lib/madc/modules`, a directory madc never searches, so an installed `madc --import=git` failed with `<command-line>:0:0: error: import: no module named 'git'` and exit 69, and madcide's Ubuntu 22.04 build broke on `import git;`. The tarball and Homebrew keg were already correct (`lib/madc/modules`).
+- `scripts/stage_install.sh` stages the modules at `<libdir>/madc/modules` for every layout; `scripts/package_release.sh` moves the deb's `DEBMOD`, the rpm's `__requires_exclude_from` path for `ui_web.so` and its `%files` list to the libdir; and `docs/building-webview.md` names the new deb/rpm module directories.
+- Gate: `scripts/package_install_gate.sh` `run_linux` step 3 (deb, rpm, tar) asserts the installed madc imports its `git` and `markdown` modules, with a negative control that hides the module directory and requires the import to fail.
+
 ### A binary module writes a region change ahead of the labels at its insn
 
 - MIR's binary writer emitted `uregion <region>` immediately before the first non-label insn of a new region, after any labels preceding that insn. The reader holds labels until their insn and refuses a region directive while labels are pending ("uregion should have no labels"), so a module whose region changes at a labelled insn did not read back.

@@ -103,8 +103,8 @@ The release targets build the module beside the binaries
 (`modules-windows` runs `ui_web-windows`; `release-<arch>-macos` runs
 `ui_web-<arch>-macos`; `package_release.sh` runs `ui_web`), and the packagers
 ship it in madc's module directory, where an import looks — `lib/madc/modules/`
-in the tarball, the macOS bundle and the Windows zip, `/usr/lib/madc/modules/`
-in the deb/rpm. On Linux it is a WEAK dependency (`Recommends:
+in the tarball, the macOS bundle and the Windows zip; beside libmadc in the
+deb/rpm (`/usr/lib/x86_64-linux-gnu/madc/modules/`, `/usr/lib64/madc/modules/`). On Linux it is a WEAK dependency (`Recommends:
 libwebkitgtk-6.0-4, libgtk-4-1`; the rpm excludes the module's own requires) —
 madc never loads it, only a program that imports it does. The webview/webview
 MIT notice ships beside it.

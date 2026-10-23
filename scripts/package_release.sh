@@ -20,16 +20,17 @@
 #   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/release/libmadc.so (stripped pre-pack, forest inside)
 #   /usr/lib/<multiarch|lib64>/libmadc.so       -> libmadc.so.0
 #   /usr/lib/<multiarch|lib64>/libmadc_rt.a     emitted-C runtime (try/catch + VLA; a bare-box cc links it)
-#   /usr/lib/madc/modules/ui_web.so             the ui_web module: the platform webview (WebKitGTK 6.0 /
+#   /usr/lib/<multiarch|lib64>/madc/modules/ui_web.so  the ui_web module: the platform webview (WebKitGTK 6.0 /
 #                                               GTK4 + native chrome; GUI programs: import ui_web) —
 #                                               a WEAK dependency (Recommends): madc never loads it itself
-#   /usr/lib/madc/modules/git.so                the git module: madc's read-only git view, the
+#   /usr/lib/<multiarch|lib64>/madc/modules/git.so  the git module: madc's read-only git view, the
 #                                               pinned libgit2 linked in statically (`import git;`;
 #                                               the nexus's PAST verbs) — no libgit2 package needed
-#   /usr/lib/madc/modules/markdown.so           the markdown module: Markdown parsed by cmark-gfm,
+#   /usr/lib/<multiarch|lib64>/madc/modules/markdown.so  the markdown module: Markdown parsed by cmark-gfm,
 #                                               linked in statically (`import markdown;`; the IDE's
 #                                               help and previews) — no cmark-gfm package needed;
-#                                               madc's module directory (the binary's ../lib)
+#                                               madc's module directory: madc/modules
+#                                               beside libmadc (madc_module_dir)
 #   /usr/share/man/man1/madc.1.gz
 #   /etc/apparmor.d/madc                        the .deb on Ubuntu 24.04 and later only: a profile
 #                                               granting madc user namespaces (WebKit's sandbox, for
@@ -210,7 +211,7 @@ mkdir -p "$SHLIB/debian"
 printf 'Source: madc\n\nPackage: madc\nArchitecture: any\n' > "$SHLIB/debian/control"
 DEBLIB="$PWD/$DEBROOT/usr/lib/x86_64-linux-gnu"
 DEBBIN="$PWD/$DEBROOT/usr/bin"
-DEBMOD="$PWD/$DEBROOT/usr/lib/madc/modules"	# absolute before the cd below
+DEBMOD="$DEBLIB/madc/modules"	# beside libmadc (stage_install.sh)
 DEPENDS=$(cd "$SHLIB" && dpkg-shlibdeps -O --ignore-missing-info -l"$DEBLIB" \
               "$DEBBIN/madc" \
               "$DEBLIB/libmadc.so.0" \
@@ -301,7 +302,7 @@ Recommends: gtk4
 # The ui_web module's own DT_NEEDED (webkitgtk, gtk4 and their world) must
 # not become hard Requires of the whole package: the GUI is optional, the
 # weak dependencies above name it.
-%global __requires_exclude_from ^/usr/lib/madc/modules/ui_web\\.so\$
+%global __requires_exclude_from ^/usr/lib64/madc/modules/ui_web\\.so\$
 %define __strip /bin/true
 %define _build_id_links none
 
@@ -314,7 +315,6 @@ ${DESC_BODY}
 %files
 /usr/bin/*
 /usr/lib64/*
-/usr/lib/madc
 %doc /usr/share/doc/madc
 /usr/share/man/man1/*
 EOF
