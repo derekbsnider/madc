@@ -2886,6 +2886,21 @@ Same reducer as B234, without the `#line`.
 
 ## Performance
 
+### B238. Compiling a C file takes 83 MB peak (issue #8's open half) — next release
+
+- Issue #8 (madc 0.105.0, macOS arm64): `madc lua53.c` (a 6k-line lair-generated
+  Lua parser) peaks at 84 MB. 0.106.0 fixed the BUILT program (1.6 MB, libc
+  alone, gcc's 1.5 MB); the compiler's own peak is unchanged. Owner 2026-10-23:
+  the next release's work, not 0.106.0's.
+- Container, peak RSS best of 3, 0.105.0 → 0.106.0: lua53.c compile + run 83.0 →
+  82.7 MB, `-o` 83.2 → 82.9 MB; hello.c 19.1 → 19.1 MB. Oracles on the same
+  file: gcc -O0 -c 59.6 MB, clang -O0 -c 107.6 MB, tcc -run 3.8 MB.
+- Measure with the libraries' page cache flushed (fsync + POSIX_FADV_DONTNEED on
+  madc and libmadc.so): a freshly built libmadc.so maps larger folios and reads
+  13 MB higher.
+- Where: profile the compile's heap and mappings (libmadc's mapped text and
+  forest, the parse, CIR, c2mir/MIR) before choosing a fix.
+
 ### B233. parse-cost `c_headers.forest` drifted +0.50% past its baseline
 
 - `scripts/parse_cost/c_headers.c` with the pack: 34,990,638 Ir at the
