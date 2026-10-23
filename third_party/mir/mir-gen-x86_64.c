@@ -1001,6 +1001,7 @@ struct target_ctx {
   VARR (call_ref_t) * call_refs;
   VARR (text_ref_t) * text_refs; /* object mode: imm64 item addresses in code text */
   VARR (switch_table_desc_t) * switch_table_descs; /* object mode: tables to move to the pool */
+  size_t label_pad_slack; /* the emitted loop heads' padding bound less their real padding */
 };
 
 #define alloca_p gen_ctx->target_ctx->alloca_p
@@ -1022,6 +1023,7 @@ struct target_ctx {
 #define relocs gen_ctx->target_ctx->relocs
 #define text_refs gen_ctx->target_ctx->text_refs
 #define switch_table_descs gen_ctx->target_ctx->switch_table_descs
+#define label_pad_slack gen_ctx->target_ctx->label_pad_slack
 
 static void prohibit_omitting_fp (gen_ctx_t gen_ctx) { keep_fp_p = TRUE; }
 
@@ -2921,8 +2923,13 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
     case 'l':
       if (op_ref->mode != MIR_OP_LABEL) return FALSE;
       if (!try_short_jump_p) return FALSE; /* we are in size estimation mode */
-      int64_t disp = ((int64_t) get_label_disp (gen_ctx, op_ref->u.label)
-                      - (int64_t) VARR_LENGTH (uint8_t, result_code));
+      int64_t pc = (int64_t) VARR_LENGTH (uint8_t, result_code);
+      int64_t label_disp = (int64_t) get_label_disp (gen_ctx, op_ref->u.label);
+      /* A label not emitted yet still holds its size-pass estimate, which
+         counts every earlier loop head at its padding bound; the heads
+         already emitted are known exactly (madc fork). */
+      if (label_disp > pc) label_disp -= (int64_t) label_pad_slack;
+      int64_t disp = label_disp - pc;
       /* short->long (+1 for long jump prefix +3 for offset), minimal jump is 2 bytes: */
       disp = disp < 0 ? disp - (pattern_max_insn_size (gen_ctx, (int) (pat - patterns)) + 4)
                       : disp - 2;
@@ -3750,6 +3757,7 @@ static void translate_init (gen_ctx_t gen_ctx) {
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
   VARR_TRUNC (text_ref_t, text_refs, 0);
   VARR_TRUNC (switch_table_desc_t, switch_table_descs, 0);
+  label_pad_slack = 0;
 }
 
 static uint8_t *translate_finish (gen_ctx_t gen_ctx, size_t *len) {
@@ -3862,7 +3870,8 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         exit (1);
       }
       curr_size += max_insn_size;
-      if (insn->code == MIR_SWITCH) curr_size += (insn->nops - 1) * 8; /* label addresses */
+      if (insn->code == MIR_SWITCH) /* label addresses after up to 7 bytes aligning them */
+        curr_size += (insn->nops - 1) * 8 + 7;
       VARR_PUSH (int, insn_pattern_indexes, ind);
     }
   }
@@ -3871,8 +3880,9 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     gen_cfi_note_insn (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
     if (insn->code == MIR_LABEL) {
-      put_nops (gen_ctx,
-                loop_head_pad (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code), FALSE));
+      int pad = loop_head_pad (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code), FALSE);
+      label_pad_slack += (size_t) (loop_head_pad (gen_ctx, insn, 0, TRUE) - pad);
+      put_nops (gen_ctx, pad);
       set_label_disp (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code));
     } else if (insn->code != MIR_USE) {
       ind = VARR_GET (int, insn_pattern_indexes, n++);
