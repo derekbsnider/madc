@@ -13,7 +13,11 @@ static char aarch64_mirc[]
     "#define __SIZEOF_DOUBLE__ 8\n"
     "#define __SIZEOF_FLOAT__ 4\n"
     "#define __SIZEOF_INT__ 4\n"
+#if MIR_TARGET_APPLE_P /* long double is double on darwin-arm64 (the __LDBL_* below) */
+    "#define __SIZEOF_LONG_DOUBLE__ 8\n"
+#else
     "#define __SIZEOF_LONG_DOUBLE__ 16\n"
+#endif
     "#define __SIZEOF_LONG_LONG__ 8\n"
     "#define __SIZEOF_LONG__ 8\n"
     "#define __SIZEOF_POINTER__ 8\n"
