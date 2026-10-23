@@ -147,7 +147,9 @@ MIR_CALL_HELPER void va_block_arg_builtin (void *res, void *p, size_t s, uint64_
 #endif
 
 /* The copy of a by-value block argument the stack-passing convention makes
-   (mir-gen-x86_64.c): memcpy's contract.  The JIT binds memcpy itself. */
-MIR_CALL_HELPER void *mir_arg_memcpy (void *dest, const void *src, size_t n) {
+   (mir-gen-x86_64.c): memcpy's contract.  The JIT binds memcpy itself.
+   File-local in both builds: nothing calls it by this name, and libmir
+   exports it only as "mir.arg_memcpy" (mir-x86_64.c). */
+static void *mir_arg_memcpy (void *dest, const void *src, size_t n) {
   return memcpy (dest, src, n);
 }
