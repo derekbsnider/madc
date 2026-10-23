@@ -2844,6 +2844,46 @@ int main(void) { return x; }
   record each one's C standard (`c_since`), which a C-side gate can read.
   `typeof`, `typeof_unqual` and `_BitInt` are C23's alone.
 
+### B234. A diagnostic after `#line N "file"` names the physical file
+
+```c
+void f(char *buf);
+#line 100 "other.c"
+void h(void) { const char *z = 0; f(z); }
+int main(void) { return 0; }
+```
+
+- Found 2026-10-23 in issue #8's attachment (a lair-generated Lua parser
+  whose `#line` directives name `11_lua53.c` and `lua53.y`).
+- gcc 13: `other.c:100:37: warning: ...`. madc: `w.c:100:36: warning ...`
+  — the line follows `#line`, the file name does not. Errors too: `#line 50
+  "zz.c"` ahead of an undeclared identifier reports `e2.c:51:10`.
+- Where: the lexer sets the presumed name (`source.fname(newname)`,
+  lexer.cpp's `#line` arm); the diagnostic printers read the physical one.
+
+### B235. Passing `const T *` to a `T *` parameter is warned by c2mir, not madc
+
+Same reducer as B234, without the `#line`.
+
+- gcc 13: `w.c:2:37: warning: passing argument 1 of 'f' discards 'const'
+  qualifier from pointer target type [-Wdiscarded-qualifiers]` plus `note:
+  expected 'char *' but argument is of type 'const char *'`; clang 18:
+  `-Wincompatible-pointer-types-discards-qualifiers` at 2:37 with a note.
+- madc: `w.c:2:36: warning -- discarding type qualifiers in passing
+  argument` — c2mir's text (`c2mir.c` N_CALL arm), its column (one short),
+  no argument number, callee, flag name or note. madc's front end does not
+  diagnose the constraint violation (C11 6.5.2.2p2 → 6.5.16.1p1) itself.
+- Where: the call's argument conversion in the parser; the warning belongs
+  there, in gcc's form, so c2mir never sees a call it has to complain about.
+
+### B236. `-fsyntax-only` is refused
+
+- `madc -fsyntax-only x.c`: `madc: error: unrecognized command-line option
+  '-fsyntax-only'`. gcc and clang check the program and write nothing.
+- Found 2026-10-23 with B234/B235.
+- Where: a row in madc's option table (`src/madc_cli.cpp`, read by
+  `madc::cli::parse`) and a driver mode that stops after the front end.
+
 ## Performance
 
 ### B233. parse-cost `c_headers.forest` drifted +0.50% past its baseline
@@ -2857,6 +2897,12 @@ int main(void) { return x; }
   `94f9a664b`, `7915e1be2`, `55909b864`, `2ad1c9428`, `085b0f3b0`).
 - Not a regression against the last release: 0.105.0 runs the row at
   244,988,067 Ir, and every other row is cheaper than 0.105.0 too.
+- At `041919c78` (the packaging fixes on top of the release commit): 35,190,814
+  (+0.57%); the archived v0.106.0 binary (`60679aed1`) runs it at 35,175,556 on
+  the same host. The +15,258 is all libc `__strcmp_avx2` under `__dynamic_cast`
+  (the same 4,146 calls, more instructions per compare: where the `_ZTS` names land),
+  every madc function's self cost unchanged; the dialect rows move -1.8K / +0.7K
+  / +0.3K.
 - To find it: build `acb5da696` and HEAD packed and unstripped
   (`PATH=tmp/nostrip:$PATH make -C src release` in the container's
   `tmp/cost_sweep` clone; that clone's own uncommitted edits sit in its stash
