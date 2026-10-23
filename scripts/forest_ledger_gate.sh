@@ -43,6 +43,10 @@
 #      Also the boundary: objects that kept their __madc_shim_* host-call
 #      adapters refuse (value ABI = Tier B) naming -fno-eval-shims, and -r
 #      still refuses, so the runtime rides the final link only
+#  10  an image names only the libraries its imports reach, gcc's list
+#      exactly (oracle: gcc --as-needed): plain C = libc alone, a sqrt call
+#      adds libm, the .o link lane agrees, and a C++ image keeps its C++
+#      runtime
 set -u
 cd "$(dirname "$0")/.."
 MADC=${MADC_BIN:-bin/madc}
@@ -601,6 +605,70 @@ else
 		fail "-static-libmadc -r still refuses at the CLI"
 		sed -n '1,4p' "$D/lr.log"
 	fi
+fi
+
+# --- leg 10: an image names only the libraries its imports reach -----------
+# gcc's --as-needed link is the oracle: a C program's image names libc.so.6
+# alone and a sqrt call adds libm.so.6 — madc's implicit C++ runtime and libm
+# stay only where an import reaches them (a C++ program keeps its libstdc++).
+cat > "$D/c_plain.c" <<'EOF'
+#include <stdio.h>
+int main(void) { puts("plain"); return 0; }
+EOF
+cat > "$D/c_math.c" <<'EOF'
+#include <math.h>
+#include <stdio.h>
+int main(void) { volatile double x = 2.0; printf("%.3f\n", sqrt(x)); return 0; }
+EOF
+needed_list() { readelf -dW "$1" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' '; }
+# $1 = source, $2 = madc flags (word-split), $3 = gcc's extra flags: madc's
+# image names exactly gcc's libraries, runs, and prints gcc's output.
+as_needed_leg()
+{
+	local src=$1 flags=$2 gflags=$3 n
+	n=$(basename "${src%.c}")
+	# shellcheck disable=SC2086
+	run "$MADC" $flags -o "$D/$n.madc" "$src" > "$D/$n.emit" 2>&1
+	local mrc=$?
+	# shellcheck disable=SC2086
+	gcc -o "$D/$n.gcc" "$src" $gflags > "$D/$n.gcc.log" 2>&1
+	local mneed gneed mout gout
+	mneed=$(needed_list "$D/$n.madc")
+	gneed=$(needed_list "$D/$n.gcc")
+	mout=$(env -u LD_LIBRARY_PATH -i LD_LIBRARY_PATH=/nonexistent timeout 60 "$PWD/$D/$n.madc" 2>&1)
+	gout=$(run "$D/$n.gcc" 2>&1)
+	if [ $mrc -ne 0 ]; then
+		fail "$n: madc -o $flags (rc=$mrc)"
+		sed -n '1,6p' "$D/$n.emit"
+	elif [ "$mneed" != "$gneed" ]; then
+		fail "$n: image names '$mneed', gcc's names '$gneed'"
+	elif [ -z "$gout" ] || [ "$mout" != "$gout" ]; then
+		fail "$n: output with an empty library path '$mout', gcc's '$gout'"
+	else
+		pass "$n: names gcc's libraries ($gneed) and runs with no madc library"
+	fi
+}
+as_needed_leg "$D/c_plain.c" "" ""
+as_needed_leg "$D/c_math.c" "-lm" "-lm"
+# The .o link lane names the same set (the same rule, cir_elf_needed).
+run "$MADC" -fno-eval-shims -c -o "$D/c_plain.o" "$D/c_plain.c" > "$D/c_plain_o.log" 2>&1
+run "$MADC" -o "$D/c_plain_link" "$D/c_plain.o" > "$D/c_plain_link.log" 2>&1
+link_need=$(needed_list "$D/c_plain_link")
+plain_gcc_need=$(needed_list "$D/c_plain.gcc")
+if [ -n "$link_need" ] && [ "$link_need" = "$plain_gcc_need" ]; then
+	pass ".o link lane names gcc's libraries ($plain_gcc_need)"
+else
+	fail ".o link lane names '$link_need', gcc's names '$plain_gcc_need'"
+	sed -n '1,4p' "$D/c_plain_o.log" "$D/c_plain_link.log"
+fi
+# The other side: a C++ image that imports from the C++ runtime keeps it.
+run "$MADC" -o "$D/cpp_needed" "$D/cpp.mad" > "$D/cpp_needed.log" 2>&1
+cpp_need=$(needed_list "$D/cpp_needed")
+if grep -q 'libstdc++\.so\|libc++\.so' <<<"$cpp_need"; then
+	pass "a C++ image keeps its C++ runtime ($cpp_need)"
+else
+	fail "a C++ image keeps its C++ runtime (names '$cpp_need')"
+	sed -n '1,4p' "$D/cpp_needed.log"
 fi
 
 if [ $rc -eq 0 ]; then

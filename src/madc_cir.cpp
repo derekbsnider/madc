@@ -3445,6 +3445,70 @@ static void cir_apple_extra_dylibs(const std::vector<madc::dis::istring> &import
 }
 #endif
 
+#if !MADC_TARGET_APPLE_P && !MADC_TARGET_WINDOWS_P
+// Does the library `lib` (a DT_NEEDED spelling) define one of `imports` in
+// its OWN image? dlsym through a library's handle also searches the library's
+// dependencies (libstdc++'s handle finds printf in libc), so the definition's
+// owner is read back by dladdr. A library this process has not mapped cannot
+// be asked, and stays.
+static bool cir_library_defines_import(const std::string &lib,
+				       const std::vector<madc::dis::istring> &imports)
+{
+#ifdef MADC_CROSS_TARGET
+    // A cross build's target libraries are not this host's
+    // (cir_import_covered): nothing here can tell which of them the program
+    // imports from, so each stays.
+    (void)lib;
+    (void)imports;
+    return true;
+#else
+    void *h = madcdl_probe_loaded(lib.c_str());
+    if (!h)
+	return true;
+    std::string stem = madc::detail::host_path_basename(lib);
+    bool defines = false;
+    for (const madc::dis::istring &imp : imports) {
+	void *sym = madcdl_sym(h, imp.c_str());
+	MadcDlInfo info;
+	if (!sym || !madcdl_addr(sym, info) || !info.fname || !info.fname[0])
+	    continue;
+	if (madc::detail::host_path_basename(info.fname).compare(0, stem.size(), stem) == 0) {
+	    defines = true;
+	    break;
+	}
+    }
+    madcdl_close(h);
+    return defines;
+#endif
+}
+
+// ONE rule for the ELF emit lanes (source image + object link): DT_NEEDED in
+// the link environment's order — libmadc.so.0 unless the image is
+// runtime-free, and each implicit library (env.as_needed) only when the
+// image's strong imports reach it (gcc's --as-needed link; oracle: gcc and
+// g++ both write a C program's image with libc.so.6 alone, and add libm.so.6
+// for a sqrt call). A weak reference keeps nothing, as with libmadc.
+static void cir_elf_needed(const CirLinkEnv &env, bool drop_madc,
+			   const std::vector<madc::dis::istring> &strong,
+			   std::vector<const char *> &libs)
+{
+    for (const std::string &l : env.needed) {
+	if (l == "libmadc.so.0") {
+	    if (!drop_madc)
+		libs.push_back(l.c_str());
+	    continue;
+	}
+	if (std::find(env.as_needed.begin(), env.as_needed.end(), l) != env.as_needed.end()
+	    && !cir_library_defines_import(l, strong)) {
+	    DBG(std::cout << "native image DT_NEEDED: " << l
+			  << " dropped (no import reaches it)" << std::endl);
+	    continue;
+	}
+	libs.push_back(l.c_str());
+    }
+}
+#endif
+
 static bool cir_read_file(const char *path, std::vector<unsigned char> &bytes);
 
 // What a build says about its image beyond the code: the PE subsystem (the
@@ -3483,8 +3547,7 @@ static bool cir_icon_attach(MIR_object_exec_params &xp, const madc::dis::istring
 // capture out of ctx and write it to disk. Shared by the single-TU session
 // (emit_native_executable) and the --project whole-program lane.
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
-				   const std::vector<std::string> &needed,
-				   const std::string &runpath,
+				   const CirLinkEnv &env,
 				   MadcNativeKind kind, const CirImageTraits &traits,
 				   CirCrtPicks &crt_picks)
 {
@@ -3498,7 +3561,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // binds when a program's strong ones brought libmadc, and is null
     // otherwise (the unwind personality's view of the throw side).
     std::vector<std::string> other;
-    bool have_madc = cir_split_needed(needed, other);
+    bool have_madc = cir_split_needed(env.needed, other);
     std::vector<madc::dis::istring> imports, strong;
     cir_image_references(ctx, crt_picks, imports, strong);
     if (!shared && cir_undefined_references(strong, other, out_path))
@@ -3530,11 +3593,10 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // flows to the writer as its import-attribution DLL order.
     cir_windows_import_dlls(have_madc, drop_madc, other, libs);
 #else
-    for (const std::string &l : (drop_madc ? other : needed))
-	libs.push_back(l.c_str());
+    cir_elf_needed(env, drop_madc, strong, libs);
 #endif
     MIR_object_exec_params xp;
-    cir_fill_exec_params(xp, kind, libs, runpath, traits.gui_subsystem);
+    cir_fill_exec_params(xp, kind, libs, env.runpath, traits.gui_subsystem);
     // The output basename: Apple targets' ad-hoc code-signature identifier,
     // a PE DLL's own name in its export directory (ignored by the ELF
     // writer).
@@ -3561,15 +3623,13 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 }
 
 bool CirJitSession::emit_native_executable(const char *out_path,
-					   const std::vector<std::string> &needed,
-					   const std::string &runpath,
+					   const CirLinkEnv &env,
 					   MadcNativeKind kind)
 {
     if (!ctx || !mod) return false;
     CirImageTraits traits;
     traits.gui_subsystem = madc_gui_subsystem;
-    return cir_write_native_image(ctx, out_path, needed, runpath, kind,
-				  traits, crt_picks);
+    return cir_write_native_image(ctx, out_path, env, kind, traits, crt_picks);
 }
 
 // A user library's TARGET spelling: the CLI resolves -l<name> through
@@ -3633,12 +3693,16 @@ static bool cir_user_library_needed(const madc::dis::istring &l,
 // libc++.so.1. NULL flavor = the build default (table entry 0).
 // DT_RUNPATH: madc's own runtime arms below, then the user's -Wl,-rpath
 // directories in command-line order, once each.
+// env.as_needed: on ELF, the C++ runtime and libm — the toolchain's own
+// additions, which an image keeps only when it imports from them
+// (cir_elf_needed); libc and the libraries the program names always stay.
 static bool cir_native_link_env(const madc_stdlib_flavor *flavor,
 				const std::vector<std::string> &user_libs,
 				const MadcLinkPaths &link_paths,
-				std::vector<std::string> &needed,
-				std::string &runpath)
+				CirLinkEnv &env)
 {
+    std::vector<std::string> &needed = env.needed;
+    std::string &runpath = env.runpath;
     needed.push_back("libmadc.so.0");
 #ifdef __APPLE__
     // Cover analysis runs in THIS process (dlsym + dladdr below), so the
@@ -3678,19 +3742,25 @@ static bool cir_native_link_env(const madc_stdlib_flavor *flavor,
 	// GNU default this binary was linked against itself.
 	needed.push_back("libstdc++.so.6");
     needed.push_back("libm.so.6");
+    // Everything this arm added after libmadc.so.0, libc aside.
+    env.as_needed.assign(needed.begin() + 1, needed.end());
     needed.push_back("libc.so.6");
 #endif
     // User libraries (cir_user_library_needed), once each: `-lm` /
     // `import m;` names libm.so.6, which the base set above
     // already carries on ELF — a repeated DT_NEEDED is noise the linker
-    // would never emit.
+    // would never emit — and, named by the program, it is no longer one of
+    // the toolchain's own additions.
     std::vector<std::string> user_needed;
     for (const std::string &l : user_libs)
 	if (!cir_user_library_needed(l, link_paths.lib_dirs, user_needed))
 	    return false;
-    for (const std::string &n : user_needed)
+    for (const std::string &n : user_needed) {
 	if (std::find(needed.begin(), needed.end(), n) == needed.end())
 	    needed.push_back(n);
+	env.as_needed.erase(std::remove(env.as_needed.begin(), env.as_needed.end(), n),
+			    env.as_needed.end());
+    }
     // Relocatable arm first: a produced binary placed in a relocatable
     // install (tarball <root>/bin beside <root>/lib — madcide in the
     // release tarball is the standing case) binds its OWN tree's runtime
@@ -3793,13 +3863,11 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 
     // MIR assembles the executable (-o) or shared object (-shared)
     // directly — no external toolchain.
-    std::vector<std::string> needed;
-    std::string runpath;
+    CirLinkEnv env;
     if (!cir_native_link_env(prog->active_stdlib_flavor(), user_libs,
-			     link_paths, needed, runpath))
+			     link_paths, env))
 	return -1;
-    return session.emit_native_executable(out_path, needed, runpath,
-					  kind) ? 0 : -1;
+    return session.emit_native_executable(out_path, env, kind) ? 0 : -1;
 }
 
 // R4b resolver: the JIT lane's chain (host-callback regs → dlsym; bin/madc
@@ -4029,10 +4097,9 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	else
 	    ok = cir_write_image_file(out_path, buf, size, false);
     } else {
-	std::vector<std::string> needed;
-	std::string runpath;
+	CirLinkEnv env;
 	if (!cir_native_link_env(prog ? prog->active_stdlib_flavor() : NULL,
-				 user_libs, link_paths, needed, runpath)) {
+				 user_libs, link_paths, env)) {
 	    MIR_object_destroy(obj);
 	    return -1;
 	}
@@ -4041,7 +4108,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	// (unification already netted out cross-object references, and the
 	// ledger merge above already satisfied every piece it carries).
 	std::vector<std::string> other;
-	bool have_madc = cir_split_needed(needed, other);
+	bool have_madc = cir_split_needed(env.needed, other);
 	std::vector<madc::dis::istring> imports, strong;
 	cir_object_undef_names(obj, imports);
 	cir_object_strong_references(obj, strong);
@@ -4086,11 +4153,11 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	// owner is cir_windows_import_dlls).
 	cir_windows_import_dlls(have_madc, drop_madc, other, libs);
 #else
-	for (const std::string &l : (drop_madc ? other : needed))
-	    libs.push_back(l.c_str());
+	// Same ELF rule as cir_write_native_image (cir_elf_needed).
+	cir_elf_needed(env, drop_madc, strong, libs);
 #endif
 	MIR_object_exec_params xp;
-	cir_fill_exec_params(xp, kind, libs, runpath, madc_gui_subsystem);
+	cir_fill_exec_params(xp, kind, libs, env.runpath, madc_gui_subsystem);
 	const char *out_base = strrchr(out_path, '/');
 	xp.identifier = out_base ? out_base + 1 : out_path;
 	std::vector<uint8_t> pack_blob;
@@ -8968,8 +9035,7 @@ int madc_project_emit_native(MadcEngine &engine,
 		// relocatable .o (gcc/ld -r shape) instead of an image.
 		ok = cir_write_native_object(ctx, out_path, crt_picks);
 	else {
-		std::vector<std::string> needed;
-		std::string runpath;
+		CirLinkEnv env;
 		// The link's stdlib flavor comes from the manifest: the
 		// first TU that names one (a mixed-flavor project is
 		// already ill-formed). None named = the build default.
@@ -8994,10 +9060,9 @@ int madc_project_emit_native(MadcEngine &engine,
 		CirImageTraits traits;
 		traits.gui_subsystem = manifest.kind == ProjectKind::gui;
 		traits.icon_path = manifest.icon;
-		ok = cir_native_link_env(flavor, all_libs, link_paths, needed,
-					 runpath)
-		     && cir_write_native_image(ctx, out_path, needed, runpath,
-					       kind, traits, crt_picks);
+		ok = cir_native_link_env(flavor, all_libs, link_paths, env)
+		     && cir_write_native_image(ctx, out_path, env, kind, traits,
+					       crt_picks);
 	}
 	teardown();
 	return ok ? 0 : -1;

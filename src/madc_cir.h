@@ -57,6 +57,17 @@ struct MadcLinkPaths
     std::vector<std::string> runpath;	// -Wl,-rpath: DT_RUNPATH, after madc's own arms
 };
 
+// A produced image's dynamic link environment (cir_native_link_env).
+// `as_needed` names the members of `needed` the toolchain adds on its own (the
+// stdlib flavor's C++ runtime, libm): an ELF image keeps one only when it
+// imports from it — gcc's --as-needed link, where a C program names libc alone.
+struct CirLinkEnv
+{
+    std::vector<std::string> needed;	// DT_NEEDED, in order
+    std::vector<std::string> as_needed;	// the implicit members of `needed`
+    std::string runpath;		// DT_RUNPATH ("" = omit)
+};
+
 // --pack-forest=<container>: every emitted native EXECUTABLE additionally
 // carries the named frozen container in its self-image carrier — the ELF
 // arm pads the written image to a page and appends the blob (footer at EOF,
@@ -217,17 +228,15 @@ public:
     bool emit_native_object(const char *out_path);
 
     // -o: write the capture as a complete dynamic executable (mode 0755) —
-    // MIR assembles it directly, no external toolchain. needed = DT_NEEDED
-    // sonames; runpath ("" = omit) = DT_RUNPATH search path. kind selects
+    // MIR assembles it directly, no external toolchain. env = its DT_NEEDED
+    // and DT_RUNPATH (cir_native_link_env). kind selects
     // the image flavor: mnkPieExecutable = position-independent ET_DYN
     // executable (the default, gcc parity), mnkExecutable = fixed-base
     // ET_EXEC (-no-pie), mnkShared = ET_DYN shared object
     // (dlopen/#load-consumable; exports the module's globals; the
     // file-scope ctors ride DT_INIT_ARRAY, run by ld.so at load).
     // mnkObject is not valid here — the .o lane is emit_native_object().
-    bool emit_native_executable(const char *out_path,
-				const std::vector<std::string> &needed,
-				const std::string &runpath,
+    bool emit_native_executable(const char *out_path, const CirLinkEnv &env,
 				MadcNativeKind kind);
 
 private:
