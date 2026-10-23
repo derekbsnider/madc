@@ -21,9 +21,10 @@ static char stddef_str[]
     "typedef int wchar_t;\n"
 #endif
     "\n"
-#if !MIR_TARGET_APPLE_P && !defined(_WIN32)
+    /* C11 7.19p3 on every target; undefined first, as gcc's and clang's
+       stddef.h do, for a system header that defined it its own way */
+    "#undef NULL\n"
     "#define NULL ((void *) 0)\n"
-#endif
     "\n"
     "#define offsetof(type, member_designator) ((size_t) & ((type *) 0)->member_designator)\n"
     "\n"
