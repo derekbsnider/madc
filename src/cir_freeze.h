@@ -931,8 +931,9 @@ struct cir_forest_ledger_entry
 {
 	uint32_t name_bytes;	// module name (the ledger source path)
 	uint32_t sym_bytes;	// NUL-separated defined-symbol names
-	uint32_t mir_bytes;	// MIR_write_module bytes
-	uint32_t _pad;
+	uint32_t mir_bytes;	// MIR_write_module bytes, or a native object's
+	uint32_t form;		// CirLedgerForm: what those bytes are (0, the
+				// old pad's value, is a MIR module)
 };
 
 struct cir_forest_dir_unit

@@ -2846,21 +2846,6 @@ int main(void) { return x; }
 
 ## Performance
 
-### B231. A C++ `-c` / `-o` compile compiles the unwind personality from C text
-
-- 89ba23129 (B229) carries `__madc_personality` into every image and object
-  as a startup member (`src/madc_crt.cpp`): rt_personality.c's text, compiled
-  by c2mir in each madc process that writes one, then generated with the
-  program. `madc-release -c hello.cpp` (callgrind, container, packed -O2):
-  442,020,236 Ir before the fix, 463,729,373 after (+4.9%, ~3 ms of 85).
-  JIT, the REPL and C programs are unaffected.
-- gcc's shape: libgcc's personality is a prebuilt object, linked in. madc's
-  `.o` link lane already merges native relocatables (MIR_object_read); the
-  source lanes (`-o file`, `-c`) write only their MIR capture.
-- Fix: a prebuilt per-target object of the member, merged into the image /
-  object by the source lanes. Owner 2026-10-22: ship 0.106.0 with the cost,
-  fix it first in the next release.
-
 ### B226. The main source file's first buffer is read twice
 
 - `strace madc test.c` (one `#include`): `read` 8191, `lseek(0, SEEK_SET)`,

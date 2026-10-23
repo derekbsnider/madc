@@ -210,6 +210,21 @@ while IFS= read -r src; do
         exit 1
     fi
 done <<<"$LEDGER_SOURCES"
+# The startup objects (B231): the freezer generated the image-only members'
+# native objects into the ledger, and an -c link merges the pack's copy — it
+# never compiles the member's text in-process.
+if ! grep -q $'^crtobj\t' "$DUMP"; then
+    echo "forest_pack: FAILED - the ledger carries no startup object" >&2
+    exit 1
+fi
+printf 'struct D { ~D(); };\nvoid g();\nvoid f() { D d; g(); }\n' > ${STAGE}_crt.cpp
+v=$(timeout 120 "$BIN" -v -c -o ${STAGE}_crt.o ${STAGE}_crt.cpp 2>&1 | tr -d '\0')
+rm -f ${STAGE}_crt.o
+if ! grep -aq ': object from the ledger' <<<"$v"; then
+    echo "forest_pack: FAILED - a -c link of a frame with a destructor did not merge the ledger's startup object" >&2
+    grep -a '^crt: ' <<<"$v" >&2
+    exit 1
+fi
 
 # MIR-cache bind-lane equivalence (rung 3, opt-in lane): the packed binary
 # compiling a real test with MADC_MIR_CACHE_BIND=1 must (a) actually engage

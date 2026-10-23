@@ -214,6 +214,12 @@ while IFS= read -r src; do
         exit 1
     fi
 done <<<"$LEDGER_SOURCES"
+# The startup objects (B231): the image-only members' native objects ride
+# the ledger, for -o / -c links to merge.
+if ! grep -q $'^crtobj\t' tmp/forest_pack_win_dump.txt; then
+    echo "forest_pack_windows: FAILED - the ledger carries no startup object" >&2
+    exit 1
+fi
 # Every listed entry point must be a directory unit — a missing unit means a
 # consumer's #include of that name silently live-parses (the G2 class), and on a
 # run-only Windows box live parse cannot succeed at all. The guarded roots are

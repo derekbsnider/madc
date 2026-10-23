@@ -200,6 +200,13 @@ while IFS= read -r src; do
         exit 1
     fi
 done <<<"$LEDGER_SOURCES"
+# The startup objects (B231): the image-only members' native objects ride
+# the ledger, for -o / -c links to merge.
+if ! grep -q $'^crtobj\t' "$DUMP"; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED - the ledger carries no startup object" >&2
+    exit 1
+fi
 # Degradation gate (task #63) — the PRODUCER and DIRECTORY halves. Both arches
 # check against the same `darwin pack-errors` key, each on its own log, so a
 # divergence between them still fails loudly (58 apiece today).

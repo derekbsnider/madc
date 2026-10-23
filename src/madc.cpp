@@ -2192,10 +2192,13 @@ int main(int argc, char **argv)
 	    // then pack them alongside the groves. A ledger failure fails the
 	    // freeze — a container that silently lacks the ledger it was asked
 	    // for is worse than no container at all.
+	    // The image-only startup members join it as the native objects an
+	    // -o / -c link merges (B231).
 	    std::vector<cir_ledger_module> ledger;
 	    if ( !freeze_ledger_srcs.empty()
-		 && !madc_cir_ledger_compile(engine, freeze_ledger_srcs, ledger,
-						 prog.get()) )
+		 && (!madc_cir_ledger_compile(engine, freeze_ledger_srcs, ledger,
+						  prog.get())
+		     || !madc_cir_crt_objects_compile(ledger)) )
 		return 1;
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
 				      freeze_append, freeze_mir_cache,

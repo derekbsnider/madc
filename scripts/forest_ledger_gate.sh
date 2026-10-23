@@ -14,7 +14,8 @@
 # discovery chain.
 #
 # Legs:
-#   1  freeze a container WITH the ledger; --dump-forest reports it
+#   1  freeze a container WITH the ledger; --dump-forest reports it, and the
+#      startup members' native objects beside its modules
 #   2  baseline — the same program WITHOUT the flag keeps libmadc.so.0
 #      (so leg 3 is proving the flag, not an accident)
 #   3  try/catch: -static-libmadc drops the dependency, no __madc_* imports
@@ -32,6 +33,9 @@
 #      (the object's own personality copy; oracle: g++ alone)
 #   7  no-ledger carrier: a container packed without --freeze-ledger= refuses
 #      with the build-side message, never the Tier-B one
+#   7b the startup object (B231): a -c merges the ledger's pre-generated
+#      personality object, a no-ledger carrier generates it in-process, and
+#      either .o links with plain g++ and runs leg 6d's destructor
 #   8  -static-libmadc -c refuses at the CLI (the runtime merges at the link)
 #   9  the .o LINK lane merges the ledger: two -c objects (one needing
 #      try/catch, one needing VLA scope exit) link runtime-free, produce the
@@ -222,9 +226,18 @@ for src in "${LEDGER_ARGS[@]}"; do
 		fail "ledger carries ${src#--freeze-ledger=}"
 	fi
 done
+if grep -q $'^crtobj\tcrt:' <<<"$dump"; then
+	pass "ledger carries the startup objects"
+else
+	fail "ledger carries the startup objects"
+fi
 
 # --- shared helper: emit + inspect ----------------------------------------
 # $1 = source, $2 = out name, $3.. = extra madc flags. Sets NEEDED/UND/OUT.
+# UND counts the STRONG __madc_* imports: a weak reference pulls no archive
+# member and is null when nothing defines it (ld; oracle: gcc -static-libgcc
+# images keep crtbegin's weak _ITM_* / __gmon_start__ undefined) — the unwind
+# personality's view of the throw side in a program that never throws.
 emit_and_inspect()
 {
 	local src=$1 out=$2; shift 2
@@ -233,7 +246,7 @@ emit_and_inspect()
 	EMIT_RC=$?
 	NEEDED=$(readelf -d "$D/$out" 2>/dev/null | grep -ao 'libmadc[^]]*')
 	UND=$(readelf --dyn-syms -W "$D/$out" 2>/dev/null \
-	      | awk '$7=="UND"{print $8}' | grep -a '^__madc_' | sort -u)
+	      | awk '$7=="UND" && $5!="WEAK"{print $8}' | grep -a '^__madc_' | sort -u)
 }
 
 # --- leg 2: baseline — no flag keeps the dependency -----------------------
@@ -461,6 +474,36 @@ else
 	pass "no-ledger carrier refuses with the build-side message"
 fi
 
+# --- leg 7b: the startup object comes from the ledger, never the text -----
+# A -c of leg 6d's frame with a destructor merges the ledger's pre-generated
+# personality object (B231); a carrier with no ledger generates the same
+# object in-process. Either object links with plain g++ and runs the frame's
+# destructor for the foreign throw (oracle: g++ alone, leg 6d).
+crt_leg()
+{
+	local carrier=$1 out=$2 want=$3
+	run "$MADC" --forest-bind="$carrier" --std=gnu++17 -v -c -o "$D/$out.o" \
+		"$D/xframe.cpp" > "$D/$out.log" 2>&1
+	local mrc=$?
+	g++ -o "$D/$out" "$D/$out.o" "$D/xmain.o" > "$D/$out.link" 2>&1
+	local lrc=$?
+	local got
+	got=$(run "$D/$out" 2>/dev/null)
+	if [ $mrc -ne 0 ] || [ $lrc -ne 0 ]; then
+		fail "startup object ($want): -c and a g++ link (madc rc=$mrc, g++ rc=$lrc)"
+		grep -a -m3 -E 'error|madc:' "$D/$out.log" "$D/$out.link"
+	elif ! tr -d '\0' < "$D/$out.log" | grep -aq "^crt: crt:[a-z_]*: object $want"; then
+		fail "startup object: $want"
+		tr -d '\0' < "$D/$out.log" | grep -a '^crt: ' | head -3
+	elif [ "$got" != "$xoracle" ]; then
+		fail "startup object ($want): g++-linked output matches g++ alone (got '$got')"
+	else
+		pass "startup object: $want, links with g++, runs the destructor"
+	fi
+}
+crt_leg "$D/madc.forest" crt_ledger "from the ledger"
+crt_leg "$D/noledger.forest" crt_generated "generated"
+
 # --- leg 8: -c refuses (the runtime merges at the final link) -------------
 run "$MADC" -static-libmadc -c -o "$D/tc.o" "$D/trycatch.mad" \
 	> "$D/dashc.log" 2>&1
@@ -499,7 +542,7 @@ else
 	lst_rc=$?
 	lst_needed=$(readelf -d "$D/lstatic" 2>/dev/null | grep -ao 'libmadc[^]]*')
 	lst_und=$(readelf --dyn-syms -W "$D/lstatic" 2>/dev/null \
-		  | awk '$7=="UND"{print $8}' | grep -a '^__madc_' | sort -u)
+		  | awk '$7=="UND" && $5!="WEAK"{print $8}' | grep -a '^__madc_' | sort -u)
 	if [ $lst_rc -ne 0 ]; then
 		fail ".o link lane -static-libmadc emit (rc=$lst_rc)"
 		sed -n '1,15p' "$D/lstatic.log"

@@ -742,6 +742,20 @@ static const cir_ledger_module *cir_crt_module(size_t i)
     return it->second.get();
 }
 
+// An image-only startup member as the native relocatable an -o / -c link
+// merges into its capture, as gcc links crtbegin.o: the ledger's copy, which
+// the freezer generated, else generated in this process (cir_crt_object).
+// Its undefined references select further members, as an archive member's do
+// in ld — the weak ones never.
+struct CirCrtObject
+{
+    cir_ledger_module obj;			// name, exported names, object bytes
+    std::vector<madc::dis::istring> refs;	// its undefined references
+    std::vector<madc::dis::istring> strong;	// ...less the weak ones
+};
+
+static const CirCrtObject *cir_crt_object(Program *prog, size_t i);
+
 // Read ONE ledger module's .bmir into `ctx` (cir_mir_read_module) and load it.
 // False = nothing new was loaded.
 static bool cir_ledger_read_module(MIR_context_t ctx,
@@ -775,9 +789,11 @@ static bool cir_ledger_read_module(MIR_context_t ctx,
 //
 // The startup members (madc_crt.cpp) are candidates in every link, the
 // archive the link always searches (libc_nonshared.a's place) — the
-// image-only ones in an -o / -c link (`images`) alone; the ledger's modules
-// join under -static-libmadc when `prog` can provide them.
-static void cir_ledger_pull(MIR_context_t ctx, Program *prog, bool images,
+// image-only ones in an -o / -c link (`images` non-NULL) alone, which joins
+// them as native objects (`images->objs`) for the caller to merge into its
+// capture or builder; the ledger's modules join under -static-libmadc when
+// `prog` can provide them.
+static void cir_ledger_pull(MIR_context_t ctx, Program *prog, CirCrtPicks *images,
 			    const std::vector<madc::dis::istring> *seed = NULL)
 {
     size_t ncrt = 0;
@@ -792,22 +808,39 @@ static void cir_ledger_pull(MIR_context_t ctx, Program *prog, bool images,
     // ledger's modules
     std::map<madc::dis::istring, size_t> owner;
     for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
-	if (cir_crt_candidate(e.second, images))
+	if (cir_crt_candidate(e.second, images != NULL))
 	    owner.insert(std::make_pair(e.first, e.second));
     for (size_t i = 0; i < ledger.size(); i++)
-	for (const madc::dis::istring &s : ledger[i].syms)
-	    owner.insert(std::make_pair(s, ncrt + i));
+	if (ledger[i].form == CirLedgerForm::mir_module)
+	    for (const madc::dis::istring &s : ledger[i].syms)
+		owner.insert(std::make_pair(s, ncrt + i));
 
+    // The candidates beyond the modules' imports: the caller's seed, then the
+    // strong references of each startup object joined.
+    std::vector<madc::dis::istring> extra;
+    if (seed)
+	extra = *seed;
     std::vector<bool> pulled(ncrt + ledger.size(), false);
     for (;;) {
 	std::vector<madc::dis::istring> undef;
-	cir_ctx_unresolved_imports(ctx, undef, seed);
+	cir_ctx_unresolved_imports(ctx, undef, &extra);
 	size_t pulled_now = 0;
 	for (const madc::dis::istring &nm : undef) {
 	    std::map<madc::dis::istring, size_t>::const_iterator it = owner.find(nm);
 	    if (it == owner.end() || pulled[it->second])
 		continue;
 	    pulled[it->second] = true;	// once, whether or not the read works
+	    if (it->second < ncrt && madc_crt_members[it->second].image_only) {
+		if (const CirCrtObject *o = cir_crt_object(prog, it->second)) {
+		    images->objs.push_back(o);
+		    extra.insert(extra.end(), o->strong.begin(), o->strong.end());
+		    pulled_now++;
+		    DBG(std::cout << "ledger: joined the startup object "
+				  << o->obj.name << " for '" << nm << "'"
+				  << std::endl);
+		}
+		continue;
+	    }
 	    const cir_ledger_module *m = it->second < ncrt
 		? cir_crt_module(it->second) : &ledger[it->second - ncrt];
 	    if (m && cir_ledger_read_module(ctx, *m)) {
@@ -834,7 +867,7 @@ static void cir_crt_pull_for(MIR_context_t ctx, MIR_module_t m)
 	    && cir_crt_indexed(it->u.import_id, false))
 	    seed.push_back(it->u.import_id);
     if (!seed.empty())
-	cir_ledger_pull(ctx, NULL, false, &seed);
+	cir_ledger_pull(ctx, NULL, NULL, &seed);
 }
 
 // --- AOT ledger as a RELOCATABLE (the .o link lane, -static-libmadc) -------
@@ -875,7 +908,8 @@ static bool cir_ledger_emit_blob(MIR_context_t ctx, std::vector<uint8_t> &blob)
 // arms one of its own (cir_ledger_read_module), so a bracket established before
 // the pull is stale afterwards — hence the split from the link/emit frame.
 static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
-				const std::vector<madc::dis::istring> &seed)
+				const std::vector<madc::dis::istring> &seed,
+				CirCrtPicks &picks)
 {
     if (setjmp(cir_mir_error_jmp)) {
 	cir_mir_error_armed = false;
@@ -885,7 +919,7 @@ static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
     }
     cir_mir_error_armed = true;
     MIR_gen_set_object_mode(ctx, 1);
-    cir_ledger_pull(ctx, prog, true, &seed);
+    cir_ledger_pull(ctx, prog, &picks, &seed);
     cir_mir_error_armed = false;
     return true;
 }
@@ -917,10 +951,12 @@ static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
 // `seed` = the merged input builder's UNDEF names (what the program still
 // needs). False = a real failure, already reported. An EMPTY blob is a
 // SUCCESS that selected nothing: whether that was enough is the emit-time
-// verification's question, exactly as in the source lanes.
+// verification's question, exactly as in the source lanes. The startup
+// objects the pull joined come back in `picks`, for the caller to merge
+// beside the blob.
 static bool cir_ledger_relocatable(Program *prog,
 				   const std::vector<madc::dis::istring> &seed,
-				   std::vector<uint8_t> &blob)
+				   std::vector<uint8_t> &blob, CirCrtPicks &picks)
 {
     blob.clear();
     MIR_context_t ctx = MIR_init();
@@ -932,12 +968,179 @@ static bool cir_ledger_relocatable(Program *prog,
     MIR_set_error_func(ctx, cir_mir_error);
     MIR_gen_init(ctx);
     MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
-    bool ok = cir_ledger_obj_pull(ctx, prog, seed);
+    bool ok = cir_ledger_obj_pull(ctx, prog, seed, picks);
     if (ok && DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx)) != NULL)
 	ok = cir_ledger_obj_link_emit(ctx, blob);
     MIR_gen_finish(ctx);
     MIR_finish(ctx);
     return ok;
+}
+
+// --- The startup objects (B231) ------------------------------------------
+//
+// An image-only startup member enters an image or object as a native
+// relocatable, merged by MIR_object_read as gcc's driver links crtbegin.o:
+// generated once, by the freezer, into the ledger (madc_cir_crt_objects_compile)
+// — never compiled from its text in each process that writes an image. A
+// carrier without one (an unpacked build) generates it in-process, the same
+// way, once.
+
+// Member i's object, generated in a private object-mode context from its
+// module (cir_crt_module) ALONE: an archive member, whose own references stay
+// undefined for the link that merges it. At -O2 whatever the program's level,
+// as libgcc's objects are built. `out.syms`: the exported names.
+static bool cir_crt_object_build(size_t i, cir_ledger_module &out)
+{
+    const cir_ledger_module *m = cir_crt_module(i);
+    if (!m)
+	return false;
+    out = cir_ledger_module();
+    out.name = m->name;
+    out.init = m->init;
+    out.form = CirLedgerForm::native_object;
+    MIR_context_t ctx = MIR_init();
+    if (!ctx) {
+	fprintf(stderr, "madc: startup member %s: MIR_init failed\n",
+		m->name.c_str());
+	return false;
+    }
+    MIR_set_error_func(ctx, cir_mir_error);
+    MIR_gen_init(ctx);
+    MIR_gen_set_optimize_level(ctx, 2);
+    MIR_gen_set_object_mode(ctx, 1);
+    bool ok = cir_ledger_read_module(ctx, *m);
+    if (ok) {
+	MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it))
+	    if (cir_item_defines(it) && it->export_p)
+		if (const char *nm = MIR_item_name(ctx, it))
+		    out.syms.push_back(nm);
+	ok = cir_ledger_obj_link_emit(ctx, out.bytes);
+    }
+    MIR_gen_finish(ctx);
+    MIR_finish(ctx);
+    return ok;
+}
+
+// The object's undefined references, read back through the merge reader
+// (an archive member's symbol table). False = unreadable (printed).
+static bool cir_crt_object_refs(CirCrtObject &o)
+{
+    MIR_object_t b = MIR_object_create();
+    if (!b) {
+	fprintf(stderr, "madc: startup object %s: no object builder on this"
+		" host\n", o.obj.name.c_str());
+	return false;
+    }
+    char err[256];
+    bool ok = MIR_object_read(b, o.obj.bytes.data(), o.obj.bytes.size(),
+			      err, sizeof err) == 0;
+    if (!ok)
+	fprintf(stderr, "madc: startup object %s: %s\n", o.obj.name.c_str(),
+		err);
+    const char *nm;
+    for (size_t i = 0; ok && (nm = MIR_object_undef_name(b, i)) != NULL; i++) {
+	o.refs.push_back(nm);
+	if (!MIR_object_undef_weak_p(b, i))
+	    o.strong.push_back(nm);
+    }
+    MIR_object_destroy(b);
+    return ok;
+}
+
+// The carrier's copy of member i's object (the ledger's native_object entry
+// of the member's name). False = none: no carrier, no ledger, or a ledger
+// packed before the objects joined it.
+static bool cir_crt_object_from_ledger(Program *prog, size_t i,
+				       cir_ledger_module &out)
+{
+    CirFrozenForest *forest = prog ? prog->ensure_ledger_forest() : NULL;
+    std::vector<cir_ledger_module> ledger;
+    if (!forest || !forest->ledger_modules(ledger))
+	return false;
+    for (cir_ledger_module &e : ledger)
+	if (e.form == CirLedgerForm::native_object
+	    && e.name == madc_crt_members[i].name) {
+	    out = std::move(e);
+	    return true;
+	}
+    return false;
+}
+
+// Member i's object, made on first use — from the carrier when it has one,
+// else generated here. NULL when it cannot be (printed); the link then
+// leaves the member's names undefined, for the emit-time checks to name.
+static const CirCrtObject *cir_crt_object(Program *prog, size_t i)
+{
+    static std::mutex lock;
+    static std::map<size_t, std::unique_ptr<CirCrtObject> > made;
+    std::lock_guard<std::mutex> hold(lock);
+    std::map<size_t, std::unique_ptr<CirCrtObject> >::iterator it = made.find(i);
+    if (it == made.end()) {
+	std::unique_ptr<CirCrtObject> o(new CirCrtObject);
+	bool carried = cir_crt_object_from_ledger(prog, i, o->obj);
+	if (!(carried || cir_crt_object_build(i, o->obj))
+	    || !cir_crt_object_refs(*o))
+	    o.reset();
+	DBG(if (o) std::cout << "crt: " << o->obj.name << ": object "
+			     << (carried ? "from the ledger" : "generated")
+			     << " (" << o->obj.bytes.size() << " bytes)"
+			     << std::endl);
+	it = made.insert(std::make_pair(i, std::move(o))).first;
+    }
+    return it->second.get();
+}
+
+bool madc_cir_crt_objects_compile(std::vector<cir_ledger_module> &out)
+{
+    for (size_t i = 0; madc_crt_members[i].name; i++) {
+	if (!madc_crt_members[i].image_only)
+	    continue;
+	cir_ledger_module m;
+	if (!cir_crt_object_build(i, m)) {
+	    fprintf(stderr, "madc: ledger: startup member %s: no object\n",
+		    madc_crt_members[i].name);
+	    return false;
+	}
+	DBG(std::cout << "ledger: " << m.name << ": object, " << m.bytes.size()
+		      << " bytes" << std::endl);
+	out.push_back(std::move(m));
+    }
+    return true;
+}
+
+// The picked objects into a builder: the merge unifies their symbols with
+// the builder's. False = refused (printed).
+static bool cir_crt_objects_read(MIR_object_t o, const CirCrtPicks &picks)
+{
+    for (const CirCrtObject *c : picks.objs) {
+	char err[256];
+	if (MIR_object_read(o, c->obj.bytes.data(), c->obj.bytes.size(),
+			    err, sizeof err) != 0) {
+	    fprintf(stderr, "madc: cannot merge the startup object %s: %s\n",
+		    c->obj.name.c_str(), err);
+	    return false;
+	}
+    }
+    return true;
+}
+
+// Into a source lane's capture: once, ahead of its first emit, and after the
+// module-data walk, so every symbol the program references is in the capture
+// for the merge to unify with.
+static bool cir_crt_objects_merge(MIR_context_t ctx, CirCrtPicks &picks)
+{
+    if (picks.merged || picks.objs.empty())
+	return true;
+    picks.merged = true;
+    MIR_object_t o = NULL;
+    if (MIR_gen_object_prepare(ctx) != 0 || (o = MIR_gen_get_object(ctx)) == NULL) {
+	fprintf(stderr, "madc: no object capture to merge the startup"
+		" objects into\n");
+	return false;
+    }
+    return cir_crt_objects_read(o, picks);
 }
 
 // -----------------------------------------------------------------------
@@ -1381,6 +1584,7 @@ void CirJitSession::teardown()
     live_init.clear();
     late_cell_slots.clear();
     late_cell_waits.clear();
+    crt_picks = CirCrtPicks();
 }
 
 bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
@@ -1586,7 +1790,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
     // the capture. Object mode only — the JIT lane resolves the same symbols
     // out of the live libmadc it is already running inside.
     if (madc_object_mode)
-	cir_ledger_pull(ctx, prog, true);
+	cir_ledger_pull(ctx, prog, &crt_picks);
     mc_lap("ledger pull");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
     cir_active_cells = live_mode ? &late_cell_slots : NULL;
@@ -2787,8 +2991,11 @@ static bool cir_pack_forest_finish(const char *out_path,
 // Pull the finished object capture out of ctx and write it as a
 // relocatable .o. Shared by the single-TU session (-c), the per-TU
 // project loop, and the whole-program -r lane.
-static bool cir_write_native_object(MIR_context_t ctx, const char *out_path)
+static bool cir_write_native_object(MIR_context_t ctx, const char *out_path,
+				    CirCrtPicks &crt_picks)
 {
+    if (!cir_crt_objects_merge(ctx, crt_picks))
+	return false;
     void *buf = NULL;
     size_t size = 0;
     if (c2mir_get_native_object(ctx, &buf, &size) != 0 || !buf) {
@@ -2801,7 +3008,7 @@ static bool cir_write_native_object(MIR_context_t ctx, const char *out_path)
 bool CirJitSession::emit_native_object(const char *out_path)
 {
     if (!ctx || !mod) return false;
-    return cir_write_native_object(ctx, out_path);
+    return cir_write_native_object(ctx, out_path, crt_picks);
 }
 
 // The one writer for -o/-shared images: pull the finished whole-context
@@ -2961,6 +3168,38 @@ static void cir_ctx_strong_references(MIR_context_t ctx,
     for (const madc::dis::istring &imp : imports)
 	if (strong.count(imp))
 	    out.push_back(imp);
+}
+
+// A source lane's references, for the emit-time checks: the context's
+// imports, with the startup objects merged into its capture counted as the
+// link inputs they are — their references join, and the names they define
+// stop being references. `strong` as above, an object's own strong ones
+// included.
+static void cir_image_references(MIR_context_t ctx, const CirCrtPicks &picks,
+				 std::vector<madc::dis::istring> &imports,
+				 std::vector<madc::dis::istring> &strong)
+{
+    std::vector<madc::dis::istring> refs;
+    std::set<madc::dis::istring> defined, objstrong;
+    for (const CirCrtObject *o : picks.objs) {
+	refs.insert(refs.end(), o->refs.begin(), o->refs.end());
+	defined.insert(o->obj.syms.begin(), o->obj.syms.end());
+	objstrong.insert(o->strong.begin(), o->strong.end());
+    }
+    cir_ctx_unresolved_imports(ctx, imports, &refs);
+    if (!defined.empty())
+	imports.erase(std::remove_if(imports.begin(), imports.end(),
+				     [&](const madc::dis::istring &s) {
+					 return defined.count(s) != 0;
+				     }),
+		      imports.end());
+    cir_ctx_strong_references(ctx, imports, strong);
+    if (objstrong.empty())
+	return;
+    std::set<madc::dis::istring> have(strong.begin(), strong.end());
+    for (const madc::dis::istring &s : imports)
+	if (objstrong.count(s) && have.insert(s).second)
+	    strong.push_back(s);
 }
 
 // The .o link lane's: the merged builder's undefined symbols less its weak
@@ -3246,8 +3485,11 @@ static bool cir_icon_attach(MIR_object_exec_params &xp, const madc::dis::istring
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				   const std::vector<std::string> &needed,
 				   const std::string &runpath,
-				   MadcNativeKind kind, const CirImageTraits &traits)
+				   MadcNativeKind kind, const CirImageTraits &traits,
+				   CirCrtPicks &crt_picks)
 {
+    if (!cir_crt_objects_merge(ctx, crt_picks))
+	return false;
     bool shared = kind == mnkShared;
     // Conditional runtime dependency: a program whose every strong dynamic
     // import resolves within the base C/C++ and user -l libraries gets no
@@ -3258,8 +3500,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     std::vector<std::string> other;
     bool have_madc = cir_split_needed(needed, other);
     std::vector<madc::dis::istring> imports, strong;
-    cir_ctx_unresolved_imports(ctx, imports);
-    cir_ctx_strong_references(ctx, imports, strong);
+    cir_image_references(ctx, crt_picks, imports, strong);
     if (!shared && cir_undefined_references(strong, other, out_path))
 	return false;
     // -static-libmadc: the ledger pull ran before the link, so the runtime is
@@ -3328,7 +3569,7 @@ bool CirJitSession::emit_native_executable(const char *out_path,
     CirImageTraits traits;
     traits.gui_subsystem = madc_gui_subsystem;
     return cir_write_native_image(ctx, out_path, needed, runpath, kind,
-				  traits);
+				  traits, crt_picks);
 }
 
 // A user library's TARGET spelling: the CLI resolves -l<name> through
@@ -3760,7 +4001,8 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	std::vector<madc::dis::istring> seed;
 	cir_object_undef_names(obj, seed);
 	std::vector<uint8_t> rt;
-	if (!cir_ledger_relocatable(prog, seed, rt)) {
+	CirCrtPicks picks;
+	if (!cir_ledger_relocatable(prog, seed, rt, picks)) {
 	    MIR_object_destroy(obj);
 	    return -1;
 	}
@@ -3769,6 +4011,10 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	    && MIR_object_read(obj, rt.data(), rt.size(), err, sizeof err) != 0) {
 	    fprintf(stderr, "madc: cannot merge the startup / AOT-ledger"
 		    " runtime: %s\n", err);
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+	if (!cir_crt_objects_read(obj, picks)) {
 	    MIR_object_destroy(obj);
 	    return -1;
 	}
@@ -7489,6 +7735,7 @@ static void cir_ledger_serialize(const std::vector<cir_ledger_module> &ledger,
 	e.name_bytes = (uint32_t)ledger[i].name.size();
 	e.sym_bytes = (uint32_t)symblocks[i].size();
 	e.mir_bytes = (uint32_t)ledger[i].bytes.size();
+	e.form = (uint32_t)ledger[i].form;
 	out.insert(out.end(), (const uint8_t *)&e,
 		   (const uint8_t *)&e + sizeof e);
     }
@@ -8047,17 +8294,22 @@ int madc_cir_dump_forest(const char *container_path)
 	// AOT ledger (S5): the C-lane runtime this container carries. One
 	// summary line plus one per module — the surface the ledger gate
 	// asserts against, and the answer to "can this madc -static-libmadc?".
+	// The startup members' native objects ride the same segment, one line
+	// each (crtobj), outside the module count.
 	std::vector<cir_ledger_module> ledger;
 	if (forest.ledger_modules(ledger)) {
-	    size_t nsym = 0, nbytes = 0;
-	    for (const cir_ledger_module &m : ledger) {
-		nsym += m.syms.size();
-		nbytes += m.bytes.size();
-	    }
-	    printf("ledger\tmodules=%zu\tsymbols=%zu\tbytes=%zu\n",
-		   ledger.size(), nsym, nbytes);
+	    size_t nmod = 0, nsym = 0, nbytes = 0;
 	    for (const cir_ledger_module &m : ledger)
-		printf("ledgermod\t%s\tsymbols=%zu\tbytes=%zu\n",
+		if (m.form == CirLedgerForm::mir_module) {
+		    nmod++;
+		    nsym += m.syms.size();
+		    nbytes += m.bytes.size();
+		}
+	    printf("ledger\tmodules=%zu\tsymbols=%zu\tbytes=%zu\n",
+		   nmod, nsym, nbytes);
+	    for (const cir_ledger_module &m : ledger)
+		printf("%s\t%s\tsymbols=%zu\tbytes=%zu\n",
+		       m.form == CirLedgerForm::mir_module ? "ledgermod" : "crtobj",
 		       m.name.c_str(), m.syms.size(), m.bytes.size());
 	}
     }
@@ -8685,8 +8937,9 @@ int madc_project_emit_native(MadcEngine &engine,
 	// the TUs satisfy for each other are already netted out by the loads
 	// above. Any TU's Program answers for the carrier; they share one
 	// installation.
+	CirCrtPicks crt_picks;
 	if (!parsed.empty())
-		cir_ledger_pull(ctx, parsed[0].prog.get(), true);
+		cir_ledger_pull(ctx, parsed[0].prog.get(), &crt_picks);
 	MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
 	if (madc_debug_info)
 		c2mir_object_attach_debug(ctx);   // R5: whole-program DWARF
@@ -8713,7 +8966,7 @@ int madc_project_emit_native(MadcEngine &engine,
 	if (kind == mnkRelocatable)
 		// -r: the same whole-program capture, written as ONE
 		// relocatable .o (gcc/ld -r shape) instead of an image.
-		ok = cir_write_native_object(ctx, out_path);
+		ok = cir_write_native_object(ctx, out_path, crt_picks);
 	else {
 		std::vector<std::string> needed;
 		std::string runpath;
@@ -8744,7 +8997,7 @@ int madc_project_emit_native(MadcEngine &engine,
 		ok = cir_native_link_env(flavor, all_libs, link_paths, needed,
 					 runpath)
 		     && cir_write_native_image(ctx, out_path, needed, runpath,
-					       kind, traits);
+					       kind, traits, crt_picks);
 	}
 	teardown();
 	return ok ? 0 : -1;

@@ -2934,7 +2934,15 @@ bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
 			out.clear();
 			return false;
 		}
+		if (e.form != (uint32_t)CirLedgerForm::mir_module
+		    && e.form != (uint32_t)CirLedgerForm::native_object) {
+			fprintf(stderr, "madc: ledger: unknown entry form %u\n",
+				e.form);
+			out.clear();
+			return false;
+		}
 		cir_ledger_module m;
+		m.form = (CirLedgerForm)e.form;
 		m.name = madc::dis::istring((const char *)payload.data() + pos, e.name_bytes);
 		pos += e.name_bytes;
 		// NUL-separated symbol names (a trailing NUL per name, so the
