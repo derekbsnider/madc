@@ -20,16 +20,18 @@
 # emitted spelling and _Generic's match, which read plain char), and
 # aarch64_varargs.c (a program DEFINING a variadic function: its va_arg calls
 # libmir's mir.va_arg / mir.va_block_arg, which an executable could not find),
-# aarch64_predef.c (the target's predefined macros and header world, which the
+# aarch64_blkarg.c (a struct over 128 bytes by value: its copy calls
+# mir.blk_mov, which libmir kept static and nothing exported), aarch64_predef.c (the target's predefined macros and header world, which the
 # cross madc captured from the x86-64 host g++), aarch64_nansl.c (the
 # binary128 signaling NaN), and aarch64_float.c (<float.h>: madc's on the aot
 # leg, c2mir's on the jit leg). THREE LEGS each:
 #   oracle  aarch64-linux-gnu-gcc's binary under qemu — the expected output.
 #   aot     bin/madc-aarch64-linux -c, linked by aarch64 gcc against the target's
-#           libmir (a madc executable gets libmir through libmadc), run under
-#           qemu: every dotted mir.* name it imports must be one that libmir
-#           EXPORTS (mir.va_arg / mir.va_block_arg -- aarch64_varargs.c), and it
-#           must print the oracle's bytes.
+#           libmir, run under qemu: the object carries MIR's call helpers
+#           itself (madc's crt:mir_calls startup member, weak), and any dotted
+#           mir.* name it still imports must be one that libmir EXPORTS
+#           (aarch64_varargs.c, aarch64_blkarg.c); it must print the oracle's
+#           bytes.
 #   jit     a gcc-built aarch64 c2m (MIR's own driver) running the fixture
 #           through the generator (-eg) under qemu — the libmir JIT path. A
 #           fixture whose subject is madc's front end (a builtin c2m lacks)

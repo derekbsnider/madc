@@ -119,11 +119,14 @@ void madc_session_interrupt_reset();
 // The image-only startup members (madc_crt_member) an object-mode link
 // selected, as the native objects merged into its capture once, ahead of its
 // first emit — gcc's crtbegin.o placement. The objects live for the process.
+// `carrier`: the program whose forest carries the members' objects (the
+// link-time pull's), for the ones generation adds (cir_crt_objects_merge).
 struct CirCrtObject;
 struct CirCrtPicks
 {
 	std::vector<const CirCrtObject *> objs;
 	bool merged = false;
+	Program *carrier = NULL;
 };
 
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
@@ -438,7 +441,11 @@ struct cir_ledger_module
 // ld.so calls it when it unloads the image or the process exits), NULL = none.
 // `image_only`: pulled for -o / -c output alone; a JIT session resolves the
 // member's names out of the libmadc it runs inside (libgcc's personality
-// role: the image carries it, the host already has it).
+// role: the image carries it, the host already has it). `aliases`: names the
+// member's object defines that C cannot spell (MIR's dotted "mir.va_arg"), as
+// space-separated "name=function" pairs — each a weak global symbol at the
+// member's (file-local) function, as gcc's alias attribute writes one; NULL =
+// none. Its `defines` lists them like any other name.
 struct madc_crt_member
 {
 	const char *name;
@@ -447,6 +454,7 @@ struct madc_crt_member
 	const char *fini;
 	const char *source;
 	bool image_only;
+	const char *aliases;
 };
 
 // The routine every generated function with unwind regions names (B205): the

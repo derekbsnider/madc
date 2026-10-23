@@ -1617,6 +1617,15 @@ $(RT_PERSONALITY_TEXT): rt/rt_personality.c rt/rt_unwind.h ../scripts/gen_rt_tex
 	bash ../scripts/gen_rt_text.sh rt/rt_personality.c $@
 $(OBJDIR)/madc_crt.o $(PICOBJDIR)/madc_crt.o: $(RT_PERSONALITY_TEXT)
 $(OBJDIR)/madc_crt.o $(PICOBJDIR)/madc_crt.o: DEFINES += -I$(OBJDIR)
+# MIR's call helpers' startup member (madc_crt.cpp) is MIR's own text,
+# third_party/mir/mir-<target>-calls.c with its includes inlined — the one
+# source libmir compiles too. Both targets' texts; madc_crt.cpp reads its own.
+MIR_CALLS_TEXT = $(OBJDIR)/mir_x86_64_calls_text.inc $(OBJDIR)/mir_aarch64_calls_text.inc
+$(OBJDIR)/mir_%_calls_text.inc: $(MIRDIR)/mir-%-calls.c $(MIRDIR)/mir-type.h \
+		$(MIRDIR)/mir-aarch64-abi.h ../scripts/gen_rt_text.sh
+	@mkdir -p $(OBJDIR)
+	bash ../scripts/gen_rt_text.sh $< $@
+$(OBJDIR)/madc_crt.o $(PICOBJDIR)/madc_crt.o: $(MIR_CALLS_TEXT)
 
 # The dialect is builtin (docs/plans/2026-10-17-dialect-builtin-registration.md):
 # its registration code is generated from include/madc/ns_* and bits/* by a

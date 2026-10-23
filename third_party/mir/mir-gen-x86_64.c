@@ -862,33 +862,13 @@ static const char *VA_ARG = "mir.va_arg";
 static const char *VA_BLOCK_ARG_P = "mir.va_block_arg.p";
 static const char *VA_BLOCK_ARG = "mir.va_block_arg";
 
-#if (defined(__ELF__) || defined(_WIN32)) && defined(__GNUC__)
-/* AOT object mode: generated code calls these builtins through the "mir.*"
-   import items above, which become undefined symbols in an emitted .o --
-   export them from libmir under those exact names so the link resolves.
-   (va_arg_builtin / va_block_arg_builtin get theirs in mir-x86_64.c;
-   mingw/PE takes the same shape -- dotted asm labels + alias are
-   probe-verified on gas/COFF.)  The mir.ui2f / ui2d / ui2ld / ld2i family
-   used to be exported here too; those conversions are generated inline now
-   (see expand_uint_to_fp_insn and the MIR_LD2I pattern), so the names no
+/* Generated code calls these builtins through the "mir.*" import items above,
+   which become undefined symbols in an emitted .o: libmir exports them under
+   those names (mir-x86_64.c, with "mir.arg_memcpy"), and an image madc writes
+   carries its own copy (mir-x86_64-calls.c).  The mir.ui2f / ui2d / ui2ld /
+   ld2i family used to be exported too; those conversions are generated inline
+   now (see expand_uint_to_fp_insn and the MIR_LD2I pattern), so the names no
    longer exist on either side of the link. */
-/* "mir.arg_memcpy" (block-argument copies) is bound to libc memcpy at gen
-   time; give it a linkable definition of its own. */
-static void *mir_arg_memcpy (void *dest, const void *src, size_t n) {
-  return memcpy (dest, src, n);
-}
-extern __typeof (mir_arg_memcpy) mir_arg_memcpy_obj_export asm ("mir.arg_memcpy")
-  __attribute__ ((alias ("mir_arg_memcpy"), used));
-#elif defined(__APPLE__) && defined(__GNUC__)
-/* The same export on Mach-O: a wrapper under the '_'-prefixed label (see
-   mir-aot-export.h), as Mach-O has no alias attribute. */
-#include "mir-aot-export.h"
-void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n)
-  asm (MIR_AOT_SYM ("mir.arg_memcpy")) __attribute__ ((used));
-void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n) {
-  return memcpy (dest, src, n);
-}
-#endif
 
 static void get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *proto_item,
                          MIR_item_t *func_import_item) {

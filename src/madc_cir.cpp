@@ -649,6 +649,36 @@ static const std::vector<std::pair<madc::dis::istring, size_t> > &cir_crt_index(
     return index;
 }
 
+// Member m's aliases (madc_crt_member::aliases) as (name, function) pairs.
+typedef std::vector<std::pair<madc::dis::istring, madc::dis::istring> > CirCrtAliases;
+static CirCrtAliases cir_crt_aliases(const madc_crt_member &m)
+{
+    CirCrtAliases out;
+    std::istringstream in(m.aliases ? m.aliases : "");
+    std::string pair;	// the stream's read buffer; split into names below
+    while (in >> pair) {
+	size_t eq = pair.find('=');
+	if (eq != std::string::npos)
+	    out.push_back(std::make_pair(madc::dis::istring(pair.substr(0, eq)),
+					 madc::dis::istring(pair.substr(eq + 1))));
+    }
+    return out;
+}
+
+// Does member m, whose module defines `syms`, define `name` — itself, or as
+// the alias of a function it defines?
+static bool cir_crt_defines(const madc_crt_member &m,
+			    const std::vector<madc::dis::istring> &syms,
+			    const madc::dis::istring &name)
+{
+    if (std::find(syms.begin(), syms.end(), name) != syms.end())
+	return true;
+    for (const CirCrtAliases::value_type &a : cir_crt_aliases(m))
+	if (a.first == name)
+	    return std::find(syms.begin(), syms.end(), a.second) != syms.end();
+    return false;
+}
+
 // Is member `i` a candidate of this link? `images`: an -o / -c link, which
 // also pulls the image-only members.
 static bool cir_crt_candidate(size_t i, bool images)
@@ -711,8 +741,7 @@ static bool cir_crt_compile(const madc_crt_member &m, cir_ledger_module &out)
 	ok = true;
 	for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
 	    if (&madc_crt_members[e.second] == &m
-		&& std::find(out.syms.begin(), out.syms.end(),
-			     e.first) == out.syms.end()) {
+		&& !cir_crt_defines(m, out.syms, e.first)) {
 		fprintf(stderr, "madc: startup member %s does not define"
 			" '%s'\n", m.name, e.first.c_str());
 		ok = false;
@@ -796,6 +825,8 @@ static bool cir_ledger_read_module(MIR_context_t ctx,
 static void cir_ledger_pull(MIR_context_t ctx, Program *prog, CirCrtPicks *images,
 			    const std::vector<madc::dis::istring> *seed = NULL)
 {
+    if (images)
+	images->carrier = prog;
     size_t ncrt = 0;
     while (madc_crt_members[ncrt].name)
 	ncrt++;
@@ -926,11 +957,45 @@ static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
 
 static bool cir_register_crt_inits(MIR_context_t ctx, const char *source_name);
 
+// Member m's aliases into the generated capture: a weak global symbol at each
+// function's definition (the function's own symbol stays file-local), as
+// gcc's alias attribute writes one, weak as every member's definition is.
+// False = refused (printed).
+static bool cir_crt_define_aliases(MIR_context_t ctx, const madc_crt_member &m)
+{
+    CirCrtAliases aliases = cir_crt_aliases(m);
+    if (aliases.empty())
+	return true;
+    MIR_object_t o = NULL;
+    if (MIR_gen_object_prepare(ctx) != 0 || (o = MIR_gen_get_object(ctx)) == NULL) {
+	fprintf(stderr, "madc: startup member %s: no object capture for its"
+		" aliases\n", m.name);
+	return false;
+    }
+    for (const CirCrtAliases::value_type &a : aliases) {
+	int sec = 0;
+	uint64_t value = 0, size = 0;
+	if (!MIR_object_find_symbol(o, a.second.c_str(), &sec, &value, &size)) {
+	    fprintf(stderr, "madc: startup member %s: '%s' aliased to undefined"
+		    " '%s'\n", m.name, a.first.c_str(), a.second.c_str());
+	    return false;
+	}
+	if (MIR_object_add_symbol(o, a.first.c_str(), sec, value, size, 1, 0, 1) < 0) {
+	    fprintf(stderr, "madc: startup member %s: cannot define '%s'\n",
+		    m.name, a.first.c_str());
+	    return false;
+	}
+    }
+    return true;
+}
+
 // Link + generate + serialize, under a FRESH error frame (see above). A
 // pulled startup member's image init rides the relocatable's own
-// .init_array, which the merge concatenates.
+// .init_array, which the merge concatenates. `member`: the startup member
+// this relocatable is, whose aliases join it; NULL = the ledger's runtime.
 static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
-				     std::vector<uint8_t> &blob)
+				     std::vector<uint8_t> &blob,
+				     const madc_crt_member *member = NULL)
 {
     if (setjmp(cir_mir_error_jmp)) {
 	cir_mir_error_armed = false;
@@ -943,6 +1008,7 @@ static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
     // UNDEF symbol in the capture instead of binding to this process.
     MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
     bool ok = cir_register_crt_inits(ctx, "madc: link")
+	      && (!member || cir_crt_define_aliases(ctx, *member))
 	      && cir_ledger_emit_blob(ctx, blob);
     cir_mir_error_armed = false;
     return ok;
@@ -1016,7 +1082,9 @@ static bool cir_crt_object_build(size_t i, cir_ledger_module &out)
 	    if (cir_item_defines(it) && it->export_p)
 		if (const char *nm = MIR_item_name(ctx, it))
 		    out.syms.push_back(nm);
-	ok = cir_ledger_obj_link_emit(ctx, out.bytes);
+	for (const CirCrtAliases::value_type &a : cir_crt_aliases(madc_crt_members[i]))
+	    out.syms.push_back(a.first);
+	ok = cir_ledger_obj_link_emit(ctx, out.bytes, &madc_crt_members[i]);
     }
     MIR_gen_finish(ctx);
     MIR_finish(ctx);
@@ -1126,12 +1194,46 @@ static bool cir_crt_objects_read(MIR_object_t o, const CirCrtPicks &picks)
     return true;
 }
 
+// The image-only members the GENERATED code names: MIR's call helpers
+// ("mir.va_arg", "mir.arg_memcpy", ...) become imports while a function is
+// generated, after the link-time pull chose its members, so a source lane's
+// capture is asked again before the merge. Selected as cir_ledger_pull
+// selects them — by name, once each, then by the joined objects' own strong
+// references.
+static void cir_crt_pull_generated(MIR_context_t ctx, CirCrtPicks &picks)
+{
+    std::vector<madc::dis::istring> undef, extra;
+    for (;;) {
+	cir_ctx_unresolved_imports(ctx, undef, &extra);
+	size_t joined = 0;
+	for (const madc::dis::istring &nm : undef)
+	    for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index()) {
+		if (e.first != nm || !madc_crt_members[e.second].image_only)
+		    continue;
+		const CirCrtObject *o = cir_crt_object(picks.carrier, e.second);
+		if (!o || std::find(picks.objs.begin(), picks.objs.end(), o)
+			  != picks.objs.end())
+		    continue;
+		picks.objs.push_back(o);
+		extra.insert(extra.end(), o->strong.begin(), o->strong.end());
+		joined++;
+		DBG(std::cout << "crt: generated code joined " << o->obj.name
+			      << " for '" << nm << "'" << std::endl);
+	    }
+	if (!joined)
+	    break;
+    }
+}
+
 // Into a source lane's capture: once, ahead of its first emit, and after the
 // module-data walk, so every symbol the program references is in the capture
 // for the merge to unify with.
 static bool cir_crt_objects_merge(MIR_context_t ctx, CirCrtPicks &picks)
 {
-    if (picks.merged || picks.objs.empty())
+    if (picks.merged)
+	return true;
+    cir_crt_pull_generated(ctx, picks);
+    if (picks.objs.empty())
 	return true;
     picks.merged = true;
     MIR_object_t o = NULL;

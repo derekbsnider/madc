@@ -45,8 +45,10 @@
 #      still refuses, so the runtime rides the final link only
 #  10  an image names only the libraries its imports reach, gcc's list
 #      exactly (oracle: gcc --as-needed): plain C = libc alone, a sqrt call
-#      adds libm, the .o link lane agrees, and a C++ image keeps its C++
-#      runtime
+#      adds libm, a >16-byte by-value struct argument or va_arg needs no madc
+#      library (MIR's call helpers ride the image), the .o link lane agrees,
+#      and a C++ image keeps its C++ runtime; the win64 PE of the struct and
+#      va_arg programs imports no mir.* helper either (SKIP without wine)
 set -u
 cd "$(dirname "$0")/.."
 MADC=${MADC_BIN:-bin/madc}
@@ -611,6 +613,10 @@ fi
 # gcc's --as-needed link is the oracle: a C program's image names libc.so.6
 # alone and a sqrt call adds libm.so.6 — madc's implicit C++ runtime and libm
 # stay only where an import reaches them (a C++ program keeps its libstdc++).
+# MIR's own call helpers ride the image, so a program passing a struct over
+# 16 bytes by value (mir.arg_memcpy) or reading va_arg (mir.va_arg,
+# mir.va_block_arg) needs no madc library either (issue #8: a 6k-line C
+# parser loaded all of libmadc for one block copy).
 cat > "$D/c_plain.c" <<'EOF'
 #include <stdio.h>
 int main(void) { puts("plain"); return 0; }
@@ -619,6 +625,30 @@ cat > "$D/c_math.c" <<'EOF'
 #include <math.h>
 #include <stdio.h>
 int main(void) { volatile double x = 2.0; printf("%.3f\n", sqrt(x)); return 0; }
+EOF
+cat > "$D/c_blkarg.c" <<'EOF'
+#include <stdio.h>
+struct big { long a, b, c, d; };
+__attribute__((noinline)) long sum(struct big s) { return s.a + s.b + s.c + s.d; }
+int main(void) { struct big s = { 1, 2, 3, 4 }; printf("sum %ld\n", sum(s)); return 0; }
+EOF
+cat > "$D/c_vararg.c" <<'EOF'
+#include <stdarg.h>
+#include <stdio.h>
+struct trio { long a, b, c; };
+__attribute__((noinline)) static long total(int n, ...)
+{
+	va_list ap;
+	long t = 0;
+	va_start(ap, n);
+	for (int i = 0; i < n; i++)
+		t += va_arg(ap, int);
+	t += (long)va_arg(ap, double);
+	struct trio p = va_arg(ap, struct trio);
+	va_end(ap);
+	return t + p.a + p.b + p.c;
+}
+int main(void) { struct trio p = { 10, 20, 30 }; printf("total %ld\n", total(3, 1, 2, 3, 4.5, p)); return 0; }
 EOF
 needed_list() { readelf -dW "$1" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' '; }
 # $1 = source, $2 = madc flags (word-split), $3 = gcc's extra flags: madc's
@@ -650,6 +680,8 @@ as_needed_leg()
 }
 as_needed_leg "$D/c_plain.c" "" ""
 as_needed_leg "$D/c_math.c" "-lm" "-lm"
+as_needed_leg "$D/c_blkarg.c" "" ""
+as_needed_leg "$D/c_vararg.c" "" ""
 # The .o link lane names the same set (the same rule, cir_elf_needed).
 run "$MADC" -fno-eval-shims -c -o "$D/c_plain.o" "$D/c_plain.c" > "$D/c_plain_o.log" 2>&1
 run "$MADC" -o "$D/c_plain_link" "$D/c_plain.o" > "$D/c_plain_link.log" 2>&1
@@ -669,6 +701,40 @@ if grep -q 'libstdc++\.so\|libc++\.so' <<<"$cpp_need"; then
 else
 	fail "a C++ image keeps its C++ runtime (names '$cpp_need')"
 	sed -n '1,4p' "$D/cpp_needed.log"
+fi
+# win64: the PE carries MIR's call helpers too (COFF weak externals), so the
+# by-value struct and va_arg programs import no mir.* name from any DLL, and
+# print mingw gcc's output. Runs where the hosted win64 madc, wine and the
+# mingw tools are (the build container); says SKIP elsewhere.
+WMADC=bin/madc-hosted-x86-64-windows.exe
+if [ -x "$WMADC" ] && command -v wine > /dev/null 2>&1 \
+		&& command -v x86_64-w64-mingw32-objdump > /dev/null 2>&1 \
+		&& command -v x86_64-w64-mingw32-gcc > /dev/null 2>&1; then
+	export WINEDEBUG=-all
+	WINEPATH="Z:$(tr / '\\' <<<"$PWD/bin")"
+	export WINEPATH
+	wineserver -p < /dev/null > /dev/null 2>&1
+	for n in c_blkarg c_vararg; do
+		run wine "$WMADC" -o "$D/$n.exe" "$D/$n.c" > "$D/$n.win.log" 2>&1 < /dev/null
+		wrc=$?
+		mir_imports=$(x86_64-w64-mingw32-objdump -p "$D/$n.exe" 2>/dev/null \
+			| awk '/DLL Name:/ { dll = $3 } /^\t[0-9a-f]+\t/ && dll && $NF ~ /^mir\./ { print dll ": " $NF }')
+		x86_64-w64-mingw32-gcc -o "$D/$n.gcc.exe" "$D/$n.c" > "$D/$n.wgcc.log" 2>&1
+		wout=$(run wine "$D/$n.exe" < /dev/null 2>&1 | tr -d '\r')
+		wgout=$(run wine "$D/$n.gcc.exe" < /dev/null 2>&1 | tr -d '\r')
+		if [ $wrc -ne 0 ]; then
+			fail "win64 $n: madc -o (rc=$wrc)"
+			sed -n '1,6p' "$D/$n.win.log"
+		elif [ -n "$mir_imports" ]; then
+			fail "win64 $n: the PE imports MIR's helpers: $(tr '\n' ' ' <<<"$mir_imports")"
+		elif [ -z "$wgout" ] || [ "$wout" != "$wgout" ]; then
+			fail "win64 $n: output '$wout', mingw gcc's '$wgout'"
+		else
+			pass "win64 $n: imports no mir.* helper and prints mingw gcc's output"
+		fi
+	done
+else
+	echo "  SKIP win64 helpers (needs $WMADC, wine and the x86_64-w64-mingw32 tools)"
 fi
 
 if [ $rc -eq 0 ]; then

@@ -194,33 +194,7 @@ typedef enum {
   INSN_EL (INSN_BOUND), /* Should be the last  */
 } MIR_insn_code_t;
 
-#define TYPE_EL(t) MIR_T_##t
-
-#define MIR_BLK_NUM 5
-/* Data types: */
-typedef enum {
-  REP8 (TYPE_EL, I8, U8, I16, U16, I32, U32, I64, U64), /* Integer types of different size: */
-  REP3 (TYPE_EL, F, D, LD),                             /* Float or (long) double type */
-  REP2 (TYPE_EL, P, BLK),                               /* Pointer, memory blocks */
-  TYPE_EL (RBLK) = TYPE_EL (BLK) + MIR_BLK_NUM,         /* return block */
-  TYPE_EL (V128),                                       /* 128-bit vector */
-  REP2 (TYPE_EL, UNDEF, BOUND),
-} MIR_type_t;
-
-static inline int MIR_int_type_p (MIR_type_t t) {
-  return (MIR_T_I8 <= t && t <= MIR_T_U64) || t == MIR_T_P;
-}
-
-static inline int MIR_fp_type_p (MIR_type_t t) { return MIR_T_F <= t && t <= MIR_T_LD; }
-
-static inline int MIR_vector_type_p (MIR_type_t t) { return t == MIR_T_V128; }
-
-static inline int MIR_reg_type_p (MIR_type_t t) {
-  return t == MIR_T_I64 || MIR_fp_type_p (t) || MIR_vector_type_p (t);
-}
-
-static inline int MIR_blk_type_p (MIR_type_t t) { return MIR_T_BLK <= t && t < MIR_T_RBLK; }
-static inline int MIR_all_blk_type_p (MIR_type_t t) { return MIR_T_BLK <= t && t <= MIR_T_RBLK; }
+#include "mir-type.h" /* MIR_type_t and its predicates */
 
 #if UINTPTR_MAX == 0xffffffff
 #define MIR_PTR32 1

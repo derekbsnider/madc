@@ -147,9 +147,7 @@ static MIR_reg_t get_arg_reg (MIR_type_t arg_type, size_t *int_arg_num, size_t *
   return arg_reg;
 }
 
-static void mir_blk_mov (uint64_t *to, uint64_t *from, uint64_t nwords) {
-  for (; nwords > 0; nwords--) *to++ = *from++;
-}
+/* mir_blk_mov, the "mir.blk_mov" helper: mir-aarch64-calls.c. */
 
 static MIR_reg_t target_get_stack_slot_base_reg (gen_ctx_t gen_ctx MIR_UNUSED) {
   return FP_HARD_REG;
