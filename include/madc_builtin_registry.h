@@ -158,6 +158,12 @@ DataDefENUM *declare_builtin_enum(Program &pgm, const BuiltinEnumDecl &d);
 DataDef *builtin_function_pointer(Program &pgm, DataDef *returns,
 				  std::initializer_list<BuiltinParam> params, unsigned flags);
 
+// A parameter's C++ spelling around a platform integer as generated code
+// writes it (the generator's NeutralTypeIdentities): `prefix`, the LOADING
+// madc's name for `dd` (glibc: int64_t, darwin: long long — what a parse on
+// its own target captures, and the mangler reads), `suffix`; interned.
+const char *builtin_platform_spelling(const char *prefix, DataDef *dd, const char *suffix);
+
 // A namespace-scope typedef whose aliased type keeps its shape (a function
 // pointer): what TokenTYPEDEF::parse's finish_alias + record_typedef register —
 // one TokenDataType under the bare alias and under the namespace, the alias

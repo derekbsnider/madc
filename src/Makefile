@@ -1326,6 +1326,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-fragment-inline-vars.sh
 	@cd .. && bash scripts/check-istring-fields.sh
 	@cd .. && bash scripts/check-module-exports.sh
+	@cd .. && bash scripts/check-neutral-tables.sh
 	@cd .. && bash scripts/check-one-style-vocabulary.sh
 	@cd .. && bash scripts/check-expect-twins.sh
 	@cd .. && bash scripts/check-runner-refuses-vacuous.sh
@@ -1622,7 +1623,9 @@ $(OBJDIR)/madc_crt.o $(PICOBJDIR)/madc_crt.o: DEFINES += -I$(OBJDIR)
 # STAGE-ONE madc — the same objects, linked with the empty table
 # (madc_builtin_registry_stage1.o) — into the obj tree, and compiled into
 # libmadc in that table's place. The generated code names DataDefs, never
-# sizes or symbols, so it is target-neutral: a mode that cannot run its own
+# sizes or symbols — int64_t / uint64_t by their accessors (the generator's
+# NeutralTypeIdentities; gate scripts/check-neutral-tables.sh) — so it is
+# target-neutral: a mode that cannot run its own
 # stage one (cross, hosted) generates it with the host's dev madc. The stamp
 # moves the generated file only when its text changed, so an object edit
 # relinks stage one without recompiling the table.

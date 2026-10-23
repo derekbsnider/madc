@@ -150,6 +150,11 @@ DataDef *builtin_function_pointer(Program &pgm, DataDef *returns,
     return pgm.getPointerType(fn);
 }
 
+const char *builtin_platform_spelling(const char *prefix, DataDef *dd, const char *suffix)
+{
+    return madc::dis::istring((std::string(prefix) + dd->name.c_str() + suffix).c_str()).c_str();
+}
+
 DataDef *declare_builtin_typedef(Program &pgm, const char *ns, const char *name,
 				 DataDef *aliased)
 {
@@ -523,6 +528,59 @@ static bool namespace_type_identity(Program &pgm, DataDef *dd, madc::dis::istrin
 static bool function_pointer_expr(Program &pgm, DataDefFPTR *fp, std::string &expr,
 				  std::string &err);
 
+// A platform integer (datadef.h: the distinct `long` / `long long` a target
+// mints where it needs one) by its accessor — the loading madc's own type.
+// False for a type no target reshapes (piNONE).
+static bool platform_integer_expr(PlatformInteger pi, std::string &expr)
+{
+    switch ( pi )
+    {
+	case PlatformInteger::piLONG:      expr = "dd_platform_long()"; return true;
+	case PlatformInteger::piULONG:     expr = "dd_platform_ulong()"; return true;
+	case PlatformInteger::piLONGLONG:  expr = "dd_platform_longlong()"; return true;
+	case PlatformInteger::piULONGLONG: expr = "dd_platform_ulonglong()"; return true;
+	case PlatformInteger::piNONE:      break;
+    }
+    return false;
+}
+
+// A parameter's C++ spelling as generated code. The mangler reads it
+// (FuncDef::mangle_spelling_for), and a platform integer at its core spells
+// as the generator's NeutralTypeIdentities name it ("long long") — so that
+// name is written through the type's accessor and the loading madc spells it
+// as a parse on its own target does (glibc: int64_t, darwin: long long).
+// Every other spelling is its literal.
+static std::string spelling_expr(DataDef *dd, const char *sp)
+{
+    DataDef *core = dd;
+    while ( core )
+    {
+	// a function pointer's captured spelling is its return's (an abstract
+	// declarator captured as its base type)
+	if ( DataDefFPTR *f = core->as_fptr_dd() )
+	    core = f->target ? &f->target->returns : NULL;
+	else if ( DataDefREF *r = core->as_reference_dd() )
+	    core = r->base_type;
+	else if ( DataDefQUAL *q = core->as_qualified_dd() )
+	    core = q->base_type;
+	else if ( DataDefPTR *p = core->as_pointer_dd() )
+	    core = p->base_type;
+	else
+	    break;
+    }
+    std::string acc;
+    if ( !core || !platform_integer_expr(core->platform_integer(), acc) )
+	return cpp_literal(sp);
+    const std::string s = sp, name = core->name.c_str();
+    size_t at = s.find(name);
+    if ( at == std::string::npos )
+	return cpp_literal(sp);
+    if ( at == 0 && s.size() == name.size() )
+	return acc + "->name.c_str()";
+    return "builtin_platform_spelling(" + cpp_literal(s.substr(0, at).c_str()) + ", " + acc
+	 + ", " + cpp_literal(s.substr(at + name.size()).c_str()) + ")";
+}
+
 // A type as the C++ expression that yields it in a builder's Program `pgm`:
 // a singleton by identity, a layered type through its one minting owner
 // (getQualifiedType / getReferenceType / getPointerType) over its base. The
@@ -555,16 +613,8 @@ static bool type_expr(Program &pgm, DataDef *dd, std::string &expr, std::string 
 	    expr = singletons[i].spelled;
 	    return true;
 	}
-    // A platform integer (datadef.h: the distinct `long` / `long long` a target
-    // mints where it needs one) by its accessor — the loading madc's own type.
-    switch ( dd->platform_integer() )
-    {
-	case PlatformInteger::piLONG:      expr = "dd_platform_long()"; return true;
-	case PlatformInteger::piULONG:     expr = "dd_platform_ulong()"; return true;
-	case PlatformInteger::piLONGLONG:  expr = "dd_platform_longlong()"; return true;
-	case PlatformInteger::piULONGLONG: expr = "dd_platform_ulonglong()"; return true;
-	case PlatformInteger::piNONE:      break;
-    }
+    if ( platform_integer_expr(dd->platform_integer(), expr) )
+	return true;
     std::string base;
     if ( DataDefQUAL *q = dd->as_qualified_dd() )
     {
@@ -632,7 +682,7 @@ static bool function_pointer_expr(Program &pgm, DataDefFPTR *fp, std::string &ex
 	if ( !type_expr(pgm, fd->parameters[i], t, err) )
 	    return false;
 	expr += std::string(i ? ", " : " ") + "{ " + t + ", "
-	      + cpp_literal(fd->param_cpp_spellings[i].c_str()) + ", "
+	      + spelling_expr(fd->parameters[i], fd->param_cpp_spellings[i].c_str()) + ", "
 	      + (fd->const_params[i] ? "true" : "false") + ", "
 	      + (i < fd->param_typedef_names.size()
 		 ? cpp_literal(fd->param_typedef_names[i].c_str()) : std::string("NULL"))
@@ -1688,8 +1738,8 @@ static void emit_params(std::ostream &out, Program &live, FuncDef *fd)
     {
 	type_expr(live, fd->parameters[i], expr, err);
 	out << "\t    { " << expr << ", "
-	    << cpp_literal(i < fd->param_cpp_spellings.size()
-			   ? fd->param_cpp_spellings[i].c_str() : "") << ", "
+	    << spelling_expr(fd->parameters[i], i < fd->param_cpp_spellings.size()
+			     ? fd->param_cpp_spellings[i].c_str() : "") << ", "
 	    << (( i < fd->const_params.size() && fd->const_params[i] ) ? "true" : "false") << ", "
 	    << ( i < fd->param_typedef_names.size()
 		 ? cpp_literal(fd->param_typedef_names[i].c_str()) : std::string("NULL") )
@@ -2043,8 +2093,28 @@ static size_t emit_fragment_words(std::ostream &out, Program &pgm)
     return rows.size();
 }
 
+// The generated tables are TARGET-NEUTRAL: one table serves every target — a
+// cross build's registry comes from the build host's madc (src/Makefile), the
+// module tables from one shared directory (src/madc_modules.mk) — and the
+// LOADING madc's accessors give each type its own target's identity. So the
+// generator parses with the int64 alias that keeps int64_t / uint64_t apart
+// from long (darwin's, TargetInt64Alias::LongLong): type_expr then writes them
+// by their accessors at every layer (a parameter, a reference, a function
+// pointer's return), which a glibc madc answers with &ddINT64 and darwin's
+// with its distinct long long (Itanium x, the host's exports). In effect
+// before the generator's first Program: the lexer binds int64_t's token once
+// per process.
+struct NeutralTypeIdentities
+{
+    TargetInt64Alias saved;
+    NeutralTypeIdentities() : saved(madc_target_int64_alias)
+    { madc_target_int64_alias = TargetInt64Alias::LongLong; }
+    ~NeutralTypeIdentities() { madc_target_int64_alias = saved; }
+};
+
 bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 {
+    NeutralTypeIdentities neutral;
     DialectTextParse dp;
     std::string err;
     if ( !parse_dialect_as_text(dp, err) )
@@ -2077,6 +2147,7 @@ bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 
 bool emit_module_table(std::ostream &out, std::ostream &diag, const std::string &face)
 {
+    NeutralTypeIdentities neutral;
     DialectTextParse dp;
     std::string err;
     if ( !parse_module_as_text(dp, face, err) )
