@@ -1,25 +1,28 @@
 # Test Status
 
-0.106.0 seam battery, with the release-seam fixes (2026-10-22, `89ba23129` content on
+0.106.0 seam battery, with the release-seam fixes (2026-10-23, `9adba41c5` content on
 `feature/dialect-faces-claude`: the `Release v0.106.0` commit `c056a3937` plus the pack
 fixes `ecb30bafd` (a pack-bound struct's one-element / flexible array member) and
 `2ad1c9428` (forest v76: an arm inside a declaration does not replay at the include site),
-their cost refinement `085b0f3b0`, and the B229 fix `89ba23129` (a C++ program with
-destructors needs no madc library: the unwind personality rides the image)): static gates 0
-red of 117, `make gates` green (forest_bind_gate 48/48; forest_ledger_gate legs 6c/6d),
-parse-cost 0 red of 21. Linux packed madc-release 0.106.0
-headerless 2109 passed, 0 failed, 69 skipped + ondisk 60/0; exeobj JIT 2169/0/9skip, EXE
-1942/0, OBJ 1942/0. headerless-win (packed PE under wine) 2049/0/129skip + ondisk-win
-27/0/33skip; wine64 (hosted PE) 2076/0/102skip; genuine Windows 11 full suite
-2047/0/130skip with 1 timeout (`testmembertmpldefault`, no exceptions or destructors, green
-re-run alone on the same box). Conformance re-measured on the final binary: c23-compile 38,
-c23-run 40, torture-c23 1493, cpp2a 350 (unchanged from the `c056a3937` measure).
-darwin-suite native libc++: arm64 Mac Mini (macOS 14) 2122/0/56skip + mac battery 12/0, Intel
-MacBook (macOS 15) 2125/0/53skip + mac battery 12/0. Interactive subset: Linux 61/0 + units
-7/0 (packed 61/0), Windows 55/0/6skip, both Macs 59/0/2skip. Homebrew lane 2169/0/9skip.
+their cost refinement `085b0f3b0`, the B229 fix `89ba23129` (a C++ program with destructors
+needs no madc library: the unwind personality rides the image) and the B232 fix `9adba41c5`
+(x86-64: every function and innermost loop head starts a 32-byte block)): static gates 0
+red of 117, `make gates` green (forest_bind_gate 48/48; forest_ledger_gate legs 6c/6d;
+loop_align_gate), parse-cost 0 red of 21. Linux packed madc-release 0.106.0
+headerless 2110 passed, 0 failed, 69 skipped + ondisk 60/0; exeobj JIT 2170/0/9skip, EXE
+1943/0, OBJ 1943/0. headerless-win (packed PE under wine) 2050/0/129skip + ondisk-win
+27/0/33skip; wine64 (hosted PE) 2077/0/102skip; genuine Windows 11 full suite
+2049/0/130skip. Conformance re-measured on the final binary: c23-compile 38, c23-run 40,
+torture-c23 1493, cpp2a 350 (unchanged from the `c056a3937` measure).
+darwin-suite native libc++: arm64 Mac Mini (macOS 14) 2123/0/56skip + mac battery 12/0, Intel
+MacBook (macOS 15) 2126/0/53skip + mac battery 12/0. Interactive subset: Linux 61/0 + units
+7/0 (packed 61/0), Windows 55/0/6skip, both Macs 59/0/2skip. Homebrew lane 2170/0/9skip.
 Fast lanes at baseline (c-testsuite 220/0, c-torture 1620 with 5 baseline, c2mir 368/0/4,
 gui 13/13, gxx-c++11 1505, index-c 50/50, commonmark 664/6). macOS build and aarch64-ld
-green. tests-jit (batch) = the exeobj stage, 2169/0/9skip. A C-pack differential (6 feature
+green. tests-jit (batch) = the exeobj stage, 2170/0/9skip. Execution against packaged 0.105.0
+(-O2 native, best of 5 interleaved, outputs identical): geometric mean 0.988 over 19
+benchmarks; virtual-call is placement-bound in both (426-527 ms over code shifts on 0.105.0,
+416-500 ms on 0.106.0). A C-pack differential (6 feature
 macros x every ordered pair of the 30 C-pack headers, 5220 compiles) has no compile the live
 headers accept and the pack refuses. Untracked known-RED `testnoreturn_c11` excluded
 throughout.
