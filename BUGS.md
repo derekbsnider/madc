@@ -2846,6 +2846,25 @@ int main(void) { return x; }
 
 ## Performance
 
+### B233. parse-cost `c_headers.forest` drifted +0.50% past its baseline
+
+- `scripts/parse_cost/c_headers.c` with the pack: 34,990,638 Ir at the
+  baseline's record (`acb5da696`, 2026-10-21) -> 35,162,211 at `9adba41c5`
+  (+0.49%, the 0.106.0 seam battery green) -> 35,166,460 at `c8ce207ae`
+  (+0.50%: red at the 0.5% tolerance). The same row without the pack
+  (`c_headers.live`) is +0.08%, so the growth is in the pack-bind path; the
+  candidates are the pack-bind fixes of 2026-10-22 (`6f7329dc0`, `fb2755787`,
+  `94f9a664b`, `7915e1be2`, `55909b864`, `2ad1c9428`, `085b0f3b0`).
+- Not a regression against the last release: 0.105.0 runs the row at
+  244,988,067 Ir, and every other row is cheaper than 0.105.0 too.
+- To find it: build `acb5da696` and HEAD packed and unstripped
+  (`PATH=tmp/nostrip:$PATH make -C src release` in the container's
+  `tmp/cost_sweep` clone; that clone's own uncommitted edits sit in its stash
+  "pc231: kept before the acb5da696/c8ce207ae sweep"), callgrind the row on
+  each, diff per function (`tmp/cg_diff.sh`). Then win it back, or the
+  operator accepts the baseline (`parse_cost_gate.sh --record
+  --accept-increase`). Owner 2026-10-23: noted, to come back to after 0.106.0.
+
 ### B226. The main source file's first buffer is read twice
 
 - `strace madc test.c` (one `#include`): `read` 8191, `lseek(0, SEEK_SET)`,

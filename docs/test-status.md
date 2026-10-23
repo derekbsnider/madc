@@ -1,28 +1,35 @@
 # Test Status
 
-0.106.0 seam battery, with the release-seam fixes (2026-10-23, `9adba41c5` content on
+0.106.0 seam battery, with the release-seam fixes (2026-10-23, `c8ce207ae` content on
 `feature/dialect-faces-claude`: the `Release v0.106.0` commit `c056a3937` plus the pack
 fixes `ecb30bafd` (a pack-bound struct's one-element / flexible array member) and
 `2ad1c9428` (forest v76: an arm inside a declaration does not replay at the include site),
 their cost refinement `085b0f3b0`, the B229 fix `89ba23129` (a C++ program with destructors
-needs no madc library: the unwind personality rides the image) and the B232 fix `9adba41c5`
-(x86-64: every function and innermost loop head starts a 32-byte block)): static gates 0
-red of 117, `make gates` green (forest_bind_gate 48/48; forest_ledger_gate legs 6c/6d;
-loop_align_gate), parse-cost 0 red of 21. Linux packed madc-release 0.106.0
-headerless 2110 passed, 0 failed, 69 skipped + ondisk 60/0; exeobj JIT 2170/0/9skip, EXE
-1943/0, OBJ 1943/0. headerless-win (packed PE under wine) 2050/0/129skip + ondisk-win
-27/0/33skip; wine64 (hosted PE) 2077/0/102skip; genuine Windows 11 full suite
-2049/0/130skip. Conformance re-measured on the final binary: c23-compile 38, c23-run 40,
-torture-c23 1493, cpp2a 350 (unchanged from the `c056a3937` measure).
+needs no madc library: the unwind personality rides the image), the B232 fix `9adba41c5`
+(x86-64: every function and innermost loop head starts a 32-byte block) with its
+branch-estimate follow-up `ebeba1ceb`, and the B231 fix `c8ce207ae` (the personality's
+object rides the pack's ledger, generated once by the freezer, merged into each -c / -o
+output)): static gates 0 red of 117, `make gates` green (forest_ledger_gate 32 legs incl.
+6c/6d/7b; loop_align_gate), parse-cost 1 red of 21 (`c_headers.forest` +0.50% against its
+2026-10-21 baseline, B233; the row is 35.2M Ir against 0.105.0's 245.0M). Linux packed
+madc-release 0.106.0 headerless 2110 passed, 0 failed, 69 skipped + ondisk 60/0; exeobj
+JIT 2170/0/9skip, EXE 1943/0, OBJ 1943/0. headerless-win (packed PE under wine)
+2050/0/129skip + ondisk-win 27/0/33skip; wine64 (hosted PE) 2077/0/102skip; genuine
+Windows 11 full suite 2049/0/130skip (a first run's 9 timeouts were host load during a
+large file move; green on the full rerun). Conformance re-measured on the final binary:
+c23-compile 38, c23-run 40, torture-c23 1493, cpp2a 350 (unchanged).
 darwin-suite native libc++: arm64 Mac Mini (macOS 14) 2123/0/56skip + mac battery 12/0, Intel
 MacBook (macOS 15) 2126/0/53skip + mac battery 12/0. Interactive subset: Linux 61/0 + units
 7/0 (packed 61/0), Windows 55/0/6skip, both Macs 59/0/2skip. Homebrew lane 2170/0/9skip.
 Fast lanes at baseline (c-testsuite 220/0, c-torture 1620 with 5 baseline, c2mir 368/0/4,
 gui 13/13, gxx-c++11 1505, index-c 50/50, commonmark 664/6). macOS build and aarch64-ld
-green. tests-jit (batch) = the exeobj stage, 2170/0/9skip. Execution against packaged 0.105.0
-(-O2 native, best of 5 interleaved, outputs identical): geometric mean 0.988 over 19
-benchmarks; virtual-call is placement-bound in both (426-527 ms over code shifts on 0.105.0,
-416-500 ms on 0.106.0). A C-pack differential (6 feature
+green. tests-jit (batch) = the exeobj stage, 2170/0/9skip. Against packaged 0.105.0, measured
+before the long suites: execution (-O2 native, best of 5 interleaved, outputs identical)
+geometric mean 0.985 over 19 benchmarks, every mover re-measured over 5-6 code placements
+(heapsort 1.005, funnkuch-reduce 0.933, virtual-call 0.993, hash 1.005, lists 0.996);
+compile wall time (best of 9 interleaved) geometric mean 0.799 over 16 rows, none slower
+(-c hello.cpp 84 -> 81 ms, smaug act_wiz.c 234 -> 198 ms); `madc-release -c hello.cpp`
+473.1M -> 453.0M Ir from B231. A C-pack differential (6 feature
 macros x every ordered pair of the 30 C-pack headers, 5220 compiles) has no compile the live
 headers accept and the pack refuses. Untracked known-RED `testnoreturn_c11` excluded
 throughout.
