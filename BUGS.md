@@ -2999,6 +2999,22 @@ Same reducer as B234, without the `#line`.
 
 ## Build and packaging
 
+### B239. macOS tarball: `--no-embedded-headers` finds no C++ headers on disk
+
+- Found 2026-10-23 running the full suite on the SHIPPED 0.106.0
+  `madc-0.106.0-macos-arm64.tar.gz` on the arm64 Mac Mini (macOS 14):
+  2101 passed, 23 failed. The 23 are `testnoreturn_c11` (known RED) and 22 of
+  the 30 tests whose `.flags` say `--no-embedded-headers`: every one that
+  includes a C++ header (`teststdmapint`: `Failed to open include file: map`);
+  the C-header ones pass. The x86_64 tarball on the Intel MacBook (macOS 15)
+  fails the same 23 (2104 passed).
+- The natively built madc on the same Mac passes all of them (darwin-suite
+  2123/0); the 0.105.0 tarball and the earlier 0.106.0 tarball (`60679aed1`)
+  fail the same 23 — not a regression.
+- Where: the tarball is cross-built on the container; its on-disk C++ header
+  directories are the build's, not the user's Mac (the SDK's `usr/include/c++/v1`,
+  found as clang finds it: SDKROOT, `xcrun --show-sdk-path`, the CLT SDK).
+
 ### B237. win64: a C program calling printf needs libmadc-0.dll
 
 ```c
