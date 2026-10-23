@@ -51,10 +51,12 @@ madc                         # the REPL
   g++ or clang++ would have finished linking (see [Speed](#speed)). A
   `#!/usr/bin/env madc` line makes a source file an executable script.
 - **AOT.** `-o` writes the executable itself; there is no linker to call. On
-  Linux and Windows a C++ hello-world is a 22 KB executable that needs only
-  the C and C++ runtime libraries, not madc (on macOS it still needs
-  libmadc). `-c` objects use the Itanium C++ ABI and
-  real mangled names, so they link with g++- and clang++-built code.
+  Linux a C hello-world is a 10 KB executable that needs only the C library,
+  and the C++ one above is 22 KB and needs only the C and C++ runtime
+  libraries — not madc. Windows matches for C++ (a C program calling
+  `printf` still needs libmadc there); on macOS a C program needs only
+  libSystem, and C++ still needs libmadc. `-c` objects use the Itanium C++
+  ABI and real mangled names, so they link with g++- and clang++-built code.
 - **C11 out.** `--emit=c11` renders any program, C++ included, as strict
   C11 that any C compiler accepts.
 - **REPL.** `madc` with no file is an interactive C and C++ session:
@@ -131,19 +133,26 @@ then running. For objects, g++/gcc and clang++/clang run at `-O0` and madc
 at its default, `-O1`. madc's edge is C++ headers: they are parsed once,
 when madc is built, not on every compile. On large C files clang is faster.
 
-Generated code runs at about 78% of the speed of `gcc -O2` on MIR's C
-benchmark set (geometric mean; madc wins some). Method, every row and the
-history: [docs/benchmarks](docs/benchmarks/README.md).
+SQLite 3.54.0's amalgamation (`sqlite3.c`, 271,072 lines of C) compiles to
+an object in 1.9 s at `-O0` (gcc 3.0 s, clang 1.0 s) and in 3.2 s at `-O2` —
+five times faster than gcc (16.8 s) and clang (15.7 s) at `-O2`.
+
+Generated code runs at about 81% of the speed of `gcc -O2` on MIR's C
+benchmark set (geometric mean; madc ties or beats gcc on five of fifteen).
+Method, every row and the history:
+[docs/benchmarks](docs/benchmarks/README.md).
 
 ## Compatibility
 
-Measured on test suites madc does not own — gcc's own testsuite and the
-third-party c-testsuite:
+Measured on test suites madc does not own — gcc's own testsuite, the
+third-party c-testsuite, and SQLite's own tests run on a SQLite that madc
+built:
 
 | corpus | standard | passing |
 |---|---|---:|
 | gcc `c-torture/execute` | C17 | **99.2%** (1611 of 1624) |
 | [c-testsuite](https://github.com/c-testsuite/c-testsuite) `single-exec` | C11 | **100%** (220 of 220) |
+| SQLite 3.54.0 `veryquick.test`, its `testfixture` built by madc | C | **394,058 of 394,060** — the same two fail when gcc or clang builds it |
 | `g++.dg/template` | C++98 | 81.3% |
 | `g++.dg/cpp0x` + `template` | C++11 | 77.3% |
 | `g++.dg/cpp1y` | C++14 | 51.3% |
