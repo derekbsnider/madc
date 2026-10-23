@@ -926,6 +926,185 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+Redis 8.10.2 (`make MALLOC=libc CC=madc`, 2026-10-23, madc 0.106.0 at
+`787813947`) stops on B241-B250 (B247, the option gaps, is under
+Diagnostics); gcc 13 builds it in 25 s. Each reproduces on 0.105.0: none is a regression. Redis's own flag is
+`-std=c99`, so these entries were measured with `-std=c99` against `gcc
+-std=c99` / `clang -std=c99`.
+
+### B241. A quoted include from a bare source name searches the system directories before the includer's
+
+```c
+/* quotedinc.c, beside a local limits.h holding: #define QUOTEDINC_LOCAL_LIMITS 42 */
+#include "limits.h"
+#include <stdio.h>
+int main(void) { printf("local header=%d\n", QUOTEDINC_LOCAL_LIMITS); return 0; }
+```
+
+- Run from its own directory as `madc quotedinc.c` (make's spelling, `cc -c
+  foo.c`): `use of undeclared identifier 'QUOTEDINC_LOCAL_LIMITS'`; the
+  system `<limits.h>` was read. `madc ./quotedinc.c` or an absolute path:
+  `local header=42`. gcc 13 and clang 18, either spelling: `local header=42`
+  (C11 6.10.2p3: the includer's directory first, then `-iquote`, `-I`, the
+  system directories).
+- Redis: `src/sha256.c` and `src/sha1.c` read libmd's `/usr/include/sha256.h`
+  / `sha1.h` (strace) instead of Redis's own, and hiredis, `sds.c`, `util.c`
+  and every `server.h` user fail behind it — most of Redis's ~42k cascading
+  errors. With a header of the same name and a compatible shape the program
+  compiles against the WRONG header: this can go silent.
+- Where: the includer-directory step of the quoted-include search takes the
+  current file's directory from its spelled path; a path with no directory
+  component yields an empty one and the step is skipped.
+
+### B242. A block-scope typedef of an anonymous struct or union is refused by the CIR builder
+
+```c
+#include <stdio.h>
+int main(void)
+{
+	typedef struct { unsigned int index, order; } pick;
+	typedef union { unsigned char c[4]; unsigned int l; } word;
+	pick p = {7, 9};
+	word w;
+	w.l = 0x01020304u;
+	printf("pick=%u,%u size=%d word=%d,%d\n", p.index, p.order, (int)sizeof(pick), (int)sizeof w, w.c[0] + w.c[3]);
+	return 0;
+}
+```
+
+- gcc 13 and clang 18: `pick=7,9 size=8 word=4,5`. madc: `cir error:
+  unhandled expression: TokenStructDef (CIR builder has no translation for this
+  construct; token type 27, id 0)` at each typedef.
+- Redis: `sha1.c:58` (`CHAR64LONG16`), `ziplist.c:1602` and `listpack.c:1966`
+  (`rand_pick`).
+- Where: the CIR builder's statement lowering meets the typedef's struct
+  definition as an expression; a block-scope struct definition is a
+  declaration to emit at block scope.
+
+### B243. A type qualifier after a struct or union body is refused
+
+```c
+#include <stdio.h>
+static union { int dummy; char endian; } const native = {1};
+struct pt { int x, y; } volatile vp = {3, 4};
+int main(void) { printf("endian=%d vp=%d\n", native.endian, vp.x + vp.y); return 0; }
+```
+
+- gcc 13 and clang 18: `endian=1 vp=7`. madc: `Expecting variable name or ';'
+  after struct definition` at `const` and at `volatile`, then `native`
+  undeclared. A storage class in the same place (`struct { int a; } static
+  sa;`) is accepted.
+- Redis: `deps/lua/src/lua_struct.c:79`.
+- Where: the declaration-specifier reader after a struct/union body (C11 6.7:
+  the specifiers and qualifiers come in any order).
+
+### B244. `<limits.h>` lacks `SSIZE_MAX` and `IOV_MAX`
+
+```c
+#define _XOPEN_SOURCE 600
+#define _POSIX_C_SOURCE 200112L
+#include <limits.h>
+#include <stdio.h>
+int main(void) { printf("SSIZE_MAX=%lld IOV_MAX=%d\n", (long long)SSIZE_MAX, (int)IOV_MAX); return 0; }
+```
+
+- gcc 13 and clang 18: `SSIZE_MAX=9223372036854775807 IOV_MAX=1024`. madc:
+  `use of undeclared identifier 'SSIZE_MAX'`; with `_GNU_SOURCE` alone,
+  `IOV_MAX` undeclared too.
+- Redis: `deps/hiredis/sds.c:731`, `src/config.c:3611` (SSIZE_MAX);
+  `networking.c:2600`, `socket.c:61`, `unix.c:81` (IOV_MAX).
+- Where: the embedded `limits.h` (glibc's own: `bits/posix1_lim.h` under
+  `__USE_POSIX`, `bits/xopen_lim.h` under `__USE_XOPEN`).
+
+### B245. A VLA of pointers to an incomplete struct asks c2mir for the struct's size
+
+```c
+#include <stdio.h>
+struct opaque;
+static int count(int n)
+{
+	struct opaque *p[n];
+	int i;
+	for (i = 0; i < n; i++)
+		p[i] = (struct opaque *)0;
+	return (int)(sizeof p / sizeof p[0]) + (p[n - 1] == 0);
+}
+int main(void) { printf("count=%d\n", count(5)); return 0; }
+```
+
+- gcc 13 and clang 18: `count=6`. madc: c2mir `sizeof of incomplete type
+  requested` and `incompatible types in assignment to a pointer` at the
+  declaration.
+- Redis: `evict.c:136` (`dictEntry *samples[server.maxmemory_samples]`).
+- Where: the VLA lowering (`__builtin_alloca(n * sizeof(...))`) sizes the
+  pointer's POINTEE; the element type is the pointer.
+
+### B246. glibc's transparent-union socket-address parameters are refused under `_GNU_SOURCE`
+
+```c
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+int main(void)
+{
+	struct sockaddr_un un;
+	struct sockaddr *sa = (struct sockaddr *)&un;
+	socklen_t len = sizeof un;
+	int s = socket(AF_UNIX, SOCK_STREAM, 0);
+	memset(&un, 0, sizeof un);
+	un.sun_family = AF_UNIX;
+	int r = getsockname(s, sa, &len);
+	printf("socket=%d getsockname=%d family=%d\n", s >= 0, r, un.sun_family);
+	close(s);
+	return 0;
+}
+```
+
+- gcc 13 and clang 18: `socket=1 getsockname=0 family=1`. madc: c2mir
+  `incompatible argument type for struct/union type parameter` at the call.
+- Redis: `anet.c:503` (`bind`), `:609` (`accept4`), `:670`, `:672`.
+- Where: glibc declares `__SOCKADDR_ARG` as a `__transparent_union__` under
+  `__USE_GNU`; a pointer argument to a transparent-union parameter passes as
+  the union's first member (gcc's ABI), never as a struct/union by value.
+
+### B248. SSE2 intrinsics through gcc's `<emmintrin.h>`: vector-to-vector casts are refused
+
+- Redis's `deps/xxhash` takes its SSE2 path (`__SSE2__` is predefined, as by
+  gcc) and includes `/usr/lib/gcc/x86_64-linux-gnu/13/include/emmintrin.h`
+  from disk. c2mir refuses its casts: `conversion to non-scalar type
+  requested` at `emmintrin.h:1180` (`_mm_mul_epu32`, `(__m128i)
+  __builtin_ia32_pmuludq128(...)`), `:1198` (`_mm_slli_epi64`), `:1263`
+  (`_mm_srli_epi64`). A plain `_mm_set1_epi32` / `_mm_add_epi32` /
+  `_mm_storeu_si128` program runs (`sse2 7 7`, as gcc).
+- Two questions behind it: a cast between same-size vector types (a
+  bit reinterpretation in gcc), and the `__builtin_ia32_*` set those
+  intrinsics call. The header is a compiler header read from disk, not from
+  libmadc.
+
+### B249. Redis `dict.c`: madc emits `struct dictEntry`'s definition twice
+
+- `src/dict.c` (Redis 8.10.2): c2mir `tag dictEntry redeclaration`. `madc
+  --emit=c11 ./dict.c` defines `struct dictEntry` at line 21 (as `typedef
+  struct dictEntry { ... }`, where `dict.h:68`'s opaque `typedef struct
+  dictEntry dictEntry;` stands) and again at line 180 (its definition,
+  `dict.c:49`).
+- A reducer of the same shape (opaque typedef in front, definition later, a
+  twin struct and `_Static_assert(offsetof(...))` over both) compiles and runs
+  as gcc: the trigger is not narrowed yet.
+
+### B250. Redis `config.c:573`: `config->name` resolves `config` to the `char *` parameter
+
+- `src/config.c` (Redis 8.10.2), `loadServerConfigFromString(char *config)`:
+  inside, a loop-body `standardConfig *config` shadows the parameter, and its
+  else-branch declares `for (deprecatedConfig *config = deprecated_configs;
+  config->name != NULL; config++)`. madc: `member reference type 'char' is not
+  a structure or union (member 'name')`.
+- A reducer of the same three-level shadowing compiles and runs as gcc
+  (`n=10`): the trigger is not narrowed yet.
+
 ### B227. Throwing or catching an aggregate class (no user-declared constructor) is refused
 
 ```cpp
@@ -2897,6 +3076,24 @@ Same reducer as B234, without the `#line`.
 - Found 2026-10-23 with B234/B235.
 - Where: a row in madc's option table (`src/madc_cli.cpp`, read by
   `madc::cli::parse`) and a driver mode that stops after the front end.
+
+### B247. Common gcc driver flags are refused, so a gcc Makefile stops before compiling
+
+- madc 0.106.0 refuses (exit 1): `-Os` `-Oz` `-Og` `-Ofast` (`invalid value
+  's' for '-O': expected one of 0, 1, 2, 3`); `-ggdb` and `-g3`; `-pedantic`;
+  `-MMD` `-MD` `-MP` `-MF f` `-MT t` (no dependency files);
+  `-flto=auto`; `-fno-omit-frame-pointer`; `-Werror` and `-Werror=...`
+  (`not supported (madc's warnings are never errors)`). gcc 13 accepts every
+  one. 0.105.0 read each of them as a file name, so none is a regression.
+- Redis 8.10.2 passes all of them (`-O3 -flto=auto -ffat-lto-objects
+  -fno-omit-frame-pointer -g -ggdb -pedantic -Werror=deprecated-declarations`,
+  deps `-Os`, hiredis `-Werror`, xxhash `-MMD -MP -MF -MT`): the build stops in
+  1 s before any source error.
+- Where: rows in madc's option table (`src/madc_cli.cpp`): `-Os/-Oz/-Og` as
+  the nearest level, `-Ofast` as `-O3`, `-ggdb*`/`-g1..3` as `-g`, `-pedantic`
+  accepted (madc has no pedantic diagnostics yet), the `-M` family writing a
+  make dependency file, `-flto*`/`-f[no-]omit-frame-pointer` accepted and
+  ignored, `-Werror` decided by the owner (gcc: warnings become errors).
 
 ## Performance
 
