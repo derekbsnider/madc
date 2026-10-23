@@ -2876,6 +2876,20 @@ Same reducer as B234, without the `#line`.
 - Where: the call's argument conversion in the parser; the warning belongs
   there, in gcc's form, so c2mir never sees a call it has to complain about.
 
+### B240. `madc -v` dumps the parser's debug trace and opens the REPL — next release
+
+- `madc -v` alone, on a terminal: ~950 lines of internal DBG trace (struct
+  layouts, every built-in declared), then the REPL (`madc 0.106.0. Ctrl-D
+  exits.`) in verbose mode. 0.105.0 does the same.
+- gcc 13 / clang 18 `-v` alone: version, target, thread model, configuration
+  (clang: InstalledDir), exit 0. With a source, `-v` shows the driver's steps
+  and the include search list — never compiler internals.
+- Owner 2026-10-23: "it's really weird that it does now" — next release.
+- Where: madc's option table (`src/madc_cli.cpp`): `-v` alone = the version
+  and configuration report, exit 0; `-v` with input = gcc's verbose (search
+  list, steps); the DBG trace (`madc_set_verbose`) moves to its own developer
+  flag.
+
 ### B236. `-fsyntax-only` is refused
 
 - `madc -fsyntax-only x.c`: `madc: error: unrecognized command-line option
