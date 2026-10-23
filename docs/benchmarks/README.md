@@ -201,9 +201,10 @@ on which sources were picked:
 **madc compiles every row 29–48% faster than gcc `-O0`.** The frozen header
 forest earns the large-file rows: gcc re-parses the system headers on every
 TU, madc does not. clang `-O0` is still faster on the large C files (act_wiz
-156 ms, build 127, db 119). Since 0.106.0 a C++ `-c` compile also generates
-the unwind personality into its object (~3 ms; B231 moves it to a prebuilt
-object).
+156 ms, build 127, db 119). These rows predate B231: in the released 0.106.0
+a C++ `-c` compile merges the unwind personality's prebuilt object from the
+release pack instead of generating it (~3 ms less on `hello.cpp`; 473.1M →
+453.0M instructions).
 
 Two traps this table records so they are not rediscovered:
 
