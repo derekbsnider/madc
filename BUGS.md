@@ -1118,6 +1118,31 @@ int main(void)
   image. The madcide 0.9.0 main run (40047290850) passed it on Intel macOS. The arm64
   and Linux jobs passed. The failure rate is not measured yet.
 
+### B252. C11 `_Atomic` is refused, so `<stdatomic.h>` is too
+
+- `_Atomic long q;` → `use of undeclared identifier '_Atomic'`; `_Atomic(int) qs;`
+  → `Expecting identifier` (madc 0.106.1 `madc-release`, JIT and `-o` exe).
+  `src/madc_keywords.cpp` lists `_Atomic` as a C11 keyword. gcc 13: four threads ×
+  1,000,000 `q++` / `qs += 1` = 4000000 each (clang: `q++` 4000000 too).
+- `#include <stdatomic.h>` fails on its first `typedef _Atomic _Bool atomic_bool;`.
+  The header is read from DISK, `/usr/lib/gcc/x86_64-linux-gnu/13/include/stdatomic.h`:
+  libmadc carries no `stdatomic.h`, against the system-headers-from-libmadc law.
+- The atomic machinery underneath works: the `__atomic_*` / `__sync_*` builtins
+  lower to gcc-compiled `__madc_atomic_*` helpers (src/va_helpers.cpp), and C++
+  `std::atomic` over pthreads matches g++ (fetch_add, ++, atomic_flag spinlock,
+  compare_exchange, is_lock_free), JIT and exe. c2mir accepts the `_Atomic`
+  qualifier without atomic codegen and refuses `_Atomic(T)`; MIR has no atomic
+  instructions. So `_Atomic` objects must lower to those helpers in madc.
+- Reducer: container `tmp/atom/atom_q.c`, `tmp/atom/atom_c.c`.
+
+### B253. `std::vector<std::thread>::emplace_back(lambda)` is refused
+
+- `t.emplace_back([] { ... });` over `std::vector<std::thread> t;` →
+  `cir error: parse-once internal: tsubst bailed on the covered instantiation ...
+  std::__new_allocator::construct<_Up,_Args...> [why: use of deleted copy
+  constructor] @/usr/include/c++/13/bits/new_allocator.h:190`. g++ 13: compiles and
+  runs. Reducer: container `tmp/atom/atom_cpp.cpp`.
+
 ### B227. Throwing or catching an aggregate class (no user-declared constructor) is refused
 
 ```cpp
