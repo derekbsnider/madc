@@ -8152,7 +8152,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// The intern spine compresses only in the appended pack
 		// (owner-approved ~7ms-per-process trade; dev freezes keep
 		// zero-copy binds).
-		bool staged = cir_forest_write(f, w, codec, pack_level, append && packed);
+		bool staged = cir_forest_write(f, w, codec, pack_level, append && packed,
+					       progress);
 		// Shared configs (--freeze-also-std=): the one pack profile serves
 		// every standard named here too. The madc dialect is C++17 plus
 		// extras — auto-includes, auto-namespacing, auto-main, its keywords

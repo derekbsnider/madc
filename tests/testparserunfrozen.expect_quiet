@@ -1,0 +1,1 @@
+A run of a parsed program writes nothing of madc's own to stderr — on Windows that run freezes the handle to a snapshot, and the freeze is silent there.
