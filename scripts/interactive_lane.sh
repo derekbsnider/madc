@@ -27,6 +27,12 @@ INTERACTIVE_GLOBS="testrepl_* testex_* testsession_* testlsp_* testdocument*
 	testlang_doc testtool_host"
 INTERACTIVE_UNITS="test_ex test_repl_session test_session_backend test_repl_cli
 	test_repl_input test_lsp test_document"
+# --globs: print the subset, for a platform runner's own suite script
+# (scripts/release_candidate.sh: win_suite.sh $(interactive_lane.sh --globs)).
+if [ "${1:-}" = --globs ]; then
+	echo $INTERACTIVE_GLOBS
+	exit 0
+fi
 
 # shellcheck disable=SC2086
 suite=$(bash scripts/run_tests.sh $INTERACTIVE_GLOBS 2>&1)

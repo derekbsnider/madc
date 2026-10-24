@@ -7,7 +7,8 @@
 # release arc, before the long suites.
 #
 # A = the previous release's archive entry (scripts/release_bins.sh: the
-#     newest archived release older than B), B = this tree's madc-release.
+#     newest archived release at or below B's version whose code differs from
+#     this tree), B = this tree's madc-release.
 #
 # Stages, cheapest first (default: all but packages; packages runs when both
 # asset directories are given):
@@ -67,13 +68,23 @@ done
 bv=$("$B" --version 2>/dev/null | head -1 | awk '{print $NF}')
 [ -n "$bv" ] || { echo "release_diff: $B --version printed nothing" >&2; exit 2; }
 
-# A: the newest archived release older than B (the candidate may itself be
-# archived already; it is never its own A).
+# A: the newest archived release at or below B's version whose code is not
+# this tree's. Before /release bumps VERSION the candidate still reports the
+# previous version, and A is that release. After the release is archived, the
+# candidate's own entry has this tree's code and is skipped: B is never its
+# own A.
 if [ -z "$prev" ]; then
-	prev=$(for d in "$ARCH"/v*; do
+	for v in $(for d in "$ARCH"/v*; do
 			[ -x "$d/bin/madc-release" ] && echo "${d##*/v}"
-		done | { cat; echo "$bv"; } | sort -V -u |
-		awk -v b="$bv" '$0 == b { print p; exit } { p = $0 }')
+		done | sort -V -r); do
+		[ "$(printf '%s\n%s\n' "$v" "$bv" | sort -V | tail -1)" = "$bv" ] || continue
+		c=$(sed -n 's/^commit: //p' "$ARCH/v$v/PROVENANCE" 2>/dev/null)
+		if [ -n "$c" ] && git diff --quiet "$c" HEAD -- src include third_party 2>/dev/null; then
+			continue
+		fi
+		prev=$v
+		break
+	done
 fi
 A="$ARCH/v$prev/bin/madc-release"
 [ -n "$prev" ] && [ -x "$A" ] || { echo "release_diff: no archived release before $bv in $ARCH (release_bins.sh list)" >&2; exit 2; }
