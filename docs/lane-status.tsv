@@ -20,3 +20,5 @@ macos	yes	32ec960892d9	2026-10-24	BUILD lane: macos-build + macos stages rc=0 at
 aarch64-ld	yes	32ec960892d9	2026-10-24	aarch64_ldouble_lane GREEN at 32ec96089 (seam_battery.sh aarch64-build + aarch64-ld stages rc=0)
 tests-jit	batch	32ec960892d9	2026-10-24	2170 passed, 0 tracked failed (untracked known-RED testnoreturn_c11 excluded), 9 skipped - the seam battery's exeobj stage (tests/ JIT on the packed madc-release, + EXE 1943/0, OBJ 1943/0) at 32ec96089
 release-diff	release	ea375d8ee369	2026-10-24	v0.106.1 vs v0.106.0 GREEN on the build container: startup level (3 paths); exec geomean 0.982 over 19, 0 movers; compile 1.000 over 52 (B in the archive layout); memory worst 1.006 over 33; cost 7 live workloads within 0.02%; tests 2179 both ran, 0 regressed, 0 newly noisy (10 stdout and 3 stderr changes listed)
+release-ci	release	-	-	never run: scripts/release_rehearsal.sh (owner 2026-10-24) — release.yml on the candidate before its tag, every package built and install-gated on fresh runners, into the draft
+products	release	-	-	never run: scripts/release_rehearsal.sh (owner 2026-10-24) — madcide CI on every platform against the candidate draft

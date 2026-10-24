@@ -49,7 +49,7 @@ RELEASE_TOOLING="scripts/package_release.sh scripts/package_release_macos.sh
 	scripts/promote_release.sh
 	scripts/release_bins.sh scripts/brew_bottle.sh scripts/brew_formula.sh
 	scripts/brew_lane.sh scripts/lane_ledger.sh scripts/git-hooks/pre-push
-	scripts/release_diff.sh scripts/release_diff.py"
+	scripts/release_diff.sh scripts/release_diff.py scripts/release_rehearsal.sh"
 # The interactive faces' code (owner 2026-10-12: "because these changes only
 # effect REPL mode, they should NOT IN ANY WAY SHAPE OR FORM REQUIRE A FULL DAY
 # OF TESTING EVERY SINGLE PART OF MADC"): only `madc -i`, `madc --lsp` and a
@@ -78,6 +78,10 @@ lane_tools() {
 		scripts/brew_lane.sh packaging/homebrew" ;;
 	interactive|interactive-win|interactive-darwin) echo "$INTERACTIVE_CODE" ;;
 	release-diff) echo "scripts/release_diff.sh scripts/release_diff.py" ;;
+	release-ci) echo "scripts/release_rehearsal.sh scripts/package_release.sh
+		scripts/package_release_macos.sh scripts/package_release_windows.sh
+		scripts/package_install_gate.sh" ;;
+	products) echo "scripts/release_rehearsal.sh" ;;
 	esac
 }
 

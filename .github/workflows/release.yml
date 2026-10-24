@@ -45,8 +45,17 @@
 # pushed tag's commit is an ancestor of master (a promotion tag) —
 # workflow_dispatch always builds (manual = intentional, e.g. a re-run
 # or a test against a draft).
+#
+# A REHEARSAL (owner 2026-10-24; scripts/release_rehearsal.sh) dispatches this
+# workflow on the release candidate BEFORE its tag exists: every package is
+# built on fresh runners exactly as the tag push will build it, into the
+# DRAFT release, and madcide's CI then runs its suite on every platform
+# against those packages. v0.106.0's tag-push build failed on a fresh Windows
+# runner, and its Windows stderr regression surfaced only in madcide's CI
+# after publishing; a rehearsal shows both before the tag. The tag push
+# rebuilds into the same draft, so what ships is always the tag's build.
 name: release
-run-name: "release ${{ inputs.tag || github.ref_name }}"
+run-name: "release ${{ inputs.tag || github.ref_name }}${{ inputs.rehearsal && ' (rehearsal)' || '' }}"
 
 on:
   push:
@@ -60,6 +69,11 @@ on:
         description: 'ref to build (default: the tag itself)'
         required: false
         default: ''
+      rehearsal:
+        description: 'a release REHEARSAL (scripts/release_rehearsal.sh): build every package of a candidate whose tag does not exist yet into the DRAFT, without the Homebrew bottle (it builds from the tag''s source archive)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -431,7 +445,7 @@ jobs:
     # formula naming it. Publishing the tap is the owner's step.
     runs-on: ubuntu-24.04
     needs: gate
-    if: needs.gate.outputs.build == 'true'
+    if: needs.gate.outputs.build == 'true' && !inputs.rehearsal
     steps:
       - uses: actions/checkout@v7
         with:
@@ -468,6 +482,17 @@ jobs:
   attach-release:
     runs-on: ubuntu-24.04
     needs: [linux-packages, linux-packages-jammy, windows-package, macos-package, linux-brew-bottle]
+    # A rehearsal skips the bottle job; every other package must have built.
+    if: >-
+      !cancelled()
+      && needs.linux-packages.result == 'success'
+      && needs.linux-packages-jammy.result == 'success'
+      && needs.windows-package.result == 'success'
+      && needs.macos-package.result == 'success'
+      && (needs.linux-brew-bottle.result == 'success'
+          || (inputs.rehearsal && needs.linux-brew-bottle.result == 'skipped'))
+    env:
+      REHEARSAL: ${{ inputs.rehearsal && '1' || '' }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -487,9 +512,18 @@ jobs:
           done
           files=$(ls madc_*.deb madc-*.x86_64.rpm \
                      madc-*-linux-x86_64.tar.gz madc-*-windows-x86_64.zip \
-                     madc-*-macos-arm64.tar.gz madc-*-macos-x86_64.tar.gz \
-                     madc-*.x86_64_linux.bottle.tar.gz madc.rb)
+                     madc-*-macos-arm64.tar.gz madc-*-macos-x86_64.tar.gz)
+          # The bottle and its formula: every real release; a rehearsal has none.
+          if [ -z "$REHEARSAL" ]; then
+            files="$files $(ls madc-*.x86_64_linux.bottle.tar.gz madc.rb)"
+          fi
           echo "attaching to $RELEASE_TAG:"; echo "$files"
+          # A rehearsal writes only a draft: never the assets of a release
+          # already published.
+          if [ -n "$REHEARSAL" ] && [ "$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "$RELEASE_TAG is already published; a rehearsal writes only a draft" >&2
+            exit 1
+          fi
           if ! gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             # CI never publishes: the DRAFT holds the stable asset set until
             # the owner's /promote ceremony writes the real notes and

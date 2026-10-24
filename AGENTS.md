@@ -385,7 +385,7 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [branching.md](.claude/rules/branching.md)       |    67 | Feature branches off `develop`, agent-owned `-claude` / `-codex` WIP branches, stable `develop`; lane-freshness push gate; OWNER LAW: every platform lane's FULL suite green before master (`check --release`); OWNER LAW: every release consolidates an EXISTING duplicate family (`check-release-consolidation.sh`); OWNER LAW: every release raises a C23 or C++20 count and lowers none (`check-release-conformance.sh`); every release since v0.102.1 carries its callgrind map (`release_bins.sh check`); OWNER LAW: every release is compared with the previous release FIRST (`scripts/release_diff.sh`, ledger row `release-diff`) |
+| [branching.md](.claude/rules/branching.md)       |    71 | Feature branches off `develop`, agent-owned `-claude` / `-codex` WIP branches, stable `develop`; lane-freshness push gate; OWNER LAW: every platform lane's FULL suite green before master (`check --release`); OWNER LAW: every release consolidates an EXISTING duplicate family (`check-release-consolidation.sh`); OWNER LAW: every release raises a C23 or C++20 count and lowers none (`check-release-conformance.sh`); every release since v0.102.1 carries its callgrind map (`release_bins.sh check`); OWNER LAW: every release is compared with the previous release FIRST (`scripts/release_diff.sh`, ledger row `release-diff`) and REHEARSED before its tag (`scripts/release_rehearsal.sh`: release.yml into the draft + madcide's CI on it, rows `release-ci` / `products`) |
 | [feature-guards.md](.claude/rules/feature-guards.md) |   9 | `#ifdef FEATURE_NAME` for in-progress code; never `git checkout` over uncommitted work |
 | [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) |   20 | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` — never duplicate content |
 | [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
@@ -452,10 +452,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **37 rules, 1375 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **37 rules, 1379 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~506 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1889 lines.**
+- **Grand total loaded by Claude Code per turn: ~1893 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

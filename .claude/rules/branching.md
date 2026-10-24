@@ -61,6 +61,10 @@
   with new stderr, packages), recorded as ledger row `release-diff`
   (promote=release). A RED row is fixed, or excused for that version alone in
   `docs/parity/release-diff-allow.tsv` with its reason
+- OWNER LAW (2026-10-24): every release is REHEARSED before its tag:
+  `scripts/release_rehearsal.sh` dispatches release.yml (rehearsal=true) on the
+  candidate commit, then madcide's CI on every platform against that draft.
+  Ledger rows `release-ci` and `products` (promote=release)
 - Every release since v0.102.1 carries its callgrind map
   (`scripts/release_bins.sh map vX.Y.Z`, `/release` step 13); the master push
   gate's `release_bins.sh check` refuses a release without one (owner

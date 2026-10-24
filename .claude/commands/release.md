@@ -92,6 +92,12 @@ Perform the full release workflow:
 
 12. **Push develop to GitHub**: `git push origin develop`
 
+    Then **rehearse the release** (owner law 2026-10-24) on the NAS, with the
+    release commit as HEAD: `bash scripts/release_rehearsal.sh`. It runs
+    release.yml on the candidate into the draft and madcide's CI against it,
+    and records `release-ci` and `products`. Run it in parallel with the
+    battery: it uses GitHub's runners, not the container.
+
 13. **Archive the release binary** (owner directive 2026-08-09, 2026-10-02):
     after the release rebake, on the build container,
     `bash scripts/release_bins.sh archive` — it files the tree's

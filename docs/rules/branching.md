@@ -239,6 +239,28 @@ dropped a file on purpose, is excused for that version alone, with its reason,
 in `docs/parity/release-diff-allow.tsv`. An excuse that carried forward would
 hide the next regression of the same row.
 
+## Why every release is rehearsed before its tag (owner 2026-10-24)
+
+The other v0.106.1 fix was a build that never ran before the tag. The
+release workflow builds every package on fresh GitHub runners, and only on a
+tag push. The Windows package needed a host madc that a fresh runner does not
+have, and every local lane runs in a tree that has one.
+
+The products have the same blind spot. madcide's and Chthonia's CI took madc
+from a PUBLISHED release, so their suites first met v0.106.0 after it shipped.
+
+`scripts/release_rehearsal.sh` closes both gaps:
+- It dispatches the release workflow on the candidate commit, so every
+  package is built and install-gated exactly as the tag push will build it.
+  The packages go into the DRAFT release.
+- It then runs madcide's whole CI against that draft, on Linux, Ubuntu 22.04,
+  Windows under wine, genuine Windows and both Macs.
+
+The tag push later rebuilds into the same draft, so what ships is always the
+tag's own build. The rehearsal only proves that it will build, and that
+madcide works with it.
+
+
 ## Why a release without its callgrind map cannot reach master (owner 2026-10-16)
 
 Owner ruling, 2026-10-08: keep a callgrind map for every release. The map —

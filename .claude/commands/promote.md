@@ -54,7 +54,10 @@ counts the assets:
      `.darwin_skip` stating why it is out of the domain);
    - `genuine-win` — the owner-hardware Windows run;
    - `release-diff` — `scripts/release_diff.sh` on the build container, the
-     candidate against the previous release (`/release` step 0).
+     candidate against the previous release (`/release` step 0);
+   - `release-ci` and `products` — `scripts/release_rehearsal.sh` on the NAS
+     (the candidate pushed, HEAD = the candidate): release.yml rehearsed into
+     the draft, then madcide's CI on every platform against it.
    Record each green with `scripts/lane_ledger.sh record <lane> <tally>` at
    the candidate. A stale or red row blocks; fix on develop and move the
    candidate. Tag only content every lane has proven. The platform BUILDS
