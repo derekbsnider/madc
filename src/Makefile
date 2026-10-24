@@ -1128,7 +1128,12 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 WIN_MODULES = ui_web git markdown
 modules-windows:
 	for m in $(WIN_MODULES); do $(MAKE) $$m-windows || exit 1; done
+# The hosted mode cannot run its own stage one, so the dialect's and the
+# modules' generated tables come from the host's dev madc (DIALECT_REGISTRY_GEN
+# = ../bin/madc): build it first, as release-macos builds the dev tree — a
+# fresh tree (the release workflow's runner) has none.
 release-windows:
+	$(MAKE) ../bin/madc
 	$(MAKE) hosted-x86-64-windows
 	$(MAKE) modules-windows
 	$(MAKE) MODE=hosted-x86-64-windows $(WIN_RELEASE_DIR)/madc.exe
