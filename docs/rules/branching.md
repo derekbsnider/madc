@@ -211,6 +211,34 @@ it is still measured and may lower no count: a fix that breaks a standard is
 not a fix. Both gate scripts read the version's last component and carry a
 patch control each way.
 
+## Why every release is compared with the previous release first (owner 2026-10-24)
+
+v0.106.0 ran three days past its plan and still needed v0.106.1. Every lane
+had been green, and every lane compared the candidate with a recorded
+baseline or an oracle, never with the release before it. What slipped was
+what only that comparison shows:
+- a program's stderr gaining a line (the pack writer's report on every
+  Windows run from a dialect host);
+- execution benchmarks moving by code placement alone (fannkuch +18% on
+  identical instructions, B232), chased by hand for days because nothing told
+  a placement mover from a real one.
+
+`scripts/release_diff.sh` puts both binaries on one machine, interleaved. It
+covers startup, execution, compile time, peak memory, callgrind cost, the
+whole tests/ suite with its saved stdout and stderr, and the package member
+lists. It runs FIRST in the release arc, because every long suite after it is
+wasted on a candidate that is slower or noisier than what users already have.
+
+The shift test makes the placement question mechanical. A mover is rebuilt at
+five code placements by putting padding functions ahead of the source, then
+averaged. A slowdown that averages out is placement. One that survives is
+real.
+
+An intended change, such as a deliberate new warning or a package that
+dropped a file on purpose, is excused for that version alone, with its reason,
+in `docs/parity/release-diff-allow.tsv`. An excuse that carried forward would
+hide the next regression of the same row.
+
 ## Why a release without its callgrind map cannot reach master (owner 2026-10-16)
 
 Owner ruling, 2026-10-08: keep a callgrind map for every release. The map —

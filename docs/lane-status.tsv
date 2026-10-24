@@ -19,3 +19,4 @@ headerless-win	yes	32ec960892d9	2026-10-24	2050/0/0TO/129skip at 32ec96089 + ond
 macos	yes	32ec960892d9	2026-10-24	BUILD lane: macos-build + macos stages rc=0 at 32ec96089 (seam_battery.sh)
 aarch64-ld	yes	32ec960892d9	2026-10-24	aarch64_ldouble_lane GREEN at 32ec96089 (seam_battery.sh aarch64-build + aarch64-ld stages rc=0)
 tests-jit	batch	32ec960892d9	2026-10-24	2170 passed, 0 tracked failed (untracked known-RED testnoreturn_c11 excluded), 9 skipped - the seam battery's exeobj stage (tests/ JIT on the packed madc-release, + EXE 1943/0, OBJ 1943/0) at 32ec96089
+release-diff	release	-	-	never run: scripts/release_diff.sh (owner 2026-10-24) — the candidate against the previous release: startup, exec + shift test, compile, memory, callgrind cost, tests/ with new stderr, packages

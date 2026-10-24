@@ -1,0 +1,6 @@
+# release-diff-allow.tsv — a RED row of scripts/release_diff.sh that is a
+# stated, intended change, excused for ONE candidate version. Tab separated:
+#   version	stage	key	reason
+# key is the row's key as the stage report prints it after "red:" (a benchmark,
+# a compile row, a test base name, package:member). A line applies only to the
+# named version, so an excuse never carries into the next release.

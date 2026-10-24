@@ -6,6 +6,16 @@ Perform the full release workflow:
 
 ## Steps
 
+0. **Compare the candidate with the previous release FIRST** (owner law
+   2026-10-24, `.claude/rules/branching.md`), before any long suite: on the
+   build container, with the candidate's `bin/madc-release` built,
+   `bash scripts/release_diff.sh` (A = the newest archived release, B = the
+   candidate). Every RED row is fixed, or excused for this version alone in
+   `docs/parity/release-diff-allow.tsv` with its reason. The `packages` stage
+   runs once the packages exist: `--prev-assets=<the previous release's
+   assets> --cand-assets=<these>`. Record the green at the release commit:
+   `scripts/lane_ledger.sh record release-diff "<the report lines>"`.
+
 1. **Read the current version** from `VERSION` file (semver: MAJOR.MINOR.PATCH)
 
 2. **Determine the new version** based on the argument:

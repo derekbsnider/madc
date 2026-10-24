@@ -55,6 +55,12 @@
   `Conformance: <corpus> <old> -> <new>`. Gated by
   `scripts/check-release-conformance.sh` (`/release` step 5). A PATCH release
   is measured and lowers none; it needs no rise and no line (owner 2026-10-24)
+- OWNER LAW (2026-10-24): every release is compared with the PREVIOUS RELEASE
+  first, before the long suites: `scripts/release_diff.sh` (startup, exec with
+  the placement shift test, compile, memory, callgrind cost, the tests/ suite
+  with new stderr, packages), recorded as ledger row `release-diff`
+  (promote=release). A RED row is fixed, or excused for that version alone in
+  `docs/parity/release-diff-allow.tsv` with its reason
 - Every release since v0.102.1 carries its callgrind map
   (`scripts/release_bins.sh map vX.Y.Z`, `/release` step 13); the master push
   gate's `release_bins.sh check` refuses a release without one (owner
