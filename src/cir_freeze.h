@@ -1654,10 +1654,13 @@ bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
 // stays cheap. `compress_intern` compresses the three intern-spine blocks
 // too (release pack only — consumers rebind via the owned-buffer fallback
 // at ~7ms once per process instead of zero-copy; owner-approved trade,
-// task #37).
+// task #37). `progress` is the freeze's own reporting switch
+// (madc_cir_freeze's): the writer's informational reports go to stderr only
+// when it is on — a library run's snapshot (parse_run's Windows arm) is silent.
 bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		      PchCompression codec = PchCompression::Zlib,
-		      int zstd_level = 0, bool compress_intern = false);
+		      int zstd_level = 0, bool compress_intern = false,
+		      bool progress = false);
 
 // Map a container image for reading: the file at `path`, or the running
 // executable (readlink /proc/self/exe) when `path` is NULL — the appended-

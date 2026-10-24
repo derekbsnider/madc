@@ -1,2 +1,4 @@
 frozen guest ran
 parse-run: rc=5
+frozen header guest ran
+parse-run with a header: rc=6

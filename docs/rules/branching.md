@@ -197,6 +197,20 @@ with a loss in another is a trade, not progress, and the gate names the fall.
 v0.105.0, the last release before the ruling, is the baseline: its EPOCH
 exempts it and every earlier release, and moves forward only.
 
+## Why a patch release is held only to "lowers none" (owner 2026-10-24)
+
+Both laws above are about a release ARC: the weeks of work between two minor
+releases, where room exists to consolidate a family and move a standard. A
+patch release (x.y.Z, Z > 0) is not an arc. It ships regression fixes on top
+of a release already out — v0.106.1 carried two: the Windows release build's
+missing host madc, and the pack writer's report on every Windows run from a
+dialect host — and making it wait for a conformance gain or a consolidation
+would keep a known regression in users' hands to satisfy a rule written for
+something else. So a patch release consolidates nothing and needs no rise, but
+it is still measured and may lower no count: a fix that breaks a standard is
+not a fix. Both gate scripts read the version's last component and carry a
+patch control each way.
+
 ## Why a release without its callgrind map cannot reach master (owner 2026-10-16)
 
 Owner ruling, 2026-10-08: keep a callgrind map for every release. The map —

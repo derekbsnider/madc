@@ -23,5 +23,20 @@ int main()
     long rc = madc::parse_run(h);
     println("parse-run: rc={}", rc);
     madc::parse_close(h);
+
+    // A guest that includes a system header: its snapshot carries units
+    // bound from the pack, and the freeze that writes it stays silent
+    // (.expect_quiet) — the Windows arm once printed the pack's
+    // spelled-names report on every run.
+    var csrc = "#include <stdio.h>\nint main(void) { printf(\"frozen header guest ran\\n\"); return 6; }\n";
+    long hc = madc::parse_open(csrc.c_str(), "frozen_header_guest.c");
+    if ( hc == 0 )
+    {
+	println("open failed");
+	return 1;
+    }
+    long rcc = madc::parse_run(hc);
+    println("parse-run with a header: rc={}", rcc);
+    madc::parse_close(hc);
     return 0;
 }

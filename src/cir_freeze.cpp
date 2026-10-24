@@ -727,10 +727,11 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // -D reaching it there. The root unit is the freeze's own main file — no
 // consumer includes it, and the freeze records only included files' text.
 // Any other frozen unit without its text leaves the table out, so a -D
-// consumer keeps declining.
+// consumer keeps declining. Its reports are the freeze's: printed only under
+// `progress`.
 static bool forest_write_spelled_names(const cir_frozen_forest &f,
 				       madc::dis::snapshot_writer &w,
-				       PchCompression codec)
+				       PchCompression codec, bool progress)
 {
 	std::map<madc::dis::istring, std::vector<uint32_t> > names;
 	std::set<madc::dis::istring> spelled, content;
@@ -745,8 +746,9 @@ static bool forest_write_spelled_names(const cir_frozen_forest &f,
 		if (fu.source_payload.empty()) {
 			const char *nm = TokenBase::_active_strpool
 				       ? TokenBase::_active_strpool->c_str(fu.unit_name_id) : NULL;
-			fprintf(stderr, "madc: pack spelled names: frozen unit %u (%s) carries no"
-				" source text — the table is left out\n", u, nm ? nm : "?");
+			if (progress)
+				fprintf(stderr, "madc: pack spelled names: frozen unit %u (%s) carries no"
+					" source text — the table is left out\n", u, nm ? nm : "?");
 			return true;
 		}
 		spelled.clear();
@@ -760,14 +762,16 @@ static bool forest_write_spelled_names(const cir_frozen_forest &f,
 		return true;
 	std::vector<uint8_t> bytes;
 	ForestDeclNames::build(names, bytes);
-	fprintf(stderr, "madc: pack spelled names: %zu names over %u frozen units (%zu bytes)\n",
-		names.size(), frozen, bytes.size());
+	if (progress)
+		fprintf(stderr, "madc: pack spelled names: %zu names over %u frozen units (%zu bytes)\n",
+			names.size(), frozen, bytes.size());
 	return add_seg(w, CIR_FOREST_SEG_SPELLED_NAMES, SNAP_KIND_CIR_SPELLED_NAMES,
 		       bytes.data(), bytes.size(), codec);
 }
 
 bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
-		      PchCompression codec, int zstd_level, bool compress_intern)
+		      PchCompression codec, int zstd_level, bool compress_intern,
+		      bool progress)
 {
 	cir_forest_zstd_level = zstd_level;
 	cir_forest_compress_intern = compress_intern;
@@ -909,7 +913,7 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.recordable.data(), f.recordable.size() * sizeof(uint32_t),
 			PchCompression::None))
 		return false;
-	if (!forest_write_spelled_names(f, w, codec))
+	if (!forest_write_spelled_names(f, w, codec, progress))
 		return false;
 	// The container's string pool: its records and (v59) the raw offsets
 	// block (intern_table::frozen_blocks; v60 records carry their length).

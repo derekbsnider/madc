@@ -12,6 +12,9 @@
 #   - the section carries a line
 #       Conformance: <corpus> <P's count> -> <the release's count>[, ...]
 #     and every pair it names is in the ledger and rose.
+# A PATCH release (x.y.Z, Z > 0 — regression fixes on a release; owner
+# 2026-10-24) is held to the first two only: measured, lowering none. It needs
+# no rise and no Conformance: line; a line it carries is checked the same way.
 # Between releases (the [Unreleased] section) nothing is required, so the
 # per-commit static gate loop stays green; /release runs it after the release
 # is measured and its section versioned, where a release that moved nothing
@@ -64,7 +67,9 @@ check_release()
 		fi
 		c_pass="" c_scope=""
 	done < <(rows_of "$ledger" "v$prev")
-	if [ "$rose" -eq 0 ]; then
+	local patch=0
+	[ "${ver##*.}" != 0 ] && patch=1
+	if [ "$rose" -eq 0 ] && [ "$patch" -eq 0 ]; then
 		echo "check-release-conformance: v$ver raises no C23 or C++20" \
 		     "count over v$prev" >&2
 		bad=1
@@ -74,6 +79,7 @@ check_release()
 		on && /^## \[/ { exit }
 		on && /^Conformance: / { print; exit }' "$log")
 	if [ -z "$line" ]; then
+		[ "$patch" -eq 1 ] && return $bad
 		echo "check-release-conformance: v$ver: its CHANGELOG section needs" \
 		     "a line 'Conformance: <corpus> <old> -> <new>'" >&2
 		return 1
@@ -145,7 +151,7 @@ control()
 	local name="$1" want="$2" cline="$3" got
 	shift 3
 	{
-		printf '## [Unreleased]\n\n## [v99.0.0] — 2099-01-01\n\n'
+		printf '## [Unreleased]\n\n## [v%s] — 2099-01-01\n\n' "${CTRL_VER:-99.0.0}"
 		[ -n "$cline" ] && printf '%s\n' "$cline"
 		printf '\n## [v%s] — old\n' "$EPOCH"
 	} > "$log"
@@ -179,8 +185,15 @@ control "a gain the ledger lacks" fail "Conformance: c23-run 35 -> 40" "${rise[@
 control "a changed in-scope set" fail "Conformance: c23-run 35 -> 36" "${rescoped[@]}"
 control "the release unmeasured" fail "Conformance: c23-run 35 -> 36" \
 	"${rise[0]}" "${rise[1]}"
+# A patch release: measured and lowering none passes with no line; a fall or
+# a missing measure still fails.
+CTRL_VER=99.0.1 control "a patch holding every count" pass "" \
+	"${flat[@]//v99.0.0/v99.0.1}"
+CTRL_VER=99.0.1 control "a patch that fell" fail "" "${fell[@]//v99.0.0/v99.0.1}"
+CTRL_VER=99.0.1 control "a patch unmeasured" fail "" \
+	"${flat[0]//v99.0.0/v99.0.1}"
 rm -rf "$tmpd"
 
 echo "check-release-conformance: OK (every release after v$EPOCH raises a" \
-     "C23 or C++20 count and lowers none)"
+     "C23 or C++20 count and lowers none; a patch release lowers none)"
 exit 0
