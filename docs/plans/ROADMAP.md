@@ -173,6 +173,12 @@ Gaps to build, hardest-first: **`std::function`** (type erasure over lambdas) �
 **stringstream/fstream** classes → decltype/alias-template/enum-class/`=default`/`=delete`
 coverage. First step = a failure-driven `selfhost` harness: run madc (parse/sema) on each
 src/include file, pass/fail → the empirical gap list; climb smallest TU → `parser.cpp`.
+**Owner 2026-10-24: every release moves self-hosting about 5% closer.** The measure is
+`scripts/selfhost_lane.sh`'s pass rate over every unit (the Makefile's TUs plus one wrapper
+per own header), re-measured at each release and named in its CHANGELOG section. At
+v0.106.1 (2026-10-24): **96 of 250 units (38.4%)**. On 2026-09-17 it was 69 of 172 (40.1%).
+The unit set has grown since, and some headers that passed then fail now, unseen, because
+the lane had no ledger row.
 
 **2.10 — name every madc-local template instantiation by its Itanium mangled
 name, retiring the flattened-key scheme.** Today madc carries TWO naming schemes
@@ -573,12 +579,14 @@ more than one (owner, 2026-10-16). Ranked by how reachable each is today:
 | # | Codebase | Status | Its test suite | What it exercises / known blockers | KG Milestone |
 |---|---|---|---|---|---|
 | 1 | SQLite 3.54.0 (amalgamation, shell, testfixture) | **DONE** (owner 2026-10-16; 0.106.0 arc, section E): every test file passes in both `mdevtest` configurations | Tcl testfixture (`make test` / `mdevtest`) | known exclusion: the `fuzzcheck-ubsan` job (`-fsanitize=undefined`) and the 18 fuzz jobs that run its binary — `-fsanitize=undefined` lands in a future release (KG Gap `sanitizers_unsupported`) | `sqlite_compiles_and_passes_its_tests` |
-| 2 | redis (or Valkey, its BSD fork) | 0.106.0 arc, section F (the release's second) | Tcl `./runtest` | threads, C11 atomics (`atomicvar.h` chooses `<stdatomic.h>`, `__atomic` or `__sync` by the compiler's predefines), signals, sockets, an event loop, a bundled Lua; `MALLOC=libc` in place of jemalloc | `redis_compiles_and_passes_its_tests` |
-| 3 | Lua 5.4 | candidate | the lua-5.4 tests | small (about 30k lines), `make CC=madc`; setjmp/longjmp error handling, computed gotos in the VM loop | `lua_compiles_and_passes_its_tests` |
-| 4 | the language runtimes the vision names: CPython, Ruby MRI, PHP, Perl | candidates | `make test` of each | large configure-based builds; the polyglot north star (`docs/plans/madc-vision-and-invariants.md`): most languages are implemented in C | `language_runtimes_compile` |
-| 5 | ffmpeg | candidate | FATE (needs the fate-suite sample download) | built `--disable-asm --disable-inline-asm`; over-16 aligned stack arrays work since `0211249a4`; about ten times SQLite's size | `ffmpeg_compiles_and_passes_fate` |
-| 6 | VLC | candidate | its `make check` | C plus C++ and Objective-C modules, many dependencies | `vlc_compiles` |
-| 7 | the Linux kernel | blocked | boot + kselftest | inline assembly (madc has none), `asm goto`, GNU C throughout | `linux_kernel_compiles` |
+| 2 | redis (or Valkey, its BSD fork) | 0.106.0 arc, section F (the release's second); blockers B241–B250, and B252 (C11 `_Atomic` / `<stdatomic.h>`) goes first (owner 2026-10-24) | Tcl `./runtest` | threads, C11 atomics (`atomicvar.h` chooses `<stdatomic.h>`, `__atomic` or `__sync` by the compiler's predefines), signals, sockets, an event loop, a bundled Lua; `MALLOC=libc` in place of jemalloc | `redis_compiles_and_passes_its_tests` |
+| 3 | cproc (with its QBE back end) | next after redis (owner 2026-10-24) | `make check` | a small C11 compiler written in C11: a C front end compiling C | `cproc_compiles_and_passes_its_tests` |
+| 4 | tcc (TinyCC) | next after redis (owner 2026-10-24) | `make test` | a C compiler that is itself GNU C; its tests include compiling tcc with the built tcc | `tcc_compiles_and_passes_its_tests` |
+| 5 | Lua 5.4 | candidate | the lua-5.4 tests | small (about 30k lines), `make CC=madc`; setjmp/longjmp error handling, computed gotos in the VM loop | `lua_compiles_and_passes_its_tests` |
+| 6 | the language runtimes the vision names: CPython, Ruby MRI, PHP, Perl | candidates | `make test` of each | large configure-based builds; the polyglot north star (`docs/plans/madc-vision-and-invariants.md`): most languages are implemented in C | `language_runtimes_compile` |
+| 7 | ffmpeg | candidate | FATE (needs the fate-suite sample download) | built `--disable-asm --disable-inline-asm`; over-16 aligned stack arrays work since `0211249a4`; about ten times SQLite's size | `ffmpeg_compiles_and_passes_fate` |
+| 8 | VLC | candidate | its `make check` | C plus C++ and Objective-C modules, many dependencies | `vlc_compiles` |
+| 9 | the Linux kernel | blocked | boot + kselftest | inline assembly (madc has none), `asm goto`, GNU C throughout | `linux_kernel_compiles` |
 
 SMAUG (pure C, its own repo MadSMAUG) is the original real codebase; see
 "The SMAUG Goal" above.
@@ -590,6 +598,7 @@ SMAUG (pure C, its own repo MadSMAUG) is the original real codebase; see
 | **ADR 0001 — CIR/c2mir backend (why c2mir, not direct-MIR)** | [../adr/0001-cir-c2mir-backend.md](../adr/0001-cir-c2mir-backend.md) |
 | Code Cleanup | [code-cleanup.md](code-cleanup.md) |
 | C++ Support | [cpp-support.md](cpp-support.md) |
+| C11 `_Atomic` and `<stdatomic.h>` (B252; ahead of the redis blockers, owner 2026-10-24) | [2026-10-24-c11-atomic.md](2026-10-24-c11-atomic.md) |
 | C++ conformance lane — g++ testsuite, C++11 parity as a roadmap goal (never a gate) | [2026-09-04-cxx-conformance-lane.md](2026-09-04-cxx-conformance-lane.md) |
 | Cross-Cutting Insights | [cross-cutting-insights.md](cross-cutting-insights.md) |
 | Data Storage & Federation (legacy) | [data-storage-federation.md](data-storage-federation.md) |
