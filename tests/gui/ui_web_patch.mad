@@ -12,6 +12,7 @@
 // equal the document the application holds, so a patch that drifted from
 // a full paint shows here. The element's line count and the page's row
 // count are probed too, so the DOM and the rows stay one-to-one.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 var doc = "one\ntwo\nthree\nfour";
 long caret = 0;
 

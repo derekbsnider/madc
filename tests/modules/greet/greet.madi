@@ -1,0 +1,12 @@
+// The face of `greet`, the test module (tests/testmodule_import.mad): what a
+// program that says `import greet;` may call. A face is declarations only;
+// the module's own C++ (greet.cpp) defines them, and the build generates the
+// module's declaration table from this file (madc --emit-module-table).
+namespace greet {
+    enum class tone : int { plain, loud };
+    // "hello, WHO" — shouted when `t` is loud. The text lives until the
+    // calling thread's next hello.
+    const char *hello(const char *who, greet::tone t);
+    // `out` filled with the squares 1..n, returned.
+    var &squares(var &out, int64_t n);
+}

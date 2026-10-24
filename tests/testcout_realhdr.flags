@@ -1,1 +1,1 @@
---std=c++17 --no-embedded-headers
+--std=gnu++17 --no-embedded-headers

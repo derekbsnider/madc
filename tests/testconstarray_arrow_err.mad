@@ -1,0 +1,11 @@
+/* The other half of testconstarray_arrow: `->` on an array of const structs
+ * names a member of a const object, so a write through it stays refused.
+ * Oracle: gcc 13 "assignment of member 'n' in read-only object"; clang 18
+ * "cannot assign to variable 'b' with const-qualified type". */
+struct S { int n; };
+int main(void)
+{
+	const struct S b[1] = { { 7 } };
+	b->n = 4;
+	return b[0].n;
+}

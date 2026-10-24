@@ -1,0 +1,22 @@
+// A prvalue returned through the hidden result slot (a class with a
+// destructor somewhere in it returns via __retbuf) is a COMPLETE object: its
+// virtual base is constructed before the constructor runs, exactly as for a
+// named object.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): the lines in the .expect.
+// madc before the fix: the virtual base was never constructed — `returned:`
+// printed garbage for `v` (e.g. `returned: 476945 8 476945`), exit 0.
+#include <cstdio>
+struct V { int v; V() : v(6) {} ~V() {} };
+struct V1 : virtual V { int x; V1() : x(7) {} };
+struct V2 : virtual V { int y; V2() : y(8) {} };
+struct VD : V1, V2 { int z; VD() : z(9) {} };
+static VD make() { return VD(); }
+int main()
+{
+	VD d = make();
+	const V &v = d;
+	const V2 &v2 = d;
+	std::printf("returned: %d %d %d\n", v.v, v2.y, v2.v);
+	std::printf("direct: %d %d\n", d.x, d.z);
+	return 0;
+}

@@ -28,13 +28,13 @@
 				// used to force an #undef + (void *)-1 compare)
 
 extern thread_local bool madc_verbose;
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"	// Variable (Phase 6 3d: reconstruct method Variables on load)
 #include "madc.h"		// FuncDef (Phase 6 3d: reconstruct method FuncDefs on load)
 #include "madc_sys_includes.h"	// stdlib flavor table (v34 config-word: flavor is config identity)
+#include "madc_file_kinds.h"	// file_kind_family: which pack a config word reads
 #include "token_arena.h"
 #include "madcdis/id_table.h"
 #include "cir_freeze.h"
@@ -125,6 +125,19 @@ uint32_t madc_forest_config_word(const Program *prog)
 		word ^= ((h ^ (h >> 15)) & 0x7fffu) << 17;
 	}
 	return word;
+}
+
+bool cir_forest_config_is_c(uint32_t config)
+{
+	const int64_t lang_mask = 0x7fff;	// the config word's language_std bits
+	return madc::file_kind_family(config & lang_mask) == madc::fkC;
+}
+
+bool cir_forest_profile_serves_family(uint32_t producer_config,
+				      uint32_t consumer_config)
+{
+	return cir_forest_config_is_c(consumer_config)
+	       || !cir_forest_config_is_c(producer_config);
 }
 
 uint32_t madc_forest_defines_hash(const Program *prog)
@@ -530,14 +543,14 @@ static bool cir_forest_compress_intern = false;
 // same day and rejected: net ~-0.3 MB for +13s pack CPU and a dictionary
 // segment + reader wiring — the transforms dominate them on every axis.
 // A unit that carries nothing but (possibly) its source text: no records,
-// tokens, declarations, PP exports, edges or branch dependencies.
+// tokens, declarations, PP exports, edges or conditions.
 static bool forest_unit_source_only(const cir_forest_unit &fu)
 {
 	return fu.blob.records.empty() && fu.blob.children.empty()
 	    && fu.connectors.empty() && fu.positions.empty()
 	    && fu.token_payload.empty() && fu.decl_index.empty()
 	    && fu.pp_events.empty() && fu.edges.empty()
-	    && fu.branch_deps.empty();
+	    && fu.conditions.empty();
 }
 
 // The SHARED tables a bind reads record by record (both string pools' bytes,
@@ -583,6 +596,25 @@ static bool forest_kind_blocked(uint32_t kind)
 // 128 KB, pack cap 15 MB).
 enum : uint32_t { FOREST_BLOCK_SHIFT = 14, FOREST_UNIT_BLOCK_SHIFT = 17 };
 
+// A unit's walk slots — its PP events, include edges and condition records
+// (v69) — are read WHOLE for every unit a bind walks (forest_walk_unit), so
+// they are stored raw: a frame of a few KB costs the bind more to decode than
+// its bytes cost the pack (its literal-table build alone is ~14K Ir).
+// Measured 2026-10-18 on the release, rung_stdio (24 units walked): the
+// compressed slots cost 818K Ir of a 1.95M Ir bind; raw, the mixed profile
+// grows 0.23 MB (13.82 MB, cap 15 MB).
+static bool forest_kind_walk_slot(uint32_t kind)
+{
+	switch (kind) {
+	case SNAP_KIND_CIR_PP_EXPORTS:
+	case SNAP_KIND_CIR_UNIT_EDGES:
+	case SNAP_KIND_CIR_UNIT_CONDS:
+		return true;
+	default:
+		return false;
+	}
+}
+
 // A blocked kind's flags: its block size, and its inner transform — node
 // records keep their byte-plane recoding and child entries their delta, now
 // inside each block.
@@ -613,8 +645,15 @@ static bool add_seg(madc::dis::snapshot_writer &w, uint32_t seg_id,
 	if (!cir_forest_compress_intern
 	    && kind == madc::dis::SNAP_KIND_INTERN_BYTES)
 		codec = PchCompression::None;
+	if (forest_kind_walk_slot(kind))
+		codec = PchCompression::None;
+	// The transforms serve the codec (a delta or a byte plane compresses
+	// better); a payload stored with no codec keeps its own bytes, so a bind
+	// reads it in place (a raw role's container, B1).
 	uint32_t xform = 0;
-	if (codec != PchCompression::None && forest_kind_blocked(kind))
+	if (codec == PchCompression::None)
+		xform = 0;
+	else if (forest_kind_blocked(kind))
 		xform = forest_blocked_flags(kind);
 	else if (kind == SNAP_KIND_CIR_CHILDREN)
 		xform = madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_DELTA32);
@@ -678,6 +717,53 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 		}
 	}
 	return true;
+}
+
+// B1 (docs/plans/2026-10-20-front-end-speed-plan.md): SPELLED_NAMES — every
+// name each frozen unit's own source text spells (every #if arm), with the
+// units spelling it: what a macro defined ahead of the unit could change in
+// it (CirFrozenForest::serves_consumer; the walk's program macros, B211). A
+// unit spelling it only in directives carries CIR_SPELLED_DIRECTIVE_ONLY. A source-only unit is lexed live, a
+// -D reaching it there. The root unit is the freeze's own main file — no
+// consumer includes it, and the freeze records only included files' text.
+// Any other frozen unit without its text leaves the table out, so a -D
+// consumer keeps declining.
+static bool forest_write_spelled_names(const cir_frozen_forest &f,
+				       madc::dis::snapshot_writer &w,
+				       PchCompression codec)
+{
+	std::map<madc::dis::istring, std::vector<uint32_t> > names;
+	std::set<madc::dis::istring> spelled, content;
+	uint32_t frozen = 0;
+	for (uint32_t u = 0; u < (uint32_t)f.units.size(); ++u) {
+		const cir_forest_unit &fu = f.units[u];
+		if (forest_unit_source_only(fu))
+			continue;
+		if (fu.source_payload.empty() && u == f.root_unit)
+			continue;
+		++frozen;
+		if (fu.source_payload.empty()) {
+			const char *nm = TokenBase::_active_strpool
+				       ? TokenBase::_active_strpool->c_str(fu.unit_name_id) : NULL;
+			fprintf(stderr, "madc: pack spelled names: frozen unit %u (%s) carries no"
+				" source text — the table is left out\n", u, nm ? nm : "?");
+			return true;
+		}
+		spelled.clear();
+		content.clear();
+		source_spelled_names(std::string(fu.source_payload.begin(),
+						 fu.source_payload.end()), spelled, &content);
+		for (const madc::dis::istring &nm : spelled)
+			names[nm].push_back(content.count(nm) ? u : u | CIR_SPELLED_DIRECTIVE_ONLY);
+	}
+	if (names.empty())
+		return true;
+	std::vector<uint8_t> bytes;
+	ForestDeclNames::build(names, bytes);
+	fprintf(stderr, "madc: pack spelled names: %zu names over %u frozen units (%zu bytes)\n",
+		names.size(), frozen, bytes.size());
+	return add_seg(w, CIR_FOREST_SEG_SPELLED_NAMES, SNAP_KIND_CIR_SPELLED_NAMES,
+		       bytes.data(), bytes.size(), codec);
 }
 
 bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
@@ -761,6 +847,12 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	if (!add_seg(w, CIR_FOREST_SEG_DIR, SNAP_KIND_CIR_FOREST_DIR,
 		     dir.data(), dir.size(), PchCompression::None))
 		return false;
+	// B1: the profile's role — written only for a role other than the
+	// system-header profile's, which stays exactly the container it was.
+	if (f.role != CIR_FOREST_ROLE_SYSTEM
+	    && !add_seg(w, CIR_FOREST_SEG_ROLE, SNAP_KIND_CIR_ROLE,
+			&f.role, sizeof(f.role), PchCompression::None))
+		return false;
 	// v57: the bare function names every unit's decl index declares (kind
 	// pdkFunction; a qualified form is C++ surface), sorted and unique —
 	// count, count + 1 offsets, NUL-terminated bytes; read in place.
@@ -801,6 +893,12 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	    && !add_seg(w, CIR_FOREST_SEG_DECL_NAMES, SNAP_KIND_CIR_DECL_NAMES,
 			f.decl_names.data(), f.decl_names.size(), PchCompression::None))
 		return false;
+	// B2: its hash index, raw like it (optional: absent = binary search).
+	if (!f.decl_names_hash.empty()
+	    && !add_seg(w, CIR_FOREST_SEG_DECL_NAMES_HASH, SNAP_KIND_CIR_DECL_NAMES_HASH,
+			f.decl_names_hash.data(), f.decl_names_hash.size() * sizeof(uint32_t),
+			PchCompression::None))
+		return false;
 	if (!f.seeds.empty()
 	    && !add_seg(w, CIR_FOREST_SEG_SEEDS, SNAP_KIND_CIR_SEEDS,
 			f.seeds.data(), f.seeds.size() * sizeof(uint32_t),
@@ -810,6 +908,8 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	    && !add_seg(w, CIR_FOREST_SEG_RECORDABLE, SNAP_KIND_CIR_RECORDABLE,
 			f.recordable.data(), f.recordable.size() * sizeof(uint32_t),
 			PchCompression::None))
+		return false;
+	if (!forest_write_spelled_names(f, w, codec))
 		return false;
 	// The container's string pool: its records and (v59) the raw offsets
 	// block (intern_table::frozen_blocks; v60 records carry their length).
@@ -881,15 +981,12 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	if (!add_seg(w, CIR_FOREST_SEG_EXTERN_LOCS, SNAP_KIND_CIR_EXTERN_LOCS,
 		     extern_index.data(), extern_index.size(), PchCompression::None))
 		return false;
-	// v2 container-global payloads (zero-length when the freeze recorded
-	// nothing — a module-only freeze). Every open reads both and they are
-	// small, so they are stored raw: no decode on open.
-	if (!add_seg(w, CIR_FOREST_SEG_BRANCH_MACROS, SNAP_KIND_CIR_BRANCH_MACROS,
-		     f.branch_macros.data(),
-		     f.branch_macros.size() * sizeof(uint32_t), PchCompression::None)
-	    || !add_seg(w, CIR_FOREST_SEG_CANON_ORDER, SNAP_KIND_CIR_CANON_ORDER,
-			f.canon_order.data(),
-			f.canon_order.size() * sizeof(uint32_t), PchCompression::None))
+	// v2 container-global payload (zero-length when the freeze recorded
+	// nothing — a module-only freeze). Every open reads it and it is small,
+	// so it is stored raw: no decode on open.
+	if (!add_seg(w, CIR_FOREST_SEG_CANON_ORDER, SNAP_KIND_CIR_CANON_ORDER,
+		     f.canon_order.data(),
+		     f.canon_order.size() * sizeof(uint32_t), PchCompression::None))
 		return false;
 
 	for (size_t u = 0; u < f.units.size(); ++u) {
@@ -947,12 +1044,12 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		    || !add_seg(w, base + 7, SNAP_KIND_CIR_UNIT_EDGES,
 				fu.edges.data(),
 				fu.edges.size() * sizeof(uint32_t), codec)
-		    || !add_seg(w, base + 8, SNAP_KIND_CIR_BRANCH_DEPS,
-				fu.branch_deps.data(),
-				fu.branch_deps.size() * sizeof(uint32_t), codec)
 		    || !add_seg(w, base + 9, SNAP_KIND_CIR_UNIT_SOURCE,
 				fu.source_payload.data(),
-				fu.source_payload.size(), codec))
+				fu.source_payload.size(), codec)
+		    || !add_seg(w, base + 10, SNAP_KIND_CIR_UNIT_CONDS,
+				fu.conditions.data(),
+				fu.conditions.size() * sizeof(uint32_t), codec))
 			return false;
 	}
 	return true;
@@ -1574,10 +1671,13 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 // segment decode) — the bind path config-gates on language_std()/
 // defines_hash() after this and skips complete_open() on a mismatch.
 bool CirFrozenForest::open_header(const void *image, size_t len,
-				  bool quiet_missing)
+				  bool quiet_missing,
+				  madc::dis::snapshot_reader *opened)
 {
 	double _t0 = forest_now();
-	if (!_reader.open(image, len)) {
+	if (opened)
+		_reader.adopt(*opened);
+	else if (!_reader.open(image, len)) {
 		if (!quiet_missing)
 			fprintf(stderr, "madc: no forest container found\n");
 		return false;
@@ -1642,6 +1742,12 @@ bool CirFrozenForest::open_header(const void *image, size_t len,
 		if (!_shared_configs.empty())
 			memcpy(_shared_configs.data(), shared.data(), shared.size());
 	}
+	// B1: the role, directory-level state too (a profile walk judges it
+	// before complete_open).
+	if (!cir_forest_read_role(_reader, _role)) {
+		fprintf(stderr, "madc: forest role malformed\n");
+		return false;
+	}
 
 	// Root sanity against the directory.
 	_root_unit = hdr.root_unit;
@@ -1675,6 +1781,43 @@ bool CirFrozenForest::serves_config(uint32_t config, uint32_t defines) const
 		if (c.language_std == config && c.defines_hash == defines)
 			return true;
 	return false;
+}
+
+const ForestDeclNames &CirFrozenForest::spelled_names() const
+{
+	if (!_spelled_names_bound) {
+		_spelled_names_bound = true;
+		size_t len = 0;
+		const madc::dis::snapshot_segment *s = _reader.find(CIR_FOREST_SEG_SPELLED_NAMES);
+		if (s && s->kind == SNAP_KIND_CIR_SPELLED_NAMES)
+			if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
+				_spelled_names.bind(p, len);
+	}
+	return _spelled_names;
+}
+
+bool CirFrozenForest::serves_consumer(uint32_t config, uint32_t defines,
+				      const std::vector<std::pair<madc::dis::istring,
+								  madc::dis::istring> > &cli_defines) const
+{
+	if (serves_config(config, defines))
+		return true;
+	if (!defines || cli_defines.empty() || !serves_config(config, 0))
+		return false;
+	const ForestDeclNames &spelled = spelled_names();
+	if (spelled.empty())
+		return false;
+	for (const std::pair<madc::dis::istring, madc::dis::istring> &d : cli_defines) {
+		// The macro's name: a function-like -D's spelling stops at '('.
+		const size_t paren = d.first.find('(');
+		const madc::dis::istring name = paren == madc::dis::istring::npos
+					      ? d.first : madc::dis::istring(d.first.c_str(), paren);
+		uint32_t n = 0;
+		spelled.units_of(name.c_str(), n);
+		if (n)
+			return false;	// a frozen unit spells it: the -D could change it
+	}
+	return true;
 }
 
 // --- the pack layout (format 60; design doc §3) --------------------------
@@ -1840,6 +1983,72 @@ static void forest_logical_bytes(const ForestLayoutTables &t, uint32_t seg_id,
 	forest_defs_in_order(t, order, out, words);
 }
 
+// The roles, one row each: a new role is a row and a code, never a format
+// change.
+static const cir_forest_role_row forest_roles[] = {
+	{ CIR_FOREST_ROLE_SYSTEM, "system" },
+};
+
+const cir_forest_role_row *cir_forest_role_info(uint32_t role)
+{
+	for (const cir_forest_role_row &row : forest_roles)
+		if ((uint32_t)row.role == role)
+			return &row;
+	return NULL;
+}
+
+bool cir_forest_read_role(const madc::dis::snapshot_reader &r, uint32_t &role)
+{
+	role = CIR_FOREST_ROLE_SYSTEM;
+	const madc::dis::snapshot_segment *s = r.find(CIR_FOREST_SEG_ROLE);
+	if (!s)
+		return true;
+	uint32_t code = 0;
+	if (s->kind != SNAP_KIND_CIR_ROLE || s->raw_size != sizeof(code)
+	    || !r.read_segment_into(*s, (uint8_t *)&code, sizeof(code)))
+		return false;
+	role = code;
+	return true;
+}
+
+bool cir_forest_profiles(const void *image, size_t len,
+			 std::vector<cir_forest_profile> &out)
+{
+	out.clear();
+	size_t at = len;
+	for (;;) {
+		madc::dis::snapshot_reader r;
+		if (!r.open(image, at))
+			break;
+		cir_forest_profile p;
+		if (!cir_forest_read_role(r, p.role))
+			break;
+		p.offset = r.blob_offset();
+		p.bytes = at - p.offset;
+		p.compressed = 0;
+		for (uint32_t i = 0; i < r.segment_count(); ++i) {
+			const madc::dis::snapshot_segment *s = r.segment_at(i);
+			if (s && s->codec != (uint32_t)PchCompression::None)
+				++p.compressed;
+		}
+		out.push_back(p);
+		if (!r.previous_image_len(at))
+			break;
+	}
+	return !out.empty();
+}
+
+bool cir_forest_profile_role(const void *image, size_t len, uint32_t &role,
+			     size_t *previous)
+{
+	madc::dis::snapshot_reader r;
+	if (!r.open(image, len) || !cir_forest_read_role(r, role))
+		return false;
+	if (previous && !r.previous_image_len(*previous))
+		*previous = 0;
+	return true;
+}
+
 bool cir_forest_content_digests(const void *image, size_t len,
 				std::map<uint32_t, uint64_t> &out)
 {
@@ -1855,7 +2064,8 @@ bool cir_forest_content_digests(const void *image, size_t len,
 			return false;	// a corrupt directory record
 		if (s->seg_id == CIR_FOREST_SEG_MIR_MODULE
 		    || s->seg_id == CIR_FOREST_SEG_LEDGER
-		    || s->seg_id == CIR_FOREST_SEG_SHARED_CONFIGS)
+		    || s->seg_id == CIR_FOREST_SEG_SHARED_CONFIGS
+		    || s->seg_id == CIR_FOREST_SEG_ROLE)
 			continue;
 		std::vector<uint8_t> bytes;
 		if (s->seg_id == CIR_FOREST_SEG_ARENA_DEF_POS)
@@ -1978,9 +2188,6 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 			block_roots[std::make_pair(seg, b)].insert(roots, roots + n);
 	};
 	uint64_t seq = 0;
-	// Each log ends `root <header>` (forest_pack_layout.sh): the dialect
-	// surface's roots are their own population (pack-slices design §7).
-	std::vector<bool> dialect_root(logs.size(), false);
 	for (size_t i = 0; i < logs.size(); ++i) {
 		FILE *lf = fopen(logs[i].c_str(), "r");
 		if (!lf) {
@@ -2010,9 +2217,6 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 							off, len, &root, 1);
 				}
 		}
-		char root_name[512];
-		if (fscanf(lf, " root %511s", root_name) == 1)
-			dialect_root[i] = embedded_dialect_fragment_p(madc::dis::istring(root_name));
 		fclose(lf);
 	}
 
@@ -2049,25 +2253,14 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 			note_block_span(CIR_FOREST_SEG_ARENA_DEFS, shift,
 					(uint64_t)pos[it->first] * t.record_bytes, t.record_bytes,
 					it->second.roots.data(), it->second.roots.size());
-	// A block at least half the C/C++ root binds read is stored raw: a compile
-	// including any of those roots copies it instead of decoding it. The
-	// dialect surface is never decompressed (pack-slices design §7): a block
-	// ANY dialect root reads is stored raw. The populations count apart, so
-	// the dialect roots never dilute the C/C++ hot set.
-	size_t dialect_roots = 0;
-	for (size_t i = 0; i < dialect_root.size(); ++i)
-		dialect_roots += dialect_root[i];
-	const size_t header_roots = logs.size() - dialect_roots;
+	// A block at least half the root binds read is stored raw: a compile
+	// including any of those roots copies it instead of decoding it.
+	const size_t header_roots = logs.size();
 	std::map<uint32_t, std::vector<bool> > raw_blocks;	// seg -> per block
 	hot_blocks = 0;
 	for (BlockRoots::const_iterator it = block_roots.begin(); it != block_roots.end(); ++it) {
-		size_t by_dialect = 0;
-		for (std::set<uint32_t>::const_iterator ri = it->second.begin();
-		     ri != it->second.end(); ++ri)
-			by_dialect += dialect_root[*ri];
-		const size_t by_header = it->second.size() - by_dialect;
-		if (!(header_roots && by_header * 2 >= header_roots)
-		    && !by_dialect)
+		const size_t by_header = it->second.size();
+		if (!(header_roots && by_header * 2 >= header_roots))
 			continue;
 		std::vector<bool> &v = raw_blocks[it->first.first];
 		if (v.size() <= it->first.second)
@@ -2354,19 +2547,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 		}
 	}
 
-	// v2 container-global payloads (zero-length segments = empty).
-	if (const madc::dis::snapshot_segment *bs =
-		_reader.find(CIR_FOREST_SEG_BRANCH_MACROS)) {
-		madc::dis::decode_bytes b;
-		if (bs->kind != SNAP_KIND_CIR_BRANCH_MACROS
-		    || !_reader.read_segment(*bs, b) || b.size() % sizeof(uint32_t)) {
-			fprintf(stderr, "madc: forest branch-macro set corrupt\n");
-			return false;
-		}
-		_branch_macros.resize(b.size() / sizeof(uint32_t));
-		if (!b.empty())
-			memcpy(_branch_macros.data(), b.data(), b.size());
-	}
+	// v2 container-global payload (a zero-length segment = empty).
 	if (const madc::dis::snapshot_segment *cs =
 		_reader.find(CIR_FOREST_SEG_CANON_ORDER)) {
 		madc::dis::decode_bytes c;
@@ -2424,6 +2605,9 @@ void CirFrozenForest::bind_seed_index() const
 	if ((s = _reader.find(CIR_FOREST_SEG_DECL_NAMES)) && s->kind == SNAP_KIND_CIR_DECL_NAMES)
 		if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
 			_decl_names.bind(p, len);
+	if ((s = _reader.find(CIR_FOREST_SEG_DECL_NAMES_HASH)) && s->kind == SNAP_KIND_CIR_DECL_NAMES_HASH)
+		if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
+			_decl_names.bind_hash((const uint32_t *)p, len / sizeof(uint32_t));
 	if ((s = _reader.find(CIR_FOREST_SEG_SEEDS)) && s->kind == SNAP_KIND_CIR_SEEDS)
 		if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
 			_seeds.bind((const uint32_t *)p, len / sizeof(uint32_t));
@@ -2450,6 +2634,55 @@ static bool forest_run_meets(const uint32_t *run, uint32_t n,
 	return false;
 }
 
+// K2d: one unit's withdrawn names hold ns::nm (nm when ns is NULL or empty).
+// A stored name is the decl index's qualified spelling, compared in place as
+// ForestDeclNames::probe compares it — no name is built.
+bool CirMaterializeFilter::withdraws(const std::vector<madc::dis::istring> &names,
+				     const char *ns, const char *nm)
+{
+	if (!nm)
+		return false;
+	const size_t ns_len = ns ? strlen(ns) : 0;
+	for (const madc::dis::istring &q : names) {
+		const char *p = q.c_str();
+		if (ns_len) {
+			if (strncmp(p, ns, ns_len) != 0 || p[ns_len] != ':' || p[ns_len + 1] != ':')
+				continue;
+			p += ns_len + 2;
+		}
+		if (strcmp(p, nm) == 0)
+			return true;
+	}
+	return false;
+}
+
+// K2d: forest_run_bound with withdrawals in the filter — out of line, so the
+// common path keeps the plain loop's frame (measured: one function holding
+// both paths cost ~27 Ir a call on every name_verdict).
+__attribute__((noinline)) static bool forest_run_declares(const uint32_t *run, uint32_t n,
+							  const CirMaterializeFilter &f,
+							  const char *ns, const char *nm)
+{
+	for (uint32_t i = 0; i < n; ++i)
+		if (f.declares(run[i], ns, nm))
+			return true;
+	return false;
+}
+
+// Any unit of a declaring-unit run the filter binds and that declares the
+// name there (K2d: not withdrawn by a skipped arm). With nothing withdrawn —
+// every TU but one whose walk skipped a taken frozen arm — the plain loop.
+static inline bool forest_run_bound(const uint32_t *run, uint32_t n,
+				    const CirMaterializeFilter &f, const char *ns, const char *nm)
+{
+	if (!f.withdrawn.empty())
+		return forest_run_declares(run, n, f, ns, nm);
+	for (uint32_t i = 0; i < n; ++i)
+		if (f.binds(run[i]))
+			return true;
+	return false;
+}
+
 int CirFrozenForest::name_verdict(const char *nm, const char *ns,
 				  const CirMaterializeFilter &f) const
 {
@@ -2460,13 +2693,13 @@ int CirFrozenForest::name_verdict(const char *nm, const char *ns,
 	const ForestDeclNames &dn = decl_names();
 	uint32_t n = 0;
 	if (ns && *ns) {
-		std::string q = std::string(ns) + "::" + nm;
-		if (!f.extra_names.empty() && f.extra_names.count(q))
+		if (!f.extra_names.empty()
+		    && f.extra_names.count(madc::dis::istring(std::string(ns) + "::" + nm)))
 			return 1;
 		if (!f.exact) {
-			const uint32_t *run = dn.units_of(q.c_str(), n);
+			const uint32_t *run = dn.units_of_qualified(ns, nm, n);
 			if (n)
-				return forest_run_meets(run, n, f.bound_units) ? 1 : -1;
+				return forest_run_bound(run, n, f, ns, nm) ? 1 : -1;
 		}
 	}
 	if (!f.extra_names.empty() && f.extra_names.count(nm))
@@ -2474,7 +2707,7 @@ int CirFrozenForest::name_verdict(const char *nm, const char *ns,
 	if (!f.exact) {
 		const uint32_t *run = dn.units_of(nm, n);
 		if (n)
-			return forest_run_meets(run, n, f.bound_units) ? 1 : -1;
+			return forest_run_bound(run, n, f, NULL, nm) ? 1 : -1;
 	}
 	return f.exact ? -1 : 0;
 }
@@ -2504,7 +2737,7 @@ bool CirFrozenForest::declared_system(const char *nm, const char *ns,
 	if (n && forest_run_meets(run, n, f.system_units))
 		return true;
 	if (ns && *ns) {
-		run = dn.units_of((std::string(ns) + "::" + nm).c_str(), n);
+		run = dn.units_of_qualified(ns, nm, n);
 		if (n && forest_run_meets(run, n, f.system_units))
 			return true;
 	}
@@ -2573,7 +2806,10 @@ int CirFrozenForest::find_unit(const madc::dis::istring &name) const
 // resort: once the pack holds every system header a spelling ends many names
 // (`search.h` ends libc++'s __algorithm/search.h too), so a consumer first
 // asks its build's include roots (Program::forest_unit_under_build_roots).
-int CirFrozenForest::find_unit_path_tail(const madc::dis::istring &incfile) const
+// accept: a consumer's own visibility rule (a C compile never takes a unit in
+// the C++ library's directories) — a refused match does not end the search.
+int CirFrozenForest::find_unit_path_tail(const madc::dis::istring &incfile,
+					 const std::function<bool(const char *)> &accept) const
 {
 	if (incfile.empty() || madc::detail::host_path_absolute(incfile))
 		return -1;
@@ -2582,7 +2818,8 @@ int CirFrozenForest::find_unit_path_tail(const madc::dis::istring &incfile) cons
 		const size_t len = _name_off[u + 1] - _name_off[u] - 1;
 		const char *nm = _name_bytes + _name_off[u];
 		if (len > n && nm[len - n - 1] == '/'
-		    && memcmp(nm + len - n, incfile.data(), n) == 0)
+		    && memcmp(nm + len - n, incfile.data(), n) == 0
+		    && (!accept || accept(nm)))
 			return (int)u;
 	}
 	return -1;
@@ -2648,6 +2885,13 @@ bool CirFrozenForest::mir_module_bytes(std::vector<uint8_t> &out) const
 // bounds-checked against the remaining payload — a truncated segment is a
 // loud refusal, never a partial ledger (a half-read ledger would look like a
 // Tier-B program and refuse for the wrong reason).
+bool CirFrozenForest::has_ledger() const
+{
+	const madc::dis::snapshot_segment *s = _reader.find(CIR_FOREST_SEG_LEDGER);
+	return s && s->kind == SNAP_KIND_CIR_LEDGER
+	    && s->raw_size >= sizeof(cir_forest_ledger_header);
+}
+
 bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
 {
 	out.clear();
@@ -2690,7 +2934,15 @@ bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
 			out.clear();
 			return false;
 		}
+		if (e.form != (uint32_t)CirLedgerForm::mir_module
+		    && e.form != (uint32_t)CirLedgerForm::native_object) {
+			fprintf(stderr, "madc: ledger: unknown entry form %u\n",
+				e.form);
+			out.clear();
+			return false;
+		}
 		cir_ledger_module m;
+		m.form = (CirLedgerForm)e.form;
 		m.name = madc::dis::istring((const char *)payload.data() + pos, e.name_bytes);
 		pos += e.name_bytes;
 		// NUL-separated symbol names (a trailing NUL per name, so the
@@ -2776,13 +3028,12 @@ bool CirFrozenForest::unit_edges(uint32_t unit, std::vector<uint32_t> &out)
 	return true;
 }
 
-// v40: [name_id, flags, value_id, definer_unit] tuples — see
-// SNAP_KIND_CIR_BRANCH_DEPS.
-bool CirFrozenForest::unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out)
+// v68: the unit's item-order words — see SNAP_KIND_CIR_UNIT_CONDS.
+bool CirFrozenForest::unit_conditions(uint32_t unit, std::vector<uint32_t> &out)
 {
 	madc::dis::decode_bytes raw;
-	if (!read_unit_seg(unit, 8, SNAP_KIND_CIR_BRANCH_DEPS, raw)
-	    || raw.size() % (4 * sizeof(uint32_t)))
+	if (!read_unit_seg(unit, 10, SNAP_KIND_CIR_UNIT_CONDS, raw)
+	    || raw.size() % sizeof(uint32_t))
 		return false;
 	out.resize(raw.size() / sizeof(uint32_t));
 	if (!raw.empty())
@@ -3115,11 +3366,12 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 }
 
 // S2 (R4-lite): monotone widening — see the declaration. The union is per
-// unit and per name. Growth = a bound unit the installed filter lacks, exact ->
-// closure, widening to the whole container, or an asked-for name the current
-// filter judges declared-only-by-unbound-units (one it already keeps — a bound
-// or undeclared name under a closure filter — changes nothing; under an exact
-// filter every new name is growth).
+// unit and per name. Growth = a bound unit the installed filter lacks,
+// exact -> closure, widening to the whole container, or an asked-for name
+// the current filter judges declared-only-by-unbound-units (one it already
+// keeps — a bound or undeclared name under a closure filter — changes
+// nothing; under an exact filter every new name is growth): a generation
+// that re-visits every list.
 const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 	const CirMaterializeFilter &want)
 {
@@ -3157,6 +3409,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 				grew = true;
 		_mat_filter.system_units.insert(want.system_units.begin(),
 						want.system_units.end());
+		// K2d: withdrawals accumulate with the walks that skipped arms.
+		for (const auto &uw : want.withdrawn) {
+			std::vector<madc::dis::istring> &have = _mat_filter.withdrawn[uw.first];
+			for (const madc::dis::istring &nm : uw.second)
+				if (std::find(have.begin(), have.end(), nm) == have.end())
+					have.push_back(nm);
+		}
 	}
 	if (grew)
 		materialize_pass();
@@ -3213,6 +3472,7 @@ void CirFrozenForest::materialize_pass()
 {
 	ForestWorkFrame _fw(_work_secs, _work_depth);
 	double _t0 = forest_now();
+	++_stat_mat_generations;
 
 	// A type-less freeze binds an empty arena view: every aggregate pass
 	// below no-ops (empty slot buckets) and only pinned-typed globals
@@ -3222,8 +3482,8 @@ void CirFrozenForest::materialize_pass()
 	// Pass 0 — what this generation VISITS (pack slices design §6). Under a
 	// closure filter with the pack's seed index: the seed lists of the
 	// bound units and of the units declaring a name the filter asks for,
-	// plus the always list — and, once admission settles, the dependents
-	// of every admitted class. Otherwise every record, one slot scan (no
+	// plus the always list — and, once admission settles, the dependents of
+	// every admitted class. Otherwise every record, one slot scan (no
 	// filter, a container without seeds, or an asked-for name no unit
 	// declares).
 	// Candidate lists ascend (slot / record order == the whole walk's), so
@@ -3238,7 +3498,7 @@ void CirFrozenForest::materialize_pass()
 	// The seed-parity probe (MADC_SEED_PARITY_PROBE=1, printed at the end of
 	// the pass) labels every restored record with how this generation reached
 	// it: LISTED in a visited seed list (a bound unit's — every entity its
-	// decl index, its parse or its instantiations made — or the always list)
+	// decl index, its parse or its instantiations made — or the always list);
 	// or CARRIED (a reference pull, a function-local class admitted by
 	// structure, an admitted owner's dependent). Nothing else may restore.
 	static const char *par_probe = ::getenv("MADC_SEED_PARITY_PROBE");
@@ -3249,12 +3509,12 @@ void CirFrozenForest::materialize_pass()
 		if (par_on && madc::dis::arena_id_is_project(tid))
 			par_carried_slots.insert(madc::dis::arena_slot_of(tid));
 	};
-	auto par_label = [&](const std::set<uint32_t> &listed, const std::set<uint32_t> &carried,
-			     uint32_t key) -> char {
+	auto par_label = [&](const std::set<uint32_t> &listed,
+			     const std::set<uint32_t> &carried, uint32_t key) -> char {
 		return listed.count(key) ? 'l' : carried.count(key) ? 'c' : '?';
 	};
-	auto par_label_idx = [&](const std::set<size_t> &listed, const std::set<size_t> &carried,
-				 size_t key) -> char {
+	auto par_label_idx = [&](const std::set<size_t> &listed,
+				 const std::set<size_t> &carried, size_t key) -> char {
 		return listed.count(key) ? 'l' : carried.count(key) ? 'c' : '?';
 	};
 	std::set<uint32_t> seed_lists;
@@ -3275,6 +3535,7 @@ void CirFrozenForest::materialize_pass()
 		}
 		seed_lists.insert(sd.always());
 	}
+	std::vector<uint32_t> slots;
 	// One arena slot into its kind's list.
 	auto bucket_slot = [&](uint32_t s) {
 		madc::dis::defrec r;
@@ -3308,7 +3569,6 @@ void CirFrozenForest::materialize_pass()
 		}
 	};
 	if (seeded) {
-		std::vector<uint32_t> slots;
 		for (std::set<uint32_t>::const_iterator it = seed_lists.begin();
 		     it != seed_lists.end(); ++it) {
 			ForestSeeds::Run ar = sd.arena(*it);
@@ -3321,6 +3581,7 @@ void CirFrozenForest::materialize_pass()
 		forest_sort_unique(slots);
 		forest_sort_unique(tmpl_idx);
 		forest_sort_unique(glob_idx);
+		_stat_mat_visited = slots.size() + tmpl_idx.size() + glob_idx.size();
 		for (size_t i = 0; i < slots.size(); ++i)
 			bucket_slot(slots[i]);
 		if (par_on) {
@@ -3335,6 +3596,7 @@ void CirFrozenForest::materialize_pass()
 			tmpl_idx.push_back(i);
 		for (size_t i = 0; i < _globals.size(); ++i)
 			glob_idx.push_back(i);
+		_stat_mat_visited = a.def_slots() + tmpl_idx.size() + glob_idx.size();
 	}
 	// Recordability: frozen with the pack (RECORDABLE — the fixpoint the
 	// freeze ran, cir_arena_recordable.h) — a set view (count) so
@@ -3462,7 +3724,7 @@ void CirFrozenForest::materialize_pass()
 		if (!dr.n)
 			return false;
 		for (uint32_t k = 0; k < dr.n; ++k)
-			if (_mat_filter.bound_units.count(dr.p[k]))
+			if (_mat_filter.binds(dr.p[k]))
 				return false;
 		return true;
 	};
@@ -3756,8 +4018,8 @@ void CirFrozenForest::materialize_pass()
 				ForestSeeds::Run dr =
 					sd.dependents(madc::dis::arena_slot_of(*it));
 				for (uint32_t k = 0; k < dr.n; ++k) {
-					uint32_t kind = dr.p[k] >> 30;
-					uint32_t idx = dr.p[k] & 0x3fffffffu;
+					uint32_t kind = cir_seed_item_kind(dr.p[k]);
+					uint32_t idx = cir_seed_item_index(dr.p[k]);
 					if (kind == CIR_SEED_DEP_ARENA) {
 						bucket_slot(idx);
 						if (par_on)
@@ -4075,9 +4337,20 @@ void CirFrozenForest::materialize_pass()
 			}
 			sdd->members.push_back(memberpair_t(madc::dis::istring(mnm), mdd));
 			sdd->member_offsets.push_back(mr.offset);
-			sdd->member_counts.push_back(mr.count ? mr.count : 1);
-			// v6 parity: array flag derives from count (not the stored bit).
-			sdd->member_array_flags.push_back(mr.count > 1);
+			// A declared array loads VERBATIM: its flag (bit0) and its count,
+			// so `char _shortbuf[1]` stays an array and a flexible member
+			// (`__cmsg_data[]`) keeps count 0. A one-dimension extent reads as
+			// the count where member_dims holds none (m_array_dims, the
+			// emitter); only the flexible member's {0} is recorded — the
+			// record carries no multi-dimension shape (B225).
+			bool declared_array = (mr.flags & 1u) != 0;
+			sdd->member_counts.push_back(declared_array || mr.count ? mr.count : 1);
+			sdd->member_array_flags.push_back(declared_array);
+			if (declared_array && !mr.count) {
+				while (sdd->member_dims.size() < sdd->members.size())
+					sdd->member_dims.push_back(std::vector<carray_dim_t>());
+				sdd->member_dims.back().assign(1, 0);
+			}
 			sdd->member_access.push_back(mr.access);
 			sdd->member_origin.push_back((int)mr.origin);
 			DataDefSTRUCT::BitFieldInfo bf;
@@ -4455,6 +4728,7 @@ void CirFrozenForest::materialize_pass()
 					fd->has_forest_body  = true;
 					fd->forest_body_unit = fr.body_unit;
 					fd->forest_body_idx  = fr.body_idx;
+					fd->forest_body_src  = this;	// B3: the body's forest
 					fd->declaration_only = false;
 				} else {
 					fd->declaration_only = true;
@@ -4997,7 +5271,7 @@ void CirFrozenForest::materialize_pass()
 				fd->namespace_name = nn;
 		if (r.builtin_kind_id)
 			if (const char *bk = a.c_str(r.builtin_kind_id))
-				fd->inline_builtin_kind = bk;
+				fd->inline_builtin_kind = builtin_kind_named(bk);
 		if (r.tret_name_id)
 			if (const char *tn = a.c_str(r.tret_name_id))
 				fd->template_return_param_name = tn;
@@ -5029,6 +5303,7 @@ void CirFrozenForest::materialize_pass()
 			fd->has_forest_body  = true;
 			fd->forest_body_unit = r.body_unit;
 			fd->forest_body_idx  = r.body_idx;
+			fd->forest_body_src  = this;	// B3: the body's forest
 			fd->declaration_only = false;
 		} else if (r.flags & madc::dis::DF_FUNC_DEF_TOKENS) {
 			// v26 piece (a): the body arrives via the ownerless
@@ -5143,7 +5418,8 @@ void CirFrozenForest::materialize_pass()
 		}
 		_restored_globals.push_back(rg);
 		if (par_on)
-			_par_via.globals.push_back(par_label_idx(par_listed_glob, par_carried_glob, i));
+			_par_via.globals.push_back(par_label_idx(par_listed_glob,
+								       par_carried_glob, i));
 		_mat_done_globals.insert(i);
 	}
 
@@ -5236,7 +5512,8 @@ void CirFrozenForest::materialize_pass()
 				_restored_templates.reserve(_templates.size());
 			_restored_templates.push_back(rt);
 			if (par_on)
-				_par_via.tmpls.push_back(par_label_idx(par_listed_tmpl, par_carried_tmpl, i));
+				_par_via.tmpls.push_back(par_label_idx(par_listed_tmpl,
+									      par_carried_tmpl, i));
 			_mat_done_templates.insert(i);
 		}
 	}
@@ -5248,7 +5525,10 @@ void CirFrozenForest::materialize_pass()
 	// generation are judged alike) and how it was reached (_par_via, above):
 	// ` listed`, ` carried`, or ` unreached`.
 	if (par_on) {
-		fprintf(stderr, "SEEDPAR-GEN\n");
+		// The generation's forest by role (the gate keeps each forest's
+		// last block).
+		const cir_forest_role_row *par_role = cir_forest_role_info(_role);
+		fprintf(stderr, "SEEDPAR-GEN %s\n", par_role ? par_role->name : "role?");
 		auto say = [&](const char *kind, const char *ns, const char *nm, int v,
 			       const std::vector<char> &via, size_t i) {
 			const char c = i < via.size() ? via[i] : '?';
@@ -5272,7 +5552,8 @@ void CirFrozenForest::materialize_pass()
 					      != madc::dis::istring::npos;
 			say(t.kind == CIR_TYPEK_TYPEDEF ? "typedef"
 			    : t.kind == CIR_TYPEK_ENUM ? "enum"
-			    : product ? "product" : "tag", t.ns, t.name, v, _par_via.types, i);
+			    : product ? "product" : "tag", t.ns, t.name, v,
+			    _par_via.types, i);
 		}
 		for (size_t i = 0; i < _restored_funcs.size(); ++i) {
 			const CirRestoredFunc &f = _restored_funcs[i];
@@ -5294,10 +5575,12 @@ void CirFrozenForest::materialize_pass()
 			    _par_via.tmpls, i);
 		for (size_t i = 0; i < _restored_nsbinds.size(); ++i)
 			say("nsbind", _restored_nsbinds[i].ns, _restored_nsbinds[i].key,
-			    verdict_str(_restored_nsbinds[i].key, NULL), _par_via.binds, i);
+			    verdict_str(_restored_nsbinds[i].key, NULL),
+			    _par_via.binds, i);
 		for (size_t i = 0; i < _restored_defbodies.size(); ++i)
 			say("defbody", NULL, _restored_defbodies[i].key,
-			    verdict_str(_restored_defbodies[i].key, NULL), _par_via.bodies, i);
+			    verdict_str(_restored_defbodies[i].key, NULL),
+			    _par_via.bodies, i);
 	}
 
 	_stat_mat_secs += forest_now() - _t0;

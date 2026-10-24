@@ -37,3 +37,22 @@
   merge gate; a family it reports as divergent is a live bug, not debt
 - Every duplication a `/dupaudit` finding gets consolidated leaves a gate behind
   in `fulltest` — one implementation without a gate regrows
+- OWNER LAW (2026-10-16): every release REDUCES existing duplication, not only
+  stops new copies — the arc consolidates at least one EXISTING family found by
+  a whole-subsystem `/dupaudit` sweep (its own commits, Tier 1 + Tier 2, before
+  the seam battery), leaves its gate, and the release's CHANGELOG section names
+  it: `Consolidated: <DupFamily> — gate scripts/check-<name>.sh`. Gated by
+  `scripts/check-release-consolidation.sh` (`/release` step 5)
+- OWNER LAW (2026-10-16): every release moves C23 and/or C++20 conformance
+  forward — it raises at least one passing count over the previous release and
+  lowers none, on the same in-scope set (`docs/parity/conformance-ledger.tsv`:
+  c23-compile, c23-run, torture-c23, cpp2a). The counts are written only by
+  `scripts/conformance_measure.sh --record` — the previous release on its
+  archived binary, the candidate on the battery's madc-release — and the
+  release's CHANGELOG section names its gain:
+  `Conformance: <corpus> <old> -> <new>`. Gated by
+  `scripts/check-release-conformance.sh` (`/release` step 5)
+- Every release since v0.102.1 carries its callgrind map
+  (`scripts/release_bins.sh map vX.Y.Z`, `/release` step 13); the master push
+  gate's `release_bins.sh check` refuses a release without one (owner
+  2026-10-08)

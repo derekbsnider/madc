@@ -1,0 +1,14 @@
+// #include_next from a header found through a SUBDIRECTORY spelling resumes
+// after the search dir that served it — gcc's file->dir. <sub/use.h> is found
+// in includenext_inc/first; its #include_next <nx.h> must skip first/nx.h and
+// take second/nx.h. libstdc++'s <bits/std_abs.h> is the live shape: its
+// #include_next <stdlib.h> reaches the C library, never the <stdlib.h> wrapper
+// in its own search dir. Oracle: gcc and clang print which=2.
+#include <stdio.h>
+#include <sub/use.h>
+
+int main(void)
+{
+	printf("which=%d\n", NX_WHICH);
+	return 0;
+}

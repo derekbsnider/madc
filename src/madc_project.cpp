@@ -470,6 +470,15 @@ bool project_manifest_remove_tu(const std::string &path,
 	return write_manifest_object(path, root, err);
 }
 
+bool project_manifest_set_kind(const std::string &path, ProjectKind kind,
+			       std::string &err) {
+	json root;
+	if (!read_manifest_object(path, root, err))
+		return false;
+	root["kind"] = project_kind_name(kind);
+	return write_manifest_object(path, root, err);
+}
+
 std::string project_default_output(const std::string &manifest_path,
 				   const ProjectManifest &manifest) {
 	if (!manifest.output_name.empty())

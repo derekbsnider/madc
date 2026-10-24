@@ -33,12 +33,27 @@ struct c2mir_options {
   struct c2mir_macro_command *macro_commands;
   const char **include_dirs;
   int external_tree_p;  /* non-zero: caller owns AST nodes, c2mir won't free them */
+  int unwind_regions_p; /* -fexceptions: an automatic __attribute__((cleanup)) variable is an
+                           unwind region (MIR_new_unwind_region), so a stack walk runs its
+                           cleanup when an exception passes through the frame, as gcc and
+                           clang do with -fexceptions.  It becomes live after its
+                           declaration's initializer, or at __builtin_cleanup_arm (&var) for
+                           an object a later statement constructs. */
+  const char *unwind_personality; /* with unwind_regions_p: the personality routine a
+                                     function with regions names
+                                     (MIR_set_func_unwind_personality), or NULL */
 };
 
 void c2mir_init (MIR_context_t ctx);
 void c2mir_finish (MIR_context_t ctx);
 int c2mir_compile (MIR_context_t ctx, struct c2mir_options *ops, int (*getc_func) (void *),
                    void *getc_data, const char *source_name, FILE *output_file);
+
+/* Nonzero when c2mir lowers a call to NAME in place (alloca, __builtin_va_arg,
+   __builtin_frame_address, ...): no symbol is called, so a front end building
+   c2mir's tree declares and links nothing for it.  c2mir's own table answers;
+   context-free. */
+int c2mir_builtin_call_name_p (const char *name);
 
 /* For a debug_info_p compile: the source files referenced by the stamped line
    numbers, in file-id order (index i has file id i+1).  Returns the count and
@@ -75,8 +90,9 @@ int c2mir_get_native_executable (MIR_context_t ctx, const struct MIR_object_exec
 /* R5, debug_info_p + native_object_p compiles: attach the source-level debug
    info (the same builder the GDB-JIT path emits) to the object capture, so
    the subsequent c2mir_get_native_object / c2mir_get_native_executable calls
-   carry .debug_line/.debug_info/.debug_frame -- section-offset relocated in
-   the .o, final link-time vaddrs in executables and shared objects.  Call
+   carry .debug_line/.debug_info (frames: the image's .eh_frame, else
+   .debug_frame) -- section-offset relocated in the .o, final link-time
+   vaddrs in executables and shared objects.  Call
    after every function is generated and before the native getter; the
    attached state stays valid until c2mir_finish.  Returns 0 on success,
    nonzero when there is nothing to attach (no -g, no functions) or the

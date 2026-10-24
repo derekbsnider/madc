@@ -53,6 +53,20 @@ extern struct MIR_object *MIR_gen_get_object (MIR_context_t ctx);
    must already be loaded and linked.  0 on success, -1 when the context is
    not an object-mode capture. */
 extern int MIR_gen_object_prepare (MIR_context_t ctx);
+/* DWARF call frame information of generated code.  MIR_gen gives each
+   function the instructions of its FDE (MIR_func.cfi) and, when the target is
+   the host, registers them with the host's unwinder until MIR_gen_finish, so
+   a stack walk (_Unwind_Backtrace, a debugger) passes through generated frames.
+   This returns the target's CIE -- the frame at function entry -- that every
+   FDE follows: 0, or -1 when the target describes no frames. */
+typedef struct MIR_cfi_cie {
+  unsigned ra_column;   /* the return address's DWARF register */
+  unsigned code_align;  /* code alignment factor */
+  int data_align;       /* data alignment factor */
+  const uint8_t *insns; /* initial instructions */
+  size_t insns_len;
+} MIR_cfi_cie_t;
+extern int MIR_gen_cfi_cie (MIR_cfi_cie_t *cie);
 extern void MIR_set_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
 extern void MIR_set_lazy_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
 extern void MIR_set_lazy_bb_gen_interface (MIR_context_t ctx, MIR_item_t func_item);

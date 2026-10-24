@@ -1,0 +1,13 @@
+unknown: rc=1 madc: error: unrecognized command-line option '-fbogus'
+near: rc=1 madc: error: unrecognized command-line option '--dump-sorce'; did you mean '--dump-source'?
+missing: rc=1 madc: error: missing argument to '-o'
+pass-through: rc=1 madc: -Wp,-MD,x.d: not supported (madc has no separate assembler or preprocessor to pass it to)
+colour empty: rc=1 Unknown -fdiagnostics-color= value:  (auto, always, never)
+gcc std: 201710
+dashdash: ran
+response file: 42
+script argv: -o out @args -- -v
+emit-object: rc=0 built=1 stdout_empty=1
+Usage: madc [options] <source> [program-args...]
+help json: rc=0
+completion: --dump-source

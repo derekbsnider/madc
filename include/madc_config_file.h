@@ -80,16 +80,11 @@ public:
 	// yes/no, true/false, on/off, 1/0 (case-insensitive).
 	void accept_flag(const char *key, bool &out, bool *seen = NULL);
 
-	// The lookup chain, in order: ./<app>.ini,
-	// $XDG_CONFIG_HOME/<app>/<app>.ini (or ~/.config/<app>/<app>.ini), then
-	// <sysconfdir>/<app>.ini. The first EXISTING file wins outright — files
-	// are never merged, because a merged chain makes "why is this setting
-	// on?" unanswerable.
+	// The lookup chain, in order: ./<app>.ini, <app>.ini in the user config
+	// directory (user_config_dir below), then <sysconfdir>/<app>.ini. The
+	// first EXISTING file wins outright — files are never merged, because a
+	// merged chain makes "why is this setting on?" unanswerable.
 	std::vector<std::string> search_paths() const;
-
-	// The user config directory of `app`: $XDG_CONFIG_HOME/<app> (or
-	// ~/.config/<app>); "" when neither is known.
-	static std::string user_config_dir(const std::string &app);
 
 	// Parse one named file. false = unreadable or malformed, reason already
 	// on `err`.
@@ -130,6 +125,20 @@ private:
 	std::string _source_path;
 	std::vector<key_spec> _keys;
 };
+
+// The user configuration directory of `app` — THE one rule (madc.ini's
+// lookup, madc's mcp sources, and every dialect host through
+// madc::user_config_dir): $XDG_CONFIG_HOME/<app> when it is set, else on
+// Windows %APPDATA%\<app> (the platform's convention), else ~/.config/<app>;
+// "" when none is known. user_config_dir_of is the rule over its inputs
+// (NULL or "" = unset; `windows` = the Windows arm applies), so every
+// platform's arm is testable on any host; user_config_dir reads this
+// process's environment on this host.
+// Thread contract: user_config_dir reads the environment (getenv), as any
+// reader of it does; user_config_dir_of is a pure function.
+std::string user_config_dir_of(const std::string &app, const char *xdg,
+			       const char *appdata, const char *home, bool windows);
+std::string user_config_dir(const std::string &app);
 
 }   // namespace cfg
 }   // namespace madc

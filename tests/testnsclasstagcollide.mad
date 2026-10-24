@@ -1,0 +1,42 @@
+// A namespace-scope class whose bare tag a global struct already holds keeps
+// its own C++ name: the struct registry gives the class a distinct emitted
+// identity (ns__Name), but the Itanium names — its vtable, typeinfo and
+// members' symbols, typeid().name() — are the namespace's
+// (_ZTVSt13bad_exception, N3lib4nodeE). madc named them by the emitted
+// identity: parsed live, a class deriving from the library's
+// std::bad_exception failed to link (_ZNSt18std__bad_exceptionD1Ev
+// undefined), and typeid(lib::node) read N3lib9lib__nodeE. Apple's <math.h> declares `struct exception` (SysV
+// matherr), so on macOS every class deriving from std::exception hit it
+// (tests/testcatch_std_exception on the darwin lane).
+// Oracles: g++ 13 and clang++ 18 (-std=gnu++17) print the .expect.
+#include <cstdio>
+struct bad_exception { int type; double retval; };
+struct node { int v; };
+#include <exception>
+#include <typeinfo>
+namespace lib {
+	struct node {
+		virtual int f() const { return 7; }
+		virtual ~node() {}
+	};
+}
+namespace data {
+	struct node { int w; };
+}
+struct E : std::bad_exception {
+	const char *what() const noexcept override { return "derived"; }
+};
+int main()
+{
+	struct bad_exception c = { 3, 0.5 };
+	struct node n = { 4 };
+	E e;
+	const std::exception &b = e;
+	lib::node ln;
+	std::printf("%s %d %d %d\n", b.what(), c.type, n.v, ln.f());
+	std::printf("base %s\n", typeid(std::bad_exception).name());
+	std::printf("ns %s\n", typeid(lib::node).name());
+	data::node d = { 5 };
+	std::printf("data %d %zu\n", d.w, sizeof(data::node));
+	return 0;
+}

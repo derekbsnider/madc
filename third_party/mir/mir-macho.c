@@ -13,6 +13,10 @@
    Mapping from the ELF executable emitter (MIR_object_emit_executable):
 
      .text          -> __TEXT,__text            (after header + load cmds)
+     .gcc_except_table, .eh_frame
+                    -> __TEXT,__gcc_except_tab, __TEXT,__eh_frame (no
+                       terminator), and the __TEXT,__unwind_info index the
+                       macOS unwinder reads first (macho_unwind_info)
      .mir.addrpool  -> __DATA_CONST,__mir_addrpool  (S_REGULAR -- the
                        addrpool-as-GOT model needs no stubs, no lazy
                        binding, no indirect symbol table; dyld reads the
@@ -211,13 +215,22 @@ static void macho_sha256_final (macho_sha256_t *s, uint8_t out[32]) {
 #define MACHO_S_REGULAR 0x0u
 #define MACHO_S_ZEROFILL 0x1u
 #define MACHO_S_MOD_INIT_FUNC_POINTERS 0x9u
+#define MACHO_S_COALESCED 0xbu
 #define MACHO_S_ATTR_PURE_INSTRUCTIONS 0x80000000u
+#define MACHO_S_ATTR_NO_TOC 0x40000000u
+#define MACHO_S_ATTR_STRIP_STATIC_SYMS 0x20000000u
+#define MACHO_S_ATTR_LIVE_SUPPORT 0x08000000u
 #define MACHO_S_ATTR_SOME_INSTRUCTIONS 0x00000400u
+/* __TEXT,__eh_frame's type and attributes, as clang and the linkers write it */
+#define MACHO_S_EH_FRAME \
+  (MACHO_S_COALESCED | MACHO_S_ATTR_NO_TOC | MACHO_S_ATTR_STRIP_STATIC_SYMS \
+   | MACHO_S_ATTR_LIVE_SUPPORT)
 
 #define MACHO_N_UNDF 0x0u
 #define MACHO_N_SECT 0xeu
 #define MACHO_N_EXT 0x1u
 #define MACHO_N_WEAK_DEF 0x0080u
+#define MACHO_N_WEAK_REF 0x0040u /* an undefined weak reference */
 
 #define MACHO_PLATFORM_MACOS 1u
 #define MACHO_MINOS_12_0 0x000c0000u /* 12.0.0 as xxxx.yy.zz nibbles */
@@ -234,6 +247,7 @@ static void macho_sha256_final (macho_sha256_t *s, uint8_t out[32]) {
    (imm | 0xF0 as int8): 0xE -> -2 = flat-namespace lookup. */
 #define MACHO_BIND_SPECIAL_DYLIB_FLAT_LOOKUP 0xEu
 #define MACHO_BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM 0x40u
+#define MACHO_BIND_SYMBOL_FLAGS_WEAK_IMPORT 0x1u
 #define MACHO_BIND_OPCODE_SET_TYPE_IMM 0x50u
 #define MACHO_BIND_OPCODE_SET_ADDEND_SLEB 0x60u
 #define MACHO_BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB 0x70u
@@ -340,6 +354,7 @@ typedef struct {
   uint64_t off;
   const char *name; /* import name, no `_' prefix yet */
   int64_t addend;
+  int weak_p; /* a weak reference: dyld binds 0 when no image exports it */
 } macho_bind_t;
 
 static int macho_rebase_cmp (const void *a, const void *b) {
@@ -525,6 +540,128 @@ static int macho_image_handle_p (const objsym_t *s) {
   return s->name != NULL && s->defined_p && strcmp (s->name, "__dso_handle") == 0;
 }
 
+/* ===== __unwind_info: the image's unwind index ===========================
+   The macOS unwinder looks a pc up here first (libunwind's
+   getInfoFromCompactEncodingSection), then reads the FDE the entry names.
+   MIR's frames are described by their FDEs, so a function with one gets the
+   DWARF-mode encoding carrying the FDE's __eh_frame offset -- what ld64 and
+   lld write for a function whose CFI has no compact form -- and its
+   personality and LSDA come from the FDE: the personality array and the
+   LSDA index stay empty.  A function without an FDE gets encoding 0 (no
+   unwind info), so it never inherits its predecessor's FDE.  An FDE past
+   the 24-bit offset field keeps DWARF mode with offset 0, which the
+   unwinder answers by searching __eh_frame.
+
+   Layout (version 1): the header; the (empty) common-encodings and
+   personality arrays; one index entry per second-level page plus a
+   sentinel at the end of __text; the (empty) LSDA index; the pages,
+   UNWIND_SECOND_LEVEL_REGULAR rows of {function offset, encoding}, at most
+   4096 bytes each.  Function offsets are from the mach header. */
+#define MACHO_UNWIND_SECTION_VERSION 1u
+#define MACHO_UNWIND_SECOND_LEVEL_REGULAR 2u
+#define MACHO_UNWIND_PAGE_ROWS ((4096u - 8u) / 8u)
+#define MACHO_UNWIND_DWARF_OFFSET_MASK 0x00ffffffu
+#if MIR_TARGET_IS_AARCH64
+#define MACHO_UNWIND_MODE_DWARF 0x03000000u
+#else
+#define MACHO_UNWIND_MODE_DWARF 0x04000000u
+#endif
+
+typedef struct {
+  uint64_t off; /* from the mach header */
+  uint32_t enc;
+} macho_unwind_row_t;
+
+/* by offset; at one offset the FDE's row first */
+static int macho_unwind_row_cmp (const void *a, const void *b) {
+  const macho_unwind_row_t *x = a, *y = b;
+  if (x->off != y->off) return x->off < y->off ? -1 : 1;
+  return (x->enc == 0) - (y->enc == 0);
+}
+
+/* OBJ's __unwind_info into B, its __text at TEXT_OFF from the mach header.
+   An FDE is found by its initial location: its one relocation against
+   __text, 8 bytes into the record.  Returns 0, or -1 on a malformed record
+   or an offset past 32 bits. */
+static int macho_unwind_info (MIR_object_t obj, uint64_t text_off, dwbuf_t *b) {
+  size_t n = 0, cap = obj->n_syms;
+  macho_unwind_row_t *rows;
+  int rc = -1;
+
+  for (size_t i = 0; i < obj->n_rels; i++)
+    if (obj->rels[i].sec == MIR_OBJ_SEC_EHFRAME) cap++;
+  rows = malloc ((cap != 0 ? cap : 1) * sizeof (macho_unwind_row_t));
+  if (rows == NULL) return -1;
+  for (size_t i = 0; i < obj->n_rels; i++) {
+    const objreloc_t *r = &obj->rels[i];
+    uint64_t fde;
+    uint32_t id;
+    if (r->sec != MIR_OBJ_SEC_EHFRAME || r->kind != MIR_OBJ_RELOC_PC32
+        || !obj->syms[r->sym].section_p || obj->syms[r->sym].sec != MIR_OBJ_SEC_TEXT)
+      continue;
+    if (r->offset < 8 || r->addend < 0 || r->offset + 4 > obj->ehframe.len) goto out;
+    fde = r->offset - 8;
+    memcpy (&id, obj->ehframe.p + fde + 4, 4);
+    if (id == 0) goto out; /* a CIE: not the shape the capture writes */
+    rows[n].off = text_off + (uint64_t) r->addend;
+    rows[n++].enc
+      = MACHO_UNWIND_MODE_DWARF | (fde <= MACHO_UNWIND_DWARF_OFFSET_MASK ? (uint32_t) fde : 0);
+  }
+  for (size_t i = 0; i < obj->n_syms; i++) {
+    const objsym_t *s = &obj->syms[i];
+    if (s->defined_p && !s->section_p && s->func_p && s->sec == MIR_OBJ_SEC_TEXT)
+      rows[n++] = (macho_unwind_row_t){text_off + s->value, 0};
+  }
+  qsort (rows, n, sizeof (macho_unwind_row_t), macho_unwind_row_cmp);
+  size_t m = 0;
+  for (size_t i = 0; i < n; i++)
+    if (m == 0 || rows[m - 1].off != rows[i].off) rows[m++] = rows[i];
+  uint64_t text_end = text_off + obj->text.len;
+  if (text_end > UINT32_MAX) goto out;
+
+  uint32_t n_pages = (uint32_t) ((m + MACHO_UNWIND_PAGE_ROWS - 1) / MACHO_UNWIND_PAGE_ROWS);
+  uint32_t index_off = 28, lsda_off = index_off + 12 * (n_pages + 1);
+  buf_u32 (b, MACHO_UNWIND_SECTION_VERSION);
+  buf_u32 (b, index_off); /* common encodings: none */
+  buf_u32 (b, 0);
+  buf_u32 (b, index_off); /* personalities: none */
+  buf_u32 (b, 0);
+  buf_u32 (b, index_off);
+  buf_u32 (b, n_pages + 1);
+  uint32_t page_off = lsda_off; /* the LSDA index is empty */
+  for (uint32_t pg = 0; pg < n_pages; pg++) {
+    size_t first = (size_t) pg * MACHO_UNWIND_PAGE_ROWS;
+    size_t count = m - first < MACHO_UNWIND_PAGE_ROWS ? m - first : MACHO_UNWIND_PAGE_ROWS;
+    buf_u32 (b, (uint32_t) rows[first].off);
+    buf_u32 (b, page_off);
+    buf_u32 (b, lsda_off);
+    page_off += 8 + 8 * (uint32_t) count;
+  }
+  buf_u32 (b, (uint32_t) text_end); /* the sentinel */
+  buf_u32 (b, 0);
+  buf_u32 (b, lsda_off);
+  for (uint32_t pg = 0; pg < n_pages; pg++) {
+    size_t first = (size_t) pg * MACHO_UNWIND_PAGE_ROWS;
+    size_t count = m - first < MACHO_UNWIND_PAGE_ROWS ? m - first : MACHO_UNWIND_PAGE_ROWS;
+    buf_u32 (b, MACHO_UNWIND_SECOND_LEVEL_REGULAR);
+    buf_u16 (b, 8); /* the rows follow the header */
+    buf_u16 (b, (uint16_t) count);
+    for (size_t i = first; i < first + count; i++) {
+      buf_u32 (b, (uint32_t) rows[i].off);
+      buf_u32 (b, rows[i].enc);
+    }
+  }
+  rc = 0;
+out:
+  free (rows);
+  return rc;
+}
+
+/* Kind SEC lies in the image's read-only __TEXT segment. */
+static int macho_text_segment_kind_p (int sec) {
+  return sec == MIR_OBJ_SEC_TEXT || sec == MIR_OBJ_SEC_EHFRAME || sec == MIR_OBJ_SEC_EXCEPT;
+}
+
 static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
                                   void **buf, size_t *size) {
   int dylib_p = params->shared_p != 0; /* MH_DYLIB (see the header note) */
@@ -561,7 +698,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
       if (!obj->syms[r->sym].defined_p) return -1; /* field kind against an import */
       continue;
     }
-    if (r->sec == MIR_OBJ_SEC_TEXT) return -1; /* dynamic slot in text */
+    if (macho_text_segment_kind_p (r->sec)) return -1; /* dynamic slot in __TEXT */
     if (obj->syms[r->sym].defined_p)
       n_rebase++;
     else
@@ -577,7 +714,11 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
           || strlen (params->extra_segname) > 16 || strlen (params->extra_sectname) > 16))
     return -1;
 
-  /* ---- load-command sizing (needed before any file offset exists) */
+  /* ---- load-command sizing (needed before any file offset exists).
+     __TEXT carries the unwind tables after the code, in the linkers' order:
+     __gcc_except_tab, then __unwind_info and __eh_frame. */
+  uint32_t except_p = obj->except.len != 0, eh_p = obj->ehframe.len != 0;
+  uint32_t n_text_sects = 1 + except_p + 2 * eh_p;
   uint32_t n_init_sects = obj->initarr.len != 0 ? 1 : 0;
   uint32_t n_data_sects = 1 /* __data (kept even when empty: stable numbering) */
                           + (obj->bss_size != 0 ? 1 : 0);
@@ -585,7 +726,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   uint32_t libsystem_size = machob_lc_str_size (24, "/usr/lib/libSystem.B.dylib");
   uint32_t id_size = machob_lc_str_size (24 + 7, ident); /* "@rpath/" + ident */
   uint32_t sizeofcmds = (dylib_p ? 0 : 72 + 0)            /* __PAGEZERO */
-                        + (72 + 80)                       /* __TEXT + __text */
+                        + (72 + n_text_sects * 80)        /* __TEXT */
                         + (72 + (1 + n_init_sects) * 80)  /* __DATA_CONST */
                         + (72 + n_data_sects * 80)        /* __DATA */
                         + (72 + 0)                        /* __LINKEDIT */
@@ -625,21 +766,34 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
 #define MACHO_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   /* ---- layout: identity fileoff <-> vaddr-base mapping through __DATA (the
      segments after it: below) */
-  uint64_t text_off = MACHO_ALIGN (32 + sizeofcmds, 16); /* keeps SSE pool alignment */
+  /* the code starts on MIR_TARGET_CODE_ALIGN, as in the object (its loop-head
+     padding and SSE pool alignment are relative to that) */
+  uint64_t text_off = MACHO_ALIGN (32 + sizeofcmds, MIR_TARGET_CODE_ALIGN);
   uint64_t text_end = text_off + obj->text.len;
-  uint64_t text_seg_size = MACHO_ALIGN (text_end, MACHO_PAGE);
+  uint64_t except_off = MACHO_ALIGN (text_end, 4);
+  uint64_t unwind_off = MACHO_ALIGN (except_off + obj->except.len, 4);
+  dwbuf_t unwind = {0}; /* __unwind_info: sized by the functions, placed by their offsets */
+  if (eh_p && macho_unwind_info (obj, text_off, &unwind) != 0) {
+    free (unwind.p);
+    return -1;
+  }
+  uint64_t eh_off = MACHO_ALIGN (unwind_off + unwind.len, 8);
+  uint64_t text_seg_size
+    = MACHO_ALIGN (eh_p ? eh_off + obj->ehframe.len : unwind_off, MACHO_PAGE);
 
   size_t pool_align = obj->pool_align > 8 ? obj->pool_align : 8;
-  if (pool_align > MACHO_PAGE) return -1; /* congruence bound, ELF parity */
+  size_t data_align = obj->data_align > 8 ? obj->data_align : 8;
+  size_t bss_align = obj->bss_align > 8 ? obj->bss_align : 8;
+  if (pool_align > MACHO_PAGE || data_align > MACHO_PAGE || bss_align > MACHO_PAGE) {
+    free (unwind.p); /* congruence bound, ELF parity */
+    return -1;
+  }
   uint64_t dc_off = text_seg_size; /* page-aligned segment start = pool start */
   uint64_t initarr_off = MACHO_ALIGN (dc_off + obj->pool.len, 8);
   uint64_t dc_end = initarr_off + obj->initarr.len;
   uint64_t dc_seg_size = MACHO_ALIGN (dc_end - dc_off, MACHO_PAGE);
   if (dc_seg_size == 0) dc_seg_size = MACHO_PAGE; /* keep fixed segment indexes */
 
-  size_t data_align = obj->data_align > 8 ? obj->data_align : 8;
-  size_t bss_align = obj->bss_align > 8 ? obj->bss_align : 8;
-  if (data_align > MACHO_PAGE || bss_align > MACHO_PAGE) return -1;
   uint64_t data_off = dc_off + dc_seg_size;
   uint64_t data_file_size = MACHO_ALIGN (obj->data.len, MACHO_PAGE);
   if (data_file_size == 0) data_file_size = MACHO_PAGE;
@@ -661,23 +815,19 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   uint64_t le_off = xtra_off + xtra_file_size; /* __LINKEDIT file start */
   uint64_t le_vaddr = xtra_vaddr + xtra_file_size;
 
-  uint64_t text_vaddr = base + text_off; /* builder .text offset 0 */
-  uint64_t data_vaddr = base + data_off;
-  uint64_t pool_vaddr = base + dc_off;
-  uint64_t initarr_vaddr = base + initarr_off;
+  /* each kind's file offset (bss: none) and link vaddr */
+  uint64_t sec_off[MIR_OBJ_SEC_NUM] = {0}, sec_vaddr[MIR_OBJ_SEC_NUM];
+  sec_off[MIR_OBJ_SEC_TEXT] = text_off; /* builder .text offset 0 */
+  sec_off[MIR_OBJ_SEC_ADDRPOOL] = dc_off;
+  sec_off[MIR_OBJ_SEC_INITARR] = initarr_off;
+  sec_off[MIR_OBJ_SEC_DATA] = data_off;
+  sec_off[MIR_OBJ_SEC_EXCEPT] = except_off;
+  sec_off[MIR_OBJ_SEC_EHFRAME] = eh_off;
+  for (int k = 0; k < MIR_OBJ_SEC_NUM; k++) sec_vaddr[k] = base + sec_off[k];
+  sec_vaddr[MIR_OBJ_SEC_BSS] = bss_vaddr;
 
-#define MACHO_SEC_VADDR(sec) \
-  ((sec) == MIR_OBJ_SEC_TEXT      ? text_vaddr \
-   : (sec) == MIR_OBJ_SEC_DATA    ? data_vaddr \
-   : (sec) == MIR_OBJ_SEC_BSS     ? bss_vaddr \
-   : (sec) == MIR_OBJ_SEC_INITARR ? initarr_vaddr \
-                                  : pool_vaddr)
   /* a defined symbol's link vaddr; the image handle is the header (base) */
-#define MACHO_SYM_VADDR(s) \
-  (macho_image_handle_p (s) ? base : MACHO_SEC_VADDR ((s)->sec) + (s)->value)
-  /* slot file offset for a reloc-carrying section (never TEXT/BSS here) */
-#define MACHO_SLOT_OFF(sec) \
-  ((sec) == MIR_OBJ_SEC_DATA ? data_off : (sec) == MIR_OBJ_SEC_INITARR ? initarr_off : dc_off)
+#define MACHO_SYM_VADDR(s) (macho_image_handle_p (s) ? base : sec_vaddr[(s)->sec] + (s)->value)
   /* dyld segment index + segment file base for a slot's section */
 #define MACHO_SLOT_SEG(sec) \
   (((sec) == MIR_OBJ_SEC_DATA ? MACHO_SEG_DATA : MACHO_SEG_DATA_CONST) - seg_shift)
@@ -698,12 +848,12 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     for (size_t i = 0; i < obj->n_rels; i++) {
       objreloc_t *r = &obj->rels[i];
       if (r->kind != MIR_OBJ_RELOC_ABS64) continue;
-      uint64_t seg_rel = MACHO_SLOT_OFF (r->sec) + r->offset - MACHO_SLOT_SEG_OFF (r->sec);
+      uint64_t seg_rel = sec_off[r->sec] + r->offset - MACHO_SLOT_SEG_OFF (r->sec);
       if (obj->syms[r->sym].defined_p)
         rebases[ri++] = (macho_rebase_t){MACHO_SLOT_SEG (r->sec), seg_rel};
       else
         binds[bi++] = (macho_bind_t){MACHO_SLOT_SEG (r->sec), seg_rel, obj->syms[r->sym].name,
-                                     r->addend};
+                                     r->addend, obj->syms[r->sym].weak_p};
     }
     qsort (rebases, n_rebase, sizeof (macho_rebase_t), macho_rebase_cmp);
     qsort (binds, n_bind, sizeof (macho_bind_t), macho_bind_cmp);
@@ -741,7 +891,8 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
       buf_u8 (&bind, MACHO_BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 1);
     buf_u8 (&bind, MACHO_BIND_OPCODE_SET_TYPE_IMM | MACHO_BIND_TYPE_POINTER);
     for (size_t i = 0; i < n_bind; i++) {
-      buf_u8 (&bind, MACHO_BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | 0);
+      buf_u8 (&bind, MACHO_BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM
+                       | (binds[i].weak_p ? MACHO_BIND_SYMBOL_FLAGS_WEAK_IMPORT : 0));
       buf_u8 (&bind, '_'); /* the C-symbol underscore prefix */
       buf_str (&bind, binds[i].name);
       if (binds[i].addend != cur_addend) {
@@ -780,7 +931,18 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
 
   /* ---- symtab: nlist_64 in local / extdef / undef order (LC_DYSYMTAB
      ranges), `_' prefix on every name; ELF section symbols have no
-     Mach-O counterpart and are skipped (relocs against them were baked) */
+     Mach-O counterpart and are skipped (relocs against them were baked).
+     n_sect is the 1-based section ordinal in LC order: __TEXT's (__text,
+     __gcc_except_tab, __unwind_info, __eh_frame), __mir_addrpool,
+     __mod_init_func, __data, __bss. */
+  uint8_t sec_ord[MIR_OBJ_SEC_NUM] = {0};
+  sec_ord[MIR_OBJ_SEC_TEXT] = 1;
+  sec_ord[MIR_OBJ_SEC_EXCEPT] = (uint8_t) (1 + except_p);
+  sec_ord[MIR_OBJ_SEC_EHFRAME] = (uint8_t) n_text_sects;
+  sec_ord[MIR_OBJ_SEC_ADDRPOOL] = (uint8_t) (n_text_sects + 1);
+  sec_ord[MIR_OBJ_SEC_INITARR] = (uint8_t) (n_text_sects + 2);
+  sec_ord[MIR_OBJ_SEC_DATA] = (uint8_t) (n_text_sects + 1 + n_init_sects + 1);
+  sec_ord[MIR_OBJ_SEC_BSS] = (uint8_t) (sec_ord[MIR_OBJ_SEC_DATA] + 1);
   uint32_t n_local = 0, n_extdef = 0, n_undef = 0;
   buf_u8 (&strtab, 0);
   for (int pass = 0; pass < 3; pass++)
@@ -795,16 +957,9 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
       buf_u32 (&symtab, strx);                                          /* n_strx */
       if (s->defined_p) {
         buf_u8 (&symtab, (uint8_t) (MACHO_N_SECT | (s->local_p ? 0 : MACHO_N_EXT)));
-        /* n_sect is the 1-based section ordinal in LC order:
-           __text=1, __mir_addrpool=2, then __mod_init_func, __data, __bss */
-        uint8_t n_sect = s->sec == MIR_OBJ_SEC_TEXT      ? 1
-                         : s->sec == MIR_OBJ_SEC_ADDRPOOL ? 2
-                         : s->sec == MIR_OBJ_SEC_INITARR  ? 3
-                         : s->sec == MIR_OBJ_SEC_DATA     ? (uint8_t) (2 + n_init_sects + 1)
-                                                          : (uint8_t) (2 + n_init_sects + 2);
-        buf_u8 (&symtab, n_sect);
+        buf_u8 (&symtab, sec_ord[s->sec]);
         buf_u16 (&symtab, s->weak_p ? MACHO_N_WEAK_DEF : 0);            /* n_desc */
-        buf_u64 (&symtab, MACHO_SEC_VADDR (s->sec) + s->value);         /* n_value */
+        buf_u64 (&symtab, sec_vaddr[s->sec] + s->value);                /* n_value */
         if (pass == 0)
           n_local++;
         else
@@ -812,7 +967,8 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
       } else {
         buf_u8 (&symtab, MACHO_N_UNDF | MACHO_N_EXT);
         buf_u8 (&symtab, 0);                                            /* NO_SECT */
-        buf_u16 (&symtab, 1 << 8);                                      /* libSystem ordinal */
+        buf_u16 (&symtab, (uint16_t) ((1 << 8) | (s->weak_p ? MACHO_N_WEAK_REF : 0)));
+        /* ^ libSystem ordinal; N_WEAK_REF for a weak reference */
         buf_u64 (&symtab, 0);
         n_undef++;
       }
@@ -888,6 +1044,11 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   p = calloc (1, (size_t) total);
   if (p == NULL) goto done;
   if (obj->text.len != 0) memcpy (p + text_off, obj->text.p, obj->text.len);
+  if (except_p) memcpy (p + except_off, obj->except.p, obj->except.len);
+  if (eh_p) { /* the records' fields: resolved by the relocation pass below */
+    memcpy (p + unwind_off, unwind.p, unwind.len);
+    memcpy (p + eh_off, obj->ehframe.p, obj->ehframe.len);
+  }
   if (obj->pool.len != 0) memcpy (p + dc_off, obj->pool.p, obj->pool.len);
   /* initarr file bytes: zero, written by the relocation pass below */
   if (obj->data.len != 0) memcpy (p + data_off, obj->data.p, obj->data.len);
@@ -905,8 +1066,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   for (size_t i = 0; i < obj->n_rels; i++) {
     objreloc_t *r = &obj->rels[i];
     objsym_t *s = &obj->syms[r->sym];
-    uint64_t slot_off = (r->sec == MIR_OBJ_SEC_TEXT ? text_off : MACHO_SLOT_OFF (r->sec))
-                        + r->offset;
+    uint64_t slot_off = sec_off[r->sec] + r->offset;
     if (r->kind != MIR_OBJ_RELOC_ABS64) {
       uint64_t v = MACHO_SYM_VADDR (s) + (uint64_t) r->addend;
       if (obj_apply_field_reloc (r->kind, p + slot_off, v, base + slot_off) != 0)
@@ -938,30 +1098,44 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     if (!dylib_p) machob_segment (&lc, "__PAGEZERO", 0, MACHO_BASE, 0, 0, 0, 0);
 
     machob_segment (&lc, "__TEXT", base, text_seg_size, 0, text_seg_size,
-                    MACHO_VM_PROT_READ | MACHO_VM_PROT_EXECUTE, 1);
-    machob_section (&lc, "__text", "__TEXT", text_vaddr, obj->text.len, (uint32_t) text_off, 4,
+                    MACHO_VM_PROT_READ | MACHO_VM_PROT_EXECUTE, n_text_sects);
+    machob_section (&lc, "__text", "__TEXT", sec_vaddr[MIR_OBJ_SEC_TEXT], obj->text.len,
+                    (uint32_t) text_off, 4,
                     MACHO_S_REGULAR | MACHO_S_ATTR_PURE_INSTRUCTIONS
                       | MACHO_S_ATTR_SOME_INSTRUCTIONS);
+    if (except_p)
+      machob_section (&lc, "__gcc_except_tab", "__TEXT", sec_vaddr[MIR_OBJ_SEC_EXCEPT],
+                      obj->except.len, (uint32_t) except_off, 2, MACHO_S_REGULAR);
+    if (eh_p) {
+      machob_section (&lc, "__unwind_info", "__TEXT", base + unwind_off, unwind.len,
+                      (uint32_t) unwind_off, 2, MACHO_S_REGULAR);
+      machob_section (&lc, "__eh_frame", "__TEXT", sec_vaddr[MIR_OBJ_SEC_EHFRAME],
+                      obj->ehframe.len, (uint32_t) eh_off, 3, MACHO_S_EH_FRAME);
+    }
 
     machob_segment (&lc, "__DATA_CONST", base + dc_off, dc_seg_size, dc_off, dc_seg_size,
                     MACHO_VM_PROT_READ | MACHO_VM_PROT_WRITE, 1 + n_init_sects);
     {
       unsigned pl2 = 0;
       while ((1u << pl2) < pool_align) pl2++;
-      machob_section (&lc, "__mir_addrpool", "__DATA_CONST", pool_vaddr, obj->pool.len,
+      machob_section (&lc, "__mir_addrpool", "__DATA_CONST", sec_vaddr[MIR_OBJ_SEC_ADDRPOOL],
+                      obj->pool.len,
                       (uint32_t) dc_off, pl2, MACHO_S_REGULAR);
     }
     if (n_init_sects != 0)
-      machob_section (&lc, "__mod_init_func", "__DATA_CONST", initarr_vaddr, obj->initarr.len,
+      machob_section (&lc, "__mod_init_func", "__DATA_CONST", sec_vaddr[MIR_OBJ_SEC_INITARR],
+                      obj->initarr.len,
                       (uint32_t) initarr_off, 3, MACHO_S_MOD_INIT_FUNC_POINTERS);
 
-    machob_segment (&lc, "__DATA", data_vaddr, data_vm_size, data_off, data_file_size,
+    machob_segment (&lc, "__DATA", sec_vaddr[MIR_OBJ_SEC_DATA], data_vm_size, data_off,
+                    data_file_size,
                     MACHO_VM_PROT_READ | MACHO_VM_PROT_WRITE, n_data_sects);
     {
       unsigned dl2 = 0, bl2 = 0;
       while ((1u << dl2) < data_align) dl2++;
       while ((1u << bl2) < bss_align) bl2++;
-      machob_section (&lc, "__data", "__DATA", data_vaddr, obj->data.len, (uint32_t) data_off,
+      machob_section (&lc, "__data", "__DATA", sec_vaddr[MIR_OBJ_SEC_DATA], obj->data.len,
+                      (uint32_t) data_off,
                       dl2, MACHO_S_REGULAR);
       if (obj->bss_size != 0)
         machob_section (&lc, "__bss", "__DATA", bss_vaddr, obj->bss_size, 0, bl2,
@@ -1182,8 +1356,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   p = NULL;
   rc = 0;
 #undef MACHO_ALIGN
-#undef MACHO_SEC_VADDR
-#undef MACHO_SLOT_OFF
+#undef MACHO_SYM_VADDR
 #undef MACHO_SLOT_SEG
 #undef MACHO_SLOT_SEG_OFF
 
@@ -1202,6 +1375,7 @@ done:
   free (symtab.p);
   free (strtab.p);
   free (sig.p);
+  free (unwind.p);
   return rc;
 }
 
@@ -1230,6 +1404,16 @@ done:
               resolves it as S + A' - (P + 4) where ELF resolves S + A - P,
               so the two encodings differ by exactly the 4 the ELF addend
               already folded in.
+     PC32 in a data section (the unwind records' pointer fields, pcrel
+              sdata4) -> what clang writes there: a SUBTRACTOR against the
+              field's own section label followed by an UNSIGNED against the
+              target, A - P's section offset in the field (the linker
+              computes target + field - label).  In __eh_frame a field
+              through a __mir_addrpool slot holding symbol S -- the CIE's
+              0x9b personality -- is a GOT reference to S instead
+              (X86_64_RELOC_GOT, +4 in the field for ld64's P + 4 base;
+              ARM64_RELOC_POINTER_TO_GOT): ld64 reads a CIE's personality
+              only in that form.
      aarch64 page pairs -> ARM64_RELOC_PAGE21 / _PAGEOFF12, each preceded
               IMMEDIATELY by an ARM64_RELOC_ADDEND entry when the addend is
               nonzero (an instruction field has no room for one, so the
@@ -1251,10 +1435,25 @@ done:
 /* relocation_info r_type values -- only the kinds the capture emits */
 #define MACHO_X86_64_RELOC_UNSIGNED 0u
 #define MACHO_X86_64_RELOC_SIGNED 1u
+#define MACHO_X86_64_RELOC_GOT 4u
+#define MACHO_X86_64_RELOC_SUBTRACTOR 5u
 #define MACHO_ARM64_RELOC_UNSIGNED 0u
+#define MACHO_ARM64_RELOC_SUBTRACTOR 1u
 #define MACHO_ARM64_RELOC_PAGE21 3u
 #define MACHO_ARM64_RELOC_PAGEOFF12 4u
+#define MACHO_ARM64_RELOC_POINTER_TO_GOT 7u
 #define MACHO_ARM64_RELOC_ADDEND 10u
+#if MIR_TARGET_IS_AARCH64
+#define MACHO_RELOC_UNSIGNED MACHO_ARM64_RELOC_UNSIGNED
+#define MACHO_RELOC_SUBTRACTOR MACHO_ARM64_RELOC_SUBTRACTOR
+#define MACHO_RELOC_DATA_GOT MACHO_ARM64_RELOC_POINTER_TO_GOT
+#define MACHO_GOT_FIELD_ADDEND 0 /* GOT - P */
+#else
+#define MACHO_RELOC_UNSIGNED MACHO_X86_64_RELOC_UNSIGNED
+#define MACHO_RELOC_SUBTRACTOR MACHO_X86_64_RELOC_SUBTRACTOR
+#define MACHO_RELOC_DATA_GOT MACHO_X86_64_RELOC_GOT
+#define MACHO_GOT_FIELD_ADDEND 4 /* GOT + 4 - (P + 4) */
+#endif
 
 /* The .o's sections in emission order: zerofill LAST (it has no file bytes),
    and __text / __mir_addrpool / __data present even when empty so the
@@ -1265,6 +1464,8 @@ enum {
   MACHO_OSEC_POOL,
   MACHO_OSEC_INIT,
   MACHO_OSEC_DATA,
+  MACHO_OSEC_EXCEPT,
+  MACHO_OSEC_EHFRAME,
   MACHO_OSEC_BSS,
   MACHO_OSEC_N
 };
@@ -1274,6 +1475,8 @@ static int macho_osec_of (int sec) {
          : sec == MIR_OBJ_SEC_ADDRPOOL  ? MACHO_OSEC_POOL
          : sec == MIR_OBJ_SEC_INITARR   ? MACHO_OSEC_INIT
          : sec == MIR_OBJ_SEC_DATA      ? MACHO_OSEC_DATA
+         : sec == MIR_OBJ_SEC_EXCEPT    ? MACHO_OSEC_EXCEPT
+         : sec == MIR_OBJ_SEC_EHFRAME   ? MACHO_OSEC_EHFRAME
          : sec == MIR_OBJ_SEC_BSS       ? MACHO_OSEC_BSS
                                        : -1;
 }
@@ -1283,11 +1486,13 @@ static int macho_osec_of (int sec) {
    ld64 treats them as assembler temporaries and they can never collide with
    a user symbol (those all carry the `_' prefix). */
 static const char *macho_osec_label (int osec) {
-  return osec == MACHO_OSEC_TEXT   ? "ltmp_text"
-         : osec == MACHO_OSEC_POOL ? "ltmp_mir_addrpool"
-         : osec == MACHO_OSEC_INIT ? "ltmp_mod_init_func"
-         : osec == MACHO_OSEC_DATA ? "ltmp_data"
-                                   : "ltmp_bss";
+  return osec == MACHO_OSEC_TEXT      ? "ltmp_text"
+         : osec == MACHO_OSEC_POOL    ? "ltmp_mir_addrpool"
+         : osec == MACHO_OSEC_INIT    ? "ltmp_mod_init_func"
+         : osec == MACHO_OSEC_DATA    ? "ltmp_data"
+         : osec == MACHO_OSEC_EXCEPT  ? "ltmp_gcc_except_tab"
+         : osec == MACHO_OSEC_EHFRAME ? "ltmp_eh_frame"
+                                      : "ltmp_bss";
 }
 
 /* one relocation_info: r_address, then the packed bitfield word
@@ -1325,20 +1530,62 @@ static void macho_osec_set (macho_osec_t *s, const char *sect, const char *seg,
   s->zerofill_p = zerofill_p;
 }
 
+/* The symbol a pc-relative __eh_frame field R reaches through a
+   __mir_addrpool slot -- the slot's ABS64 target, named and without an
+   addend -- or -1: a field the .o spells as a GOT reference to it. */
+static int macho_eh_got_symbol (MIR_object_t obj, const objreloc_t *r) {
+  if (r->sec != MIR_OBJ_SEC_EHFRAME || r->kind != MIR_OBJ_RELOC_PC32
+      || !obj->syms[r->sym].section_p || obj->syms[r->sym].sec != MIR_OBJ_SEC_ADDRPOOL)
+    return -1;
+  for (size_t i = 0; i < obj->n_rels; i++) {
+    const objreloc_t *slot = &obj->rels[i];
+    if (slot->sec == MIR_OBJ_SEC_ADDRPOOL && slot->kind == MIR_OBJ_RELOC_ABS64
+        && (int64_t) slot->offset == r->addend)
+      return slot->addend == 0 && slot->sym >= 0 && (size_t) slot->sym < obj->n_syms
+                 && obj->syms[slot->sym].name != NULL
+               ? slot->sym
+               : -1;
+  }
+  return -1;
+}
+
+/* Is R an FDE's LSDA field: pc-relative from __eh_frame into
+   __gcc_except_tab.  Apple ld keeps it only when it names the table's own
+   label -- against the section's label plus the table's offset ld 1115
+   writes the label MINUS the offset -- so each table gets an `lexc_*'
+   label, as clang gives each its GCC_except_tableN, and the field targets
+   it with no addend. */
+static int macho_lsda_field_p (MIR_object_t obj, const objreloc_t *r) {
+  return r->sec == MIR_OBJ_SEC_EHFRAME && r->kind == MIR_OBJ_RELOC_PC32
+         && obj->syms[r->sym].section_p && obj->syms[r->sym].sec == MIR_OBJ_SEC_EXCEPT;
+}
+
+/* X's index in the sorted, distinct V[0..N), or N */
+static size_t macho_u64_index (const uint64_t *v, size_t n, uint64_t x) {
+  const uint64_t *f = n == 0 ? NULL : bsearch (&x, v, n, sizeof (uint64_t), macho_u64_cmp);
+  return f == NULL ? n : (size_t) (f - v);
+}
+
 static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
-  if (obj->debug != NULL || obj->dbg_raw_p) return -1; /* no __DWARF yet: say so */
+  if (obj_debug_refused_p (obj, "Mach-O object")) return -1;
+  /* the unwind sections' own start labels: their fields' SUBTRACTOR base */
+  if (obj->except.len != 0) MIR_object_section_symbol (obj, MIR_OBJ_SEC_EXCEPT);
+  if (obj->ehframe.len != 0) MIR_object_section_symbol (obj, MIR_OBJ_SEC_EHFRAME);
 
   size_t n = obj->n_syms;
   int rc = -1;
   unsigned char *p = NULL;
   uint32_t *final_idx = NULL;
+  uint64_t *tabs = NULL; /* the region tables' offsets (macho_lsda_field_p) */
+  size_t n_tabs = 0;
   dwbuf_t symtab = {0}, strtab = {0}, rel[MACHO_OSEC_N];
   for (int s = 0; s < MACHO_OSEC_N; s++) rel[s] = (dwbuf_t){0};
 
 #define MACHO_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   /* ---- section table */
   macho_osec_t S[MACHO_OSEC_N];
-  macho_osec_set (&S[MACHO_OSEC_TEXT], "__text", "__TEXT", obj->text.p, obj->text.len, 16,
+  macho_osec_set (&S[MACHO_OSEC_TEXT], "__text", "__TEXT", obj->text.p, obj->text.len,
+                  MIR_TARGET_CODE_ALIGN,
                   MACHO_S_REGULAR | MACHO_S_ATTR_PURE_INSTRUCTIONS
                     | MACHO_S_ATTR_SOME_INSTRUCTIONS,
                   1, 0);
@@ -1352,6 +1599,10 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
                   obj->initarr.len, 8, MACHO_S_MOD_INIT_FUNC_POINTERS, obj->initarr.len != 0, 0);
   macho_osec_set (&S[MACHO_OSEC_DATA], "__data", "__DATA", obj->data.p, obj->data.len,
                   obj->data_align > 1 ? obj->data_align : 1, MACHO_S_REGULAR, 1, 0);
+  macho_osec_set (&S[MACHO_OSEC_EXCEPT], "__gcc_except_tab", "__TEXT", obj->except.p,
+                  obj->except.len, 1, MACHO_S_REGULAR, obj->except.len != 0, 0);
+  macho_osec_set (&S[MACHO_OSEC_EHFRAME], "__eh_frame", "__TEXT", obj->ehframe.p,
+                  obj->ehframe.len, 8, MACHO_S_EH_FRAME, obj->ehframe.len != 0, 0);
   macho_osec_set (&S[MACHO_OSEC_BSS], "__bss", "__DATA", NULL, obj->bss_size,
                   obj->bss_align > 1 ? obj->bss_align : 1, MACHO_S_ZEROFILL, obj->bss_size != 0,
                   1);
@@ -1387,13 +1638,42 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
 
   /* ---- symtab: nlist_64 in local / extdef / undef order (the LC_DYSYMTAB
      ranges are index ranges, so the grouping IS the contract).  Section
-     symbols become their sections' `ltmp_*' local labels; every other name
-     carries the `_' C prefix. */
+     symbols become their sections' `ltmp_*' local labels, each region table
+     gets an `lexc_<offset>' label after them; every other name carries the
+     `_' C prefix. */
   final_idx = calloc (n ? n : 1, sizeof (uint32_t));
-  if (final_idx == NULL) goto done;
-  uint32_t n_local = 0, n_extdef = 0, n_undef = 0, n_written = 0;
+  tabs = calloc (obj->n_rels ? obj->n_rels : 1, sizeof (uint64_t));
+  if (final_idx == NULL || tabs == NULL) goto done;
+  for (size_t i = 0; i < obj->n_rels; i++) {
+    objreloc_t *r = &obj->rels[i];
+    if (r->sym < 0 || (size_t) r->sym >= n) goto done;
+    if (!macho_lsda_field_p (obj, r)) continue;
+    if (r->addend < 0) goto done;
+    tabs[n_tabs++] = (uint64_t) r->addend;
+  }
+  qsort (tabs, n_tabs, sizeof (uint64_t), macho_u64_cmp);
+  size_t n_distinct = 0;
+  for (size_t k = 0; k < n_tabs; k++)
+    if (n_distinct == 0 || tabs[n_distinct - 1] != tabs[k]) tabs[n_distinct++] = tabs[k];
+  n_tabs = n_distinct;
+  uint32_t n_local = 0, n_extdef = 0, n_undef = 0, n_written = 0, tab0 = 0;
   buf_u8 (&strtab, 0);
-  for (int pass = 0; pass < 3; pass++)
+  for (int pass = 0; pass < 3; pass++) {
+    if (pass == 1) { /* after the object's locals: the tables' labels */
+      tab0 = n_written;
+      for (size_t k = 0; k < n_tabs; k++) {
+        char nm[32];
+        snprintf (nm, sizeof (nm), "lexc_%llx", (unsigned long long) tabs[k]);
+        buf_u32 (&symtab, (uint32_t) strtab.len);
+        buf_str (&strtab, nm);
+        buf_u8 (&symtab, MACHO_N_SECT);
+        buf_u8 (&symtab, (uint8_t) S[MACHO_OSEC_EXCEPT].ordinal);
+        buf_u16 (&symtab, 0);
+        buf_u64 (&symtab, S[MACHO_OSEC_EXCEPT].addr + tabs[k]);
+        n_local++;
+        n_written++;
+      }
+    }
     for (size_t i = 0; i < n; i++) {
       objsym_t *sym = &obj->syms[i];
       if (sym->name == NULL && !sym->section_p) continue; /* anonymous: unreferenceable */
@@ -1424,11 +1704,14 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
       } else {
         buf_u8 (&symtab, MACHO_N_UNDF | MACHO_N_EXT);
         buf_u8 (&symtab, 0); /* NO_SECT */
-        buf_u16 (&symtab, 0);
+        /* a weak REFERENCE is an undefined weak symbol; the image handle is
+           weak by its linkonce definition and lists as clang's does */
+        buf_u16 (&symtab, !sym->defined_p && sym->weak_p ? MACHO_N_WEAK_REF : 0);
         buf_u64 (&symtab, 0);
         n_undef++;
       }
     }
+  }
 
   /* ---- relocation arrays, ascending by offset within each section (the
      ADDEND pseudo-entry stays adjacent to and before its partner) */
@@ -1442,11 +1725,20 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
     uint32_t sn = final_idx[r->sym];
     uint32_t addr = (uint32_t) r->offset;
     if (r->kind == MIR_OBJ_RELOC_ABS64) {
-#if MIR_TARGET_IS_AARCH64
-      machob_reloc (&rel[osec], addr, sn, 0, 3, 1, MACHO_ARM64_RELOC_UNSIGNED);
-#else
-      machob_reloc (&rel[osec], addr, sn, 0, 3, 1, MACHO_X86_64_RELOC_UNSIGNED);
-#endif
+      machob_reloc (&rel[osec], addr, sn, 0, 3, 1, MACHO_RELOC_UNSIGNED);
+      continue;
+    }
+    if (r->kind == MIR_OBJ_RELOC_PC32 && r->sec != MIR_OBJ_SEC_TEXT) { /* a data field */
+      int got = macho_eh_got_symbol (obj, r);
+      if (got >= 0) {
+        machob_reloc (&rel[osec], addr, final_idx[got], 1, 2, 1, MACHO_RELOC_DATA_GOT);
+      } else {
+        if (macho_lsda_field_p (obj, r)) /* the table's own label */
+          sn = tab0 + (uint32_t) macho_u64_index (tabs, n_tabs, (uint64_t) r->addend);
+        machob_reloc (&rel[osec], addr, final_idx[obj->sec_sym[r->sec]], 0, 2, 1,
+                      MACHO_RELOC_SUBTRACTOR);
+        machob_reloc (&rel[osec], addr, sn, 0, 2, 1, MACHO_RELOC_UNSIGNED);
+      }
       continue;
     }
 #if MIR_TARGET_IS_AARCH64
@@ -1494,6 +1786,15 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
     if (r->kind == MIR_OBJ_RELOC_ABS64) {
       uint64_t a = (uint64_t) r->addend;
       memcpy (slot, &a, 8);
+    } else if (r->kind == MIR_OBJ_RELOC_PC32 && r->sec != MIR_OBJ_SEC_TEXT) {
+      /* a data field: the GOT's own bias, or the pair's target + A - P with
+         the label at the section start */
+      int64_t a = macho_eh_got_symbol (obj, r) >= 0 ? MACHO_GOT_FIELD_ADDEND
+                  : macho_lsda_field_p (obj, r)       ? -(int64_t) r->offset
+                                                      : r->addend - (int64_t) r->offset;
+      if (a < INT32_MIN || a > INT32_MAX) goto done;
+      int32_t a32 = (int32_t) a;
+      memcpy (slot, &a32, 4);
     } else if (r->kind == MIR_OBJ_RELOC_PC32) {
       /* ld64's pcrel base is P + 4; ELF's is P.  The ELF addend already
          folded that 4 in (plus any bytes trailing the field), so hand the
@@ -1592,6 +1893,7 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
 done:
   free (p);
   free (final_idx);
+  free (tabs);
   free (symtab.p);
   free (strtab.p);
   for (int s = 0; s < MACHO_OSEC_N; s++) free (rel[s].p);
@@ -1606,7 +1908,8 @@ done:
    consumes -- section bodies by (segment, section) name, `_'-prefixed
    symbols back to plain names, `ltmp_*' labels back to SECTION symbols,
    in-field addends and ARM64_RELOC_ADDEND pseudo-entries back to explicit
-   addends, and each fake n_value back to a section-relative offset.
+   addends, the unwind sections' SUBTRACTOR pairs and GOT references back to
+   PC32 fields, and each fake n_value back to a section-relative offset.
 
    Two cosmetic losses are inherent to the container and deliberately not
    worked around: nlist_64 has no symbol SIZE, and its type bits do not
@@ -1634,21 +1937,26 @@ static int macho_sec_of_names (const char *seg, const char *sect) {
   if (strcmp (sect, "__mod_init_func") == 0) return MIR_OBJ_SEC_INITARR;
   if (strcmp (sect, "__data") == 0) return MIR_OBJ_SEC_DATA;
   if (strcmp (sect, "__bss") == 0) return MIR_OBJ_SEC_BSS;
+  if (strcmp (sect, "__gcc_except_tab") == 0 && strcmp (seg, "__TEXT") == 0)
+    return MIR_OBJ_SEC_EXCEPT;
+  if (strcmp (sect, "__eh_frame") == 0 && strcmp (seg, "__TEXT") == 0) return MIR_OBJ_SEC_EHFRAME;
   return -1;
 }
 
 static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *err_msg,
                             size_t err_len) {
   const uint8_t *buf = vbuf;
-  uint64_t addr[5] = {0, 0, 0, 0, 0}; /* each section's fake address */
-  int seen[5] = {0, 0, 0, 0, 0};
+  uint64_t addr[MIR_OBJ_SEC_NUM] = {0}; /* each section's fake address */
+  int seen[MIR_OBJ_SEC_NUM] = {0};
   int sec_of_ord[256]; /* 1-based section ordinal -> MIR_OBJ_SEC_* */
-  uint32_t reloff[5] = {0, 0, 0, 0, 0}, nreloc[5] = {0, 0, 0, 0, 0};
+  uint32_t reloff[MIR_OBJ_SEC_NUM] = {0}, nreloc[MIR_OBJ_SEC_NUM] = {0};
   const uint8_t *symtab = NULL, *strtab = NULL;
   size_t n_nlist = 0, strsize = 0;
+  size_t *got = NULL, n_got = 0; /* the GOT-spelled data fields, resolved last */
+  uint64_t *lbl_off = NULL;       /* per symbol: a writer label's offset in its section */
 
   memset (v, 0, sizeof (*v));
-  for (int s = 0; s < 5; s++) v->sec[s].align = 1;
+  for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) v->sec[s].align = 1;
   for (int i = 0; i < 256; i++) sec_of_ord[i] = -1;
   if (buf == NULL || size < 32) {
     OBJLOAD_ERR ("truncated or empty object");
@@ -1756,9 +2064,9 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
     }
     off += cmdsize;
   }
-  if (v->sec[MIR_OBJ_SEC_TEXT].align > 16) {
-    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is 16)",
-                 (unsigned long long) v->sec[MIR_OBJ_SEC_TEXT].align);
+  if (v->sec[MIR_OBJ_SEC_TEXT].align > MIR_TARGET_CODE_ALIGN) {
+    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is %d)",
+                 (unsigned long long) v->sec[MIR_OBJ_SEC_TEXT].align, MIR_TARGET_CODE_ALIGN);
     return -1;
   }
   if (v->sec[MIR_OBJ_SEC_INITARR].size % 8 != 0) {
@@ -1770,7 +2078,8 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
      r_symbolnum indexes the view directly. */
   if (n_nlist != 0) {
     v->syms = calloc (n_nlist, sizeof (objin_sym_t));
-    if (v->syms == NULL) {
+    lbl_off = calloc (n_nlist, sizeof (uint64_t));
+    if (v->syms == NULL || lbl_off == NULL) {
       OBJLOAD_ERR ("out of memory");
       return -1;
     }
@@ -1792,6 +2101,7 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
     const char *nm = (const char *) strtab + strx;
     if ((n_type & MACHO_N_EXT) == 0) d->local_p = 1;
     if ((n_desc & MACHO_N_WEAK_DEF) != 0) d->weak_p = 1;
+    if ((n_type & 0xe) == MACHO_N_UNDF && (n_desc & MACHO_N_WEAK_REF) != 0) d->weak_p = 1;
     if ((n_type & 0xe) == MACHO_N_UNDF) {
       if (nm[0] != '_') {
         OBJLOAD_ERR ("undefined symbol %zu is not a `_'-prefixed C name ('%s')", i, nm);
@@ -1808,13 +2118,15 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
     }
     int sec = sec_of_ord[n_sect];
     d->sec = sec;
-    if (nm[0] == 'l') { /* a section's own start label (the writer's ltmp_*) */
-      if (strcmp (nm, macho_osec_label (macho_osec_of (sec))) != 0) {
-        OBJLOAD_ERR ("symbol %zu ('%s') is not this object's label for its section", i, nm);
+    if (nm[0] == 'l') { /* a writer label: its section's start (ltmp_*) or a table's (lexc_*) */
+      if ((n_type & MACHO_N_EXT) != 0 || n_value < addr[sec]
+          || n_value - addr[sec] > v->sec[sec].size) {
+        OBJLOAD_ERR ("symbol %zu ('%s') is not a label inside its section", i, nm);
         goto fail;
       }
-      d->section_p = 1;
+      d->section_p = 1; /* the section's symbol, the offset riding each relocation */
       d->local_p = 1;
+      lbl_off[i] = n_value - addr[sec];
       continue;
     }
     if (nm[0] != '_') {
@@ -1831,7 +2143,7 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
   }
 
   /* ---- relocations, per section */
-  for (int sec = 0; sec < 5; sec++) {
+  for (int sec = 0; sec < MIR_OBJ_SEC_NUM; sec++) {
     if (nreloc[sec] == 0) continue;
     if (v->sec[sec].body == NULL) {
       OBJLOAD_ERR ("section %d carries relocations but no body", sec);
@@ -1844,7 +2156,8 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
     }
     v->rels = nv;
     int64_t pending_addend = 0;
-    int have_pending = 0;
+    int have_pending = 0, have_sub = 0;
+    uint32_t sub_address = 0;
     for (uint32_t k = 0; k < nreloc[sec]; k++) {
       const uint8_t *re = buf + reloff[sec] + (uint64_t) k * 8;
       uint32_t r_address = macho_rd32 (re), w = macho_rd32 (re + 4);
@@ -1880,6 +2193,53 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
       d->sym = symnum;
       d->addend = 0;
       int addend_from_field = 0;
+      if (have_sub || type == MACHO_RELOC_SUBTRACTOR
+          || (type == MACHO_RELOC_DATA_GOT && sec != MIR_OBJ_SEC_TEXT)) {
+        /* a pc-relative data field (the writer's PC32 outside __text): a
+           SUBTRACTOR against the section's own label + its UNSIGNED, or a
+           GOT reference standing for the __mir_addrpool slot of its symbol */
+        int32_t a32;
+        if (sec == MIR_OBJ_SEC_TEXT || len != 2) {
+          OBJLOAD_ERR ("unsupported data-field relocation %u in section %d", k, sec);
+          goto fail;
+        }
+        memcpy (&a32, slot, 4);
+        if (!have_sub && type == MACHO_RELOC_SUBTRACTOR) {
+          if (pcrel || !v->syms[symnum].section_p || v->syms[symnum].sec != sec) {
+            OBJLOAD_ERR ("SUBTRACTOR %u in section %d is not against its section's label", k,
+                         sec);
+            goto fail;
+          }
+          have_sub = 1;
+          sub_address = r_address;
+          continue;
+        }
+        d->kind = MIR_OBJ_RELOC_PC32;
+        if (have_sub) {
+          if (type != MACHO_RELOC_UNSIGNED || pcrel || r_address != sub_address) {
+            OBJLOAD_ERR ("SUBTRACTOR in section %d has no UNSIGNED partner (%u)", sec, k);
+            goto fail;
+          }
+          have_sub = 0;
+          d->addend = (int64_t) a32 + r_address /* target + field - (label + 0) */
+                      + (int64_t) lbl_off[symnum];
+        } else {
+          if (!pcrel || a32 != MACHO_GOT_FIELD_ADDEND) {
+            OBJLOAD_ERR ("GOT reference %u in section %d is not the writer's form", k, sec);
+            goto fail;
+          }
+          size_t *ng = realloc (got, (n_got + 1) * sizeof (size_t));
+          if (ng == NULL) {
+            OBJLOAD_ERR ("out of memory");
+            goto fail;
+          }
+          got = ng;
+          got[n_got++] = v->n_rels; /* its symbol now; the slot below */
+          d->addend = -1;
+        }
+        v->n_rels++;
+        continue;
+      }
 #if MIR_TARGET_IS_AARCH64
       if (type == MACHO_ARM64_RELOC_UNSIGNED && len == 3 && !pcrel) {
         d->kind = MIR_OBJ_RELOC_ABS64;
@@ -1923,18 +2283,47 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
       } else {
         d->addend = have_pending ? pending_addend : 0;
       }
+      d->addend += (int64_t) lbl_off[symnum];
       have_pending = 0;
       pending_addend = 0;
       v->n_rels++;
     }
-    if (have_pending) {
-      OBJLOAD_ERR ("section %d ends with an addend relocation and no partner", sec);
+    if (have_pending || have_sub) {
+      OBJLOAD_ERR ("section %d ends with an addend or SUBTRACTOR relocation and no partner",
+                   sec);
       goto fail;
     }
   }
+
+  /* ---- a GOT-spelled field reaches its symbol's __mir_addrpool slot: PC32
+     against the pool's label at the slot (the inverse of the writer's
+     macho_eh_got_symbol) */
+  for (size_t g = 0; g < n_got; g++) {
+    objin_rel_t *d = &v->rels[got[g]];
+    size_t pool = v->n_syms, target = d->sym;
+    for (size_t i = 0; i < v->n_syms && pool == v->n_syms; i++)
+      if (v->syms[i].section_p && v->syms[i].sec == MIR_OBJ_SEC_ADDRPOOL && lbl_off[i] == 0)
+        pool = i;
+    d->sym = pool;
+    for (size_t i = 0; i < v->n_rels; i++)
+      if (v->rels[i].sec == MIR_OBJ_SEC_ADDRPOOL && v->rels[i].kind == MIR_OBJ_RELOC_ABS64
+          && v->rels[i].sym == target && v->rels[i].addend == 0) {
+        d->addend = (int64_t) v->rels[i].offset;
+        break;
+      }
+    if (pool == v->n_syms || d->addend < 0) {
+      OBJLOAD_ERR ("GOT reference to '%s' has no __mir_addrpool slot",
+                   v->syms[target].name != NULL ? v->syms[target].name : "?");
+      goto fail;
+    }
+  }
+  free (got);
+  free (lbl_off);
   return 0;
 
 fail:
+  free (got);
+  free (lbl_off);
   objin_free (v);
   return -1;
 }

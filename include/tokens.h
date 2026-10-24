@@ -31,6 +31,7 @@ class Program;
 // Kind-accessor forward declarations (TokenBase::as_*() below). Classes not
 // defined in this header live in datatokens.h / madc.h.
 class TokenOperator;
+class TokenMultiOp;
 class TokenAssign;
 class TokenTerQ;
 class TokenDynamicCast;
@@ -409,6 +410,7 @@ public:
     // succeeds on it). Callers must null-check the RECEIVER; dynamic_cast
     // accepted a null operand, a virtual call does not.
     virtual TokenOperator      *as_operator_tok()   { return NULL; }
+    virtual TokenMultiOp       *as_multiop_tok()    { return NULL; }
     virtual TokenAssign        *as_assign_tok()     { return NULL; }
     virtual TokenTerQ          *as_terq_tok()       { return NULL; }
     virtual TokenDynamicCast   *as_dyncast_tok()    { return NULL; }
@@ -621,6 +623,7 @@ public:
     virtual TokenType type() const override { return TokenType::ttMultiOp; }
     virtual TokenID   id()   const override { return TokenID::tkMultiOp; }
     virtual inline int precedence() const override { return 16; }
+    virtual TokenMultiOp *as_multiop_tok() override { return this; }
 };
 
 // The parse-side type of an arithmetic OPERAND has one owner per step, and
@@ -661,10 +664,12 @@ static inline int integer_conversion_rank(const DataDef *dd)
 // `unsigned int` is `unsigned long`).
 static inline DataDef *unsigned_integer_counterpart(DataDef *dd)
 {
-    if ( dynamic_cast<DataDefPlatformLONG *>(dd) )
-	return dd_platform_ulong();
-    if ( dynamic_cast<DataDefPlatformLONGLONG *>(dd) )
-	return dd_platform_ulonglong();
+    switch ( dd->platform_integer() )
+    {
+	case PlatformInteger::piLONG:     return dd_platform_ulong();
+	case PlatformInteger::piLONGLONG: return dd_platform_ulonglong();
+	default: break;
+    }
     if ( dd->size == ddUINT128.size )
 	return &ddUINT128;
     if ( dd->size == ddUINT64.size )
@@ -1991,6 +1996,11 @@ public:
     std::vector<int> catch_types;            // MADC_EXCEPT_* type tags (99 = catch(...))
     std::vector<madc::dis::istring> catch_varnames; // catch variable names (empty for catch(...))
     std::vector<TokenBase *> catch_bodies;   // compound statements for each catch
+    // The exception-declaration's type, reference / pointer / cv included
+    // (NULL for catch(...)), and — for a NAMED class or pointer handler — the
+    // hidden pointer its guard writes (`__madc_caught_<n>`, NULL otherwise).
+    std::vector<DataDef *> catch_decl_types;
+    std::vector<Variable *> catch_bound_vars;
     TokenTRY() : TokenKeyword("try") { try_body = NULL; }
     virtual TokenID id() const override { return TokenID::tkTRY; }
     virtual TokenBase *clone() override { return new TokenTRY(); }

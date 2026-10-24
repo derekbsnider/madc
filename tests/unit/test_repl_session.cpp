@@ -18,7 +18,9 @@ thread_local bool madc_verbose = false;
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <queue>
+#include <set>
 #include <sstream>
 #include <stack>
 #include <string>
@@ -32,6 +34,8 @@ thread_local bool madc_verbose = false;
 #include "madcdis/line_edit.h"	// history_record: a %history store
 #include "ns_common.h"		// shell_quote / shell_words: the run child's words
 #include "../../src/madc_posix_io.h"
+#include "../../src/madc_cir.h"		// madc_cir_freeze: a dialect pack to bind
+#include "../../src/cir_freeze.h"	// CirFrozenForest::unit_name: what the session bound
 
 #include <cstdio>
 #include <cstdlib>		// std::system: %build's executable runs
@@ -2121,6 +2125,230 @@ TEST_CASE("completion: members after . and ->, and a scope's after ::")
     CHECK(m.shown() == "1");
 }
 
+// A using-directive makes a dialect namespace's names reachable bare: after
+// `using namespace php;` the bare word completes to php's functions, as the
+// qualified `php::strto` does.
+TEST_CASE("completion: a using-directive's dialect names complete bare (madc)")
+{
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    CHECK_FALSE(has(complete_at_end(m, "strto"), "strtolower"));	// php's, qualified only
+    REQUIRE(m.submit("using namespace php;"));
+    std::vector<std::string> c = complete_at_end(m, "strto");
+    CHECK(has(c, "strtolower"));
+    CHECK(has(c, "strtoupper"));
+}
+
+// The dialect is builtin (docs/plans/2026-10-17-dialect-builtin-registration.md,
+// R4c): under --std=madc no dialect fragment's text is served; a named
+// namespace's names come from the generated table, each built when a lookup
+// first names it. What completion needs is read from the table, never only
+// from what lookups built.
+namespace {
+
+// The names the table offers for a scope and a prefix, once each.
+std::set<std::string> table_names(Program &p, const char *scope, const char *prefix)
+{
+    std::set<std::string> out;
+    p.dialect_table_names(scope, prefix,
+			  [&](const madc::dis::istring &n) { out.insert(n.str()); });
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("the dialect is builtin (R4c): a named namespace's names, read from the table")
+{
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    CHECK_FALSE(p.dialect_namespace_named("php"));	// nothing named php yet
+    CHECK(table_names(p, "php", "strto").empty());
+    REQUIRE(m.submit("using namespace php;"));
+    REQUIRE(p.dialect_from_table());
+    REQUIRE(p.dialect_namespace_named("php"));
+
+    // php's functions, each offered as the name the source wrote.
+    CHECK(table_names(p, "php", "strto")
+	  == (std::set<std::string>{ "strtolower", "strtoupper" }));
+    // The using-directive built every php name: what php holds is what the
+    // table answers for the scope — its templates (`php::print_r`) included.
+    std::set<std::string> registered;
+    namespace_map_t::const_iterator ns = p.namespace_map.find("php");
+    REQUIRE(ns != p.namespace_map.end());
+    for ( variable_map_t::const_iterator it = ns->second.begin(); it != ns->second.end(); ++it )
+	if ( it->second && !(it->second->flags & vfINSTPRODUCT) )
+	    registered.insert(it->first.str());
+    REQUIRE(registered.count("print_r"));
+    CHECK(table_names(p, "php", "") == registered);
+    // A row's namespace decides, never the spelling: none of php's names is
+    // the global scope's.
+    CHECK(table_names(p, "", "").empty());
+
+    // Completion reads it — after `::` and through the using-directive.
+    CHECK(complete_at_end(m, "php::strto")
+	  == (std::vector<std::string>{ "strtolower", "strtoupper" }));
+    std::vector<std::string> c = complete_at_end(m, "strto");
+    CHECK(has(c, "strtolower"));
+    CHECK(has(c, "strtoupper"));
+    InteractiveSession fresh;
+    REQUIRE(fresh.begin("--std=madc"));
+    CHECK(complete_at_end(fresh, "php::strto")
+	  == (std::vector<std::string>{ "strtolower", "strtoupper" }));
+}
+
+// A compile registers the dialect functions its program names — an overload
+// set whole — never a namespace's whole surface. The program is
+// scripts/parse_cost/dialect.mad's.
+TEST_CASE("the dialect is builtin (R4c): a compile registers what it names")
+{
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    REQUIRE(m.load_text(
+	"var total(var xs)\n"
+	"{\n"
+	"    long sum = 0;\n"
+	"    for ( var x : xs )\n"
+	"\tsum = sum + x.as_integer();\n"
+	"    return sum;\n"
+	"}\n"
+	"int main()\n"
+	"{\n"
+	"    var xs = { 4, 1, 3 };\n"
+	"    var who = { \"name\": \"madc\", \"kind\": \"dialect\" };\n"
+	"    array words;\n"
+	"    php::explode(words, \",\", \"a,b,c\");\n"
+	"    println(\"{} {} {} {}\", total(xs), who[\"name\"], php::count(words),\n"
+	"\t    php::strtoupper(\"ok\"));\n"
+	"    return 0;\n"
+	"}\n", "dialect.mad"));
+    REQUIRE(p.dialect_from_table());
+    CHECK(p.dialect_namespace_named("php"));
+    // The names the program calls, strtoupper's two overloads together.
+    CHECK(p.funcdef_map.count("__ns_php_explode"));
+    CHECK(p.funcdef_map.count("__ns_php_count"));
+    CHECK(p.funcdef_map.count("__ns_php_strtoupper"));
+    CHECK(p.funcdef_map.count("__ns_php_strtoupper__o2"));
+    // Their bodies are the host's (R2: the publics are declarations, called
+    // mangled-direct), so no runtime entry registers behind them.
+    CHECK_FALSE(p.funcdef_map.count("__php_explode"));
+    CHECK_FALSE(p.funcdef_map.count("__php_count"));
+    CHECK_FALSE(p.funcdef_map.count("__php_strtoupper_cstr"));
+    CHECK_FALSE(p.funcdef_map.count("__php_strtoupper"));
+    // The run child is served from the entry's init (R3).
+    CHECK_FALSE(p.funcdef_map.count("__ns_madc_serve_run_child"));
+    // Never named, never built.
+    CHECK_FALSE(p.funcdef_map.count("__ns_php_trim"));
+    CHECK_FALSE(p.funcdef_map.count("__ns_madc_compiler_run"));
+    // --show-stats's counter says the same: the three names, no more than a
+    // handful besides.
+    CHECK(p.dialect_builds >= 3u);
+    CHECK(p.dialect_builds < 10u);
+}
+
+// A demand registers inside the entry that made it: an entry that fails
+// takes its registration back with it, and a later entry demands the name
+// again and gets it.
+TEST_CASE("the dialect is builtin (R4c): a rolled-back entry's dialect registration is made again")
+{
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    REQUIRE(m.submit("array words;"));
+    CHECK_FALSE(m.submit("long n = php::count(words) + no_such_name;"));
+    CHECK_FALSE(p.funcdef_map.count("__ns_php_count"));
+    REQUIRE(m.submit("long n = php::count(words);"));
+    CHECK(p.funcdef_map.count("__ns_php_count"));
+    REQUIRE(m.submit("php::explode(words, \",\", \"a,b\");"));
+    REQUIRE(m.submit("php::count(words)"));
+    CHECK(m.shown() == "2");
+}
+
+namespace {
+
+// Does namespace `ns` hold the type `name`?
+bool ns_type(Program &p, const char *ns, const char *name)
+{
+    namespace_datatype_map_t::iterator it = p.namespace_datatype_map.find(madc::dis::istring(ns));
+    return it != p.namespace_datatype_map.end() && it->find(madc::dis::istring(name)) != it->end();
+}
+
+// Does namespace `ns` hold the object or constant `name`?
+bool ns_member(Program &p, const char *ns, const char *name)
+{
+    namespace_map_t::const_iterator it = p.namespace_map.find(madc::dis::istring(ns));
+    return it != p.namespace_map.end() && it->second.find(madc::dis::istring(name)) != it->second.end();
+}
+
+// Is the function template `key` registered — bodied or (a compiler-
+// implemented public like `php::print_r`) body-less?
+bool fn_template(Program &p, const char *key)
+{
+    const std::string k(key);
+    return p.fn_template_map.find(k) != p.fn_template_map.end()
+	|| p.fn_template_decl_map.find(k) != p.fn_template_decl_map.end();
+}
+
+} // namespace
+
+// The dialect's types, enums, templates and storage-less objects register as
+// the program names them, like its functions — an enum with its enumerators,
+// an extern object with its type.
+TEST_CASE("the dialect is builtin (R4c): types, enums, templates and objects register as named")
+{
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    REQUIRE(m.submit("array words;"));
+    REQUIRE(m.submit("php::explode(words, \",\", \"a,b,c\");"));
+    REQUIRE(p.dialect_namespace_named("madc"));	// php's own text names madc
+    // Nothing named: no type, enum, enumerator, extern object or template.
+    CHECK_FALSE(ns_type(p, "madc", "project_kind"));
+    CHECK_FALSE(ns_type(p, "madc", "file_kind"));
+    CHECK_FALSE(ns_type(p, "madc", "SysInfo"));
+    CHECK_FALSE(ns_type(p, "madc", "channel"));
+    CHECK_FALSE(ns_member(p, "madc", "fkMC11"));
+    CHECK_FALSE(ns_member(p, "madc", "sys"));
+    CHECK_FALSE(fn_template(p, "php::print_r"));
+    // No anchor object: the run child is served from the entry's init (R3).
+    CHECK_FALSE(ns_member(p, "madc", "__madc_run_child"));
+    // A scoped enum, named: its enumerators' scope with it.
+    REQUIRE(m.submit("madc::project_kind k = madc::project_kind::gui;"));
+    CHECK(ns_type(p, "madc", "project_kind"));
+    CHECK(ns_member(p, "madc::project_kind", "console"));
+    CHECK_FALSE(ns_type(p, "madc", "file_kind"));
+    // An unscoped enumerator, named: its enum and its siblings with it.
+    REQUIRE(m.submit("long f = madc::fkMC11;"));
+    CHECK(ns_type(p, "madc", "file_kind"));
+    CHECK(ns_member(p, "madc", "fkC"));
+    // An extern object, named: its type pulled with it.
+    REQUIRE(m.submit("long pid = madc::sys.pid;"));
+    CHECK(ns_member(p, "madc", "sys"));
+    CHECK(ns_type(p, "madc", "SysInfo"));
+    CHECK_FALSE(ns_type(p, "madc", "channel"));
+    // A compiler-implemented template, named.
+    REQUIRE(m.submit("php::print_r(f);"));
+    CHECK(fn_template(p, "php::print_r"));
+    // A bare twin: the type's tag at the program scope (madc's flat tags).
+    REQUIRE(m.submit("SysInfo *si = &madc::sys;"));
+}
+
+// A type a rolled-back entry registered is registered again by the next
+// entry that names it.
+TEST_CASE("the dialect is builtin (R4c): a rolled-back entry's dialect type is registered again")
+{
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    CHECK_FALSE(m.submit("madc::project_kind k = madc::project_kind::gui + no_such_name;"));
+    CHECK_FALSE(ns_type(p, "madc", "project_kind"));
+    REQUIRE(m.submit("madc::project_kind k = madc::project_kind::gui;"));
+    CHECK(ns_type(p, "madc", "project_kind"));
+    REQUIRE(m.submit("(int)k"));
+    CHECK(m.shown() == "1");
+}
+
 // §37 item 8 (plan §41.8a, slice 1): the command front and `%type`. A
 // command is recognized at an entry's start, taken and numbered like any
 // input, and `%type` parses its argument as an attempt that rolls back and
@@ -3299,6 +3527,17 @@ TEST_CASE("%std and %reset: the spelling, the refusals, the payloads (1B.7)")
     REQUIRE(Program::standard_of_spelling("c11", std, gnu));
     CHECK(std == Program::STD_C11);
     CHECK_FALSE(gnu);
+    // The bare family spellings name gcc's and g++'s defaults, the standards
+    // the pack precompiles (owner 2026-10-18).
+    REQUIRE(Program::standard_of_spelling("c", std, gnu));
+    CHECK(std == Program::STD_C17);
+    CHECK(gnu);
+    REQUIRE(Program::standard_of_spelling("c++", std, gnu));
+    CHECK(std == Program::STD_CPP17);
+    CHECK(gnu);
+    REQUIRE(Program::standard_of_spelling("cpp", std, gnu));
+    CHECK(std == Program::STD_CPP17);
+    CHECK(gnu);
     CHECK_FALSE(Program::standard_of_spelling("c18x", std, gnu));
     CHECK(Program::standard_spelling(Program::STD_CPP20, true) == "gnu++20");
     CHECK(Program::standard_spelling(Program::STD_C17, true) == "gnu17");

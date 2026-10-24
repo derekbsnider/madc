@@ -35,6 +35,8 @@ class TokenRETURN;
 class TokenMemberPtrConst;
 class TokenOperator;
 class Variable;
+enum class StdioStream : uint8_t;	// datatokens.h — the dialect's stdio streams
+class CirFrozenForest;		// cir_freeze.h — a bound forest (a loaded node's producer)
 class DataDef;
 class DataDefTemplateParam;
 class DataDefSTRUCT;
@@ -114,8 +116,9 @@ class CirBuilder {
 	// actually uses (matches c2m's #include-driven scope).
 	RefFuncSet referenced_funcs;
 	// Global variables referenced while translating bodies. Used to emit
-	// extern decls for libc globals (stderr/stdout/stdin, registered lazily
-	// via addGlobal but absent from top_decls) so the emitted C compiles.
+	// extern decls for libc globals absent from top_decls so the emitted C
+	// compiles. (The madc dialect's stdio stream stand-ins never land here:
+	// they lower to the runtime's stream, stdio_stream_value.)
 	std::map<madc::dis::istring, Variable *> referenced_globals;
 	std::map<madc::dis::istring, node_t> m_output_externs; // symbol -> proto SPEC_DECL (dedup)
 	std::set<madc::dis::istring> m_rtti_data_externs;    // dedup extern data decls for RTTI (S5b)
@@ -167,7 +170,7 @@ class CirBuilder {
 	// ([stmt.return]/[dcl.init]) — e.g. std::set's `iterator find(){ return
 	// _M_t.find(x); }`, where the tree's `iterator` converts to set's
 	// `const_iterator`. The non-trivial (__retbuf) path already applies the
-	// converting ctor via class_copy_construct_into_retbuf's overload selection.
+	// converting ctor via class_construct_into_slot's overload selection.
 	DataDefCLASS *m_cur_func_returns_value_class = NULL;
 	// Returned user-class while translating the body of a function returning a
 	// `Cls *` or `Cls&`, else NULL. Lets translate_return emit the derived->base
@@ -578,6 +581,28 @@ class CirBuilder {
 				const char *dtor_sym, TokenBase *origin,
 				size_t align = 0,
 				ObjStorage storage = ObjStorage::Automatic);
+	// The attribute list `__attribute__((cleanup(fn)))` for a declaration's
+	// attrs slot: c2mir calls fn(&var) at every exit of var's scope.
+	node_t cleanup_attrs(const char *fn, TokenBase *origin);
+	// `void *name [__attribute__((cleanup(leave_fn)))] = init;` — a guard
+	// whose value leave_fn(&name) receives at every exit of its scope (a try
+	// frame, a cleanup entry, the instrumented function's address); no
+	// attribute when leave_fn is NULL. The caller declares leave_fn.
+	node_t cleanup_guard_local(const char *name, node_t init,
+				   const char *leave_fn, TokenBase *origin);
+	// `__builtin_cleanup_arm(&name);` — the statement after the one that
+	// constructs object `name`: from here a throw passing through the frame
+	// runs the object's cleanup (B205), never during its constructor (g++
+	// registers a cleanup when the object's initialization completes).
+	// Inert for a variable without a cleanup. object_cleanup_arm: NULL for
+	// a class with no destructor (the carrier always has one).
+	node_t cleanup_arm_stmt(const char *name, TokenBase *origin);
+	node_t object_cleanup_arm(const char *name, DataDefCLASS *cdd,
+				  TokenBase *origin);
+	// A pending temporary's construction completes: `construct` (when not
+	// NULL), then the temp's cleanup arm, onto m_pending_stmts.
+	void pending_construction(node_t construct, const char *name,
+				  DataDefCLASS *cdd, TokenBase *origin);
 	// Host-call shim synthesis (translate_module): a per-function
 	// `long __madc_shim_<sym>(char *__args, char *__out)` adapter over
 	// the 32-byte madc_value ABI. NULL when the signature is not
@@ -709,11 +734,14 @@ class CirBuilder {
 	// The single function-signature owner for the __retbuf decision: reject
 	// pointer/reference/multi returns, then classify the returned value type.
 	DataDefCLASS *function_retbuf_class(class FuncDef *fd);
-	// Member-wise copy-construct `cdd`'s object members from `src` into *__retbuf
-	// (after a bit-copy for scalars), so the return slot owns its own buffers.
-	void class_copy_construct_into_retbuf(DataDefCLASS *cdd, TokenBase *src,
-					      std::vector<node_t> &out,
-					      TokenBase *origin);
+	// Copy-initialize a `cdd` object from `src` into the storage `*slot` (a
+	// local of type `cdd *`): a prvalue's constructor runs on the slot itself,
+	// otherwise the copy or move constructor (move first when `implicit_move`,
+	// [class.copy.elision]/3). The return slot (*__retbuf) and the exception
+	// object's storage are its two slots.
+	void class_construct_into_slot(DataDefCLASS *cdd, TokenBase *src,
+				       std::vector<node_t> &out, TokenBase *origin,
+				       const char *slot, bool implicit_move);
 	// Member-wise copy-ASSIGNMENT of a non-trivial class into an existing object
 	// (`lhs = rhs`): each class member uses its registered assignment operator
 	// when available; scalar members use plain assignment. This avoids aliasing
@@ -729,12 +757,35 @@ class CirBuilder {
 	void class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
 				       const char *rname, std::vector<node_t> &out,
 				       TokenBase *origin);
+	// Its base half: each base of `cls` (in object `obj`) declaring its own
+	// operator= runs it on its subobject; the others recurse.
+	void class_assign_bases(DataDefCLASS *obj, DataDefCLASS *cls,
+				const char *lname, const char *rname,
+				std::vector<node_t> &out, TokenBase *origin);
+	// One object of `mc` assigned from another by address: its own
+	// operator=, else memberwise through two bound pointers.
+	void class_assign_object_stmts(DataDefCLASS *mc, node_t laddr,
+				       node_t raddr, std::vector<node_t> &out,
+				       TokenBase *origin);
+	// `mc::operator=(*ld, *rd);` (void* addresses for an external operator).
+	node_t assign_operator_call_stmt(DataDefCLASS *mc, FuncDef *op,
+					 node_t ld, node_t rd, TokenBase *origin);
+	// The implicit copy assignment of `cdd` does more than a bit copy: its
+	// own operator=, or a base's or member's (an array element's included)
+	// copy assignment that does ([class.copy.assign]/9, /12).
+	bool class_assign_nontrivial(DataDefCLASS *cdd);
+	bool class_assign_nontrivial(DataDefCLASS *cdd,
+				     std::set<DataDefCLASS *> &seen);
 	// A `struct Tag *<nm> = <init>;` pointer-binding decl. Takes DataDef, not
 	// DataDefCLASS: a POD `struct Point` is only PROMOTED to DataDefCLASS when
 	// it earns class-hood, and class_tag_ref (the only thing this passes it to)
 	// has always taken the base type.
 	node_t class_ptr_bind(DataDef *cdd, const char *nm, node_t init,
 			      TokenBase *origin);
+	// A `struct Tag *<nm>` parameter declaration (`__this`, a vbase pointer).
+	// class_ptr_type, class_ptr_bind and this are a class pointer's ONE
+	// spelling each (gated by check-one-class-pointer-decl.sh).
+	node_t class_ptr_param(DataDef *cdd, const char *nm, TokenBase *origin);
 	// Materialize an object-returning CALL (non-trivial class) into a
 	// cleanup-tagged temp of that class via the __retbuf ABI, and return the
 	// temp's object lvalue (object_call_temp) or its (void*) address.
@@ -762,10 +813,20 @@ class CirBuilder {
 	// Words of opaque storage for a runtime-object class that has a concrete ABI
 	// size but no madc data members. 0 for an ordinary user class.
 	size_t object_class_words(DataDefCLASS *cdd) const;
-	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
+	node_t void_ptr_type(int levels = 1);        // N_TYPE node for a (void*) cast (levels: void **)
 	node_t char_ptr_type();                      // N_TYPE node for a (char*) cast
 	node_t ptr_type_node(DataDef *dd);           // N_TYPE node for an arbitrary pointer DataDef
-	node_t class_ptr_type(DataDefCLASS *cdd);    // N_TYPE node for a (struct Cls *) cast
+	// N_TYPE node for a (struct Cls *) cast — the one owner (gated by
+	// check-one-class-pointer-decl.sh, with class_ptr_bind's declaration).
+	node_t class_ptr_type(DataDef *cdd, TokenBase *origin = NULL);
+	// The `this` a constructor or destructor of `cls` receives for an object
+	// of type `object` at `addr`: cv-qualifiers do not apply to an object
+	// under construction or destruction ([class.ctor.general]/5,
+	// [class.dtor]/5), so a qualified object's address converts to the plain
+	// class pointer the C callee declares (passed as is, C discards the
+	// qualifier with a diagnostic). An unqualified object's: `addr` itself.
+	node_t structor_receiver(node_t addr, DataDef *object, DataDefCLASS *cls,
+				 TokenBase *origin);
 	// THE base-subobject pointer adjustment (static offset, or the vtable's
 	// vbase-offset slot for a virtual base): a `derived`-object address in,
 	// a `Base *` out. Both upcasts below and the inherited-constructor
@@ -891,6 +952,9 @@ class CirBuilder {
 	// The carrier class behind a receiver type: the carrier itself OR a
 	// reference to it (a `value &` parameter) — NULL otherwise.
 	static DataDefCLASS *carrier_behind(DataDef *dd);
+	// The address of a carrier-valued EXPRESSION (a member, a call, a
+	// keyed subscript — never a named variable, which is object_var_addr's).
+	node_t carrier_expr_addr(TokenBase *e, TokenBase *origin);
 	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
 	// The carrier's C-visible aggregate: `struct __madc_value { _Alignas(16)
 	// long long _w[N]; }`, the pointee of a by-value `var` return's result
@@ -1363,7 +1427,8 @@ private:
 	// iterator precede the loop).
 	node_t translate_foreach_iterator(class TokenFOREACH *fe,
 					  DataDefCLASS *cls,
-					  const IterProtocol &ip);
+					  const IterProtocol &ip,
+					  std::vector<node_t> *prelude);
 	// Call a NULLARY class method (`obj.size()`) and yield its value.
 	// `recv_addr` is the receiver's address. ONE owner for the symbol choice
 	// (emit_symbol-aware, unlike the hand-rolled `Class__size` it replaced),
@@ -1563,6 +1628,10 @@ public:
 	// THE one owner: every path that reads a global BY NAME must call it,
 	// or the emitted C references an identifier c2mir never saw.
 	void note_global_reference(const class Variable &v);
+	// The madc dialect's stdio stream a stand-in names (Variable::
+	// stdio_stream — a stdin/stdout/stderr no declaration adopted): the
+	// runtime's stream, `__madc_stdio_stream(which)` (cir_dump.cpp).
+	node_t stdio_stream_value(StdioStream s, TokenBase *origin);
 	// The mangled-direct link test (one owner, three bind sites): a symbol
 	// that neither the loaded native libraries provide nor madc itself
 	// emits can never link — binding it is always wrong; declining lets a
@@ -1848,6 +1917,9 @@ public:
 	// A pointer/reference TO a function pointer, or a reference to a function:
 	// the peeled levels + the fn-ptr pieces (param_decl and var_decl share it).
 	bool pointer_to_fnptr_pieces(DataDef *t, node_t spec_list, node_t decl_list);
+	// Its abstract type `R (**)(A)` (a cast, a type name); NULL when `t` is
+	// not one.
+	node_t pointer_to_fnptr_type(DataDef *t);
 	// A function used as a value (its designator, `&f`, a reference bound to
 	// it): its call symbol, recorded for a prototype; NULL for a capturing
 	// nested fn.
@@ -1861,7 +1933,7 @@ public:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.
 	int fnptr_alias_stars(const madc::dis::istring &alias);
-	bool fnptr_alias_is_fn(const madc::dis::istring &alias);
+	bool fnptr_alias_is_fn(const madc::dis::istring &alias, class DataDefFPTR *decl_fp);
 
 	// ---- Declaration builders ----
 	// Recursively build an initializer value node: a scalar expression, or
@@ -2009,6 +2081,9 @@ public:
 			    const std::set<madc::dis::istring> &emitted_structs,
 			    bool force_incomplete_struct = false);
 	node_t struct_def(DataDefSTRUCT *sdd);
+	// The module's file-scope tag declarations for tags a parameter list
+	// names first (C11 6.2.1p4), at the head of `top_list`.
+	void declare_parameter_scope_tags(node_t &top_list);
 	// Emit a user-defined class as a plain C struct definition. Base-class
 	// members are already flattened into the derived class's member list by
 	// the parser (single inheritance), so this is a flat struct. A `void
@@ -2096,13 +2171,26 @@ public:
 				 bool *slot_used = NULL);
 	// Lower a class method bound to an external symbol (FuncDef::emit_symbol —
 	// a parsed C++ ABI symbol): declares the extern from the method's real
-	// signature and routes the call directly. `this_arg` is the receiver address
+	// signature and routes the call directly — or, for a VIRTUAL method,
+	// through `vcallee` (vtable_slot_callee: the receiver's vtable slot), so
+	// the most-derived override runs. `this_arg` is the receiver address
 	// (object_var_addr).
 	node_t emit_symbol_method_call(class TokenMember *tm, class FuncDef *callee,
 				       const madc::dis::istring &sym, node_t this_arg,
 				       TokenBase *origin, node_t ret_slot = NULL,
 				       DataDefCLASS *slot_cls = NULL,
-				       bool *slot_used = NULL);
+				       bool *slot_used = NULL,
+				       node_t vcallee = NULL);
+	// The callee of a virtual call: the receiver's vtable slot cast to the
+	// method's function-pointer type,
+	//   (RET(*)(struct Owner *, params))((void **)recv->__vptr[_<off>])[slot]
+	// — the group (`vgrp`) and in-group slot resolved by find_vslot. The vptr
+	// is read from `vrecv_tmp` when the receiver was bound once, else from a
+	// fresh class_this_arg. Every virtual method call dispatches through it.
+	node_t vtable_slot_callee(class TokenMember *tm, DataDefCLASS *recv_class,
+				  size_t vgrp, int vslot, const char *vrecv_tmp,
+				  class FuncDef *callee, DataDefCLASS *vowner,
+				  TokenBase *origin);
 	node_t member_template_method_call(class TokenMember *tm,
 				       class FuncDef *callee,
 				       node_t this_arg,
@@ -2112,6 +2200,10 @@ public:
 	// a pointer receiver. `recv_class` is filled with the receiver's class.
 	node_t class_this_arg(class TokenMember *tm, DataDefCLASS *&recv_class,
 			      TokenBase *origin);
+	// The address of a class-object EXPRESSION used as an object (a member
+	// call's receiver, a range-for's range) — never a named variable.
+	node_t class_object_expr_addr(TokenBase *e, DataDefCLASS *cls,
+				      TokenBase *origin);
 	// Build the constructor-call statement for a class instance `v`:
 	//   ClassName__ClassName(&v, ctor_args...)
 	// Returns NULL when `v` is not a user class or has no user constructor.
@@ -2195,6 +2287,10 @@ public:
 			       TokenBase *origin);
 	// `memset(addr, 0, nbytes);` — the value-initialization zero fill.
 	node_t zero_fill_stmt(node_t addr, node_t nbytes, TokenBase *origin);
+	// `memcpy(dst, src, nbytes);` — a copy of storage C cannot assign (an
+	// array).
+	node_t copy_bytes_stmt(node_t dst, node_t src, node_t nbytes,
+			       TokenBase *origin);
 	// Zero-initialization of a class-type SUBOBJECT ([dcl.init]/6) at the
 	// typed address `mint_addr` returns (FRESH per call), field by field as
 	// gcc emits it. A BASE subobject skips the members its virtual bases
@@ -2259,15 +2355,43 @@ public:
 			       DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin, std::vector<node_t> &out);
+	// `(struct Cls *)base + index`: the element of a class array at `index`.
+	// A MULTI-dim fixed array (`B m[2][2]`) decays to Cls(*)[M], whose +1
+	// strides a whole ROW; the cast flattens to element stride for any
+	// dimensionality and is a no-op for 1D arrays and heap element pointers.
+	node_t class_array_element(node_t base, DataDefCLASS *cdd, node_t index,
+			       TokenBase *origin);
+	// The ONE per-element loop over a class array:
+	// `for (long __ci = <first>; __ci < <count>; __ci += 1) { body }`, or with
+	// `reverse` (destruction order) `for (long __ci = <count> - 1;
+	// __ci >= <first>; __ci -= 1) { body }`. `body` appends one element's
+	// statements given the index variable's name; NULL when it appends none.
+	node_t class_array_index_loop(const std::function<node_t()> &mint_count,
+			       long first, bool reverse, TokenBase *origin,
+			       const std::function<void(const char *ci,
+						std::vector<node_t> &out)> &body);
+	// The ONE counted loop the builder synthesizes (an element loop, a
+	// range-for's index, a dump row):
+	// `for (long <ci> = <start>; <cond>; <ci> += 1) <body>`, with `down`
+	// `<ci> -= 1`; a non-NULL `advance` joins the step as
+	// `(<ci> += 1, <advance>)` so a `continue` in the body still runs it.
+	// Only a user `for` statement's own header is built elsewhere (gated by
+	// check-one-counted-loop.sh).
+	node_t counted_loop(const char *ci, node_t start, node_t cond, bool down,
+			    node_t body, TokenBase *origin, node_t advance = NULL);
 	// Per-element complete-object construction loop over a class array:
 	// `for (long __ci = 0; __ci < <count>; __ci += 1)
-	//      <construct (arr_ptr + __ci)>;`
-	// NULL when the element class needs no construction (trivial).
+	//      <construct (base + __ci)>;`
+	// `mint_base` returns a FRESH node for the array (or its first element)
+	// per call. NULL when the element class needs no construction (trivial).
 	// `first` starts the loop past the elements a braced list initialized.
-	node_t class_array_construct_loop(const char *arr_ptr,
+	// `value_init` value-initializes each element ([dcl.init]/9.2: zeroed
+	// first when the class's value-init zeroes) instead of default-
+	// initializing it.
+	node_t class_array_construct_loop(const std::function<node_t()> &mint_base,
 			       const std::function<node_t()> &mint_count,
 			       DataDefCLASS *cdd, TokenBase *origin,
-			       long first = 0);
+			       long first = 0, bool value_init = false);
 	// TRUE when a braced list on a fixed ARRAY of class type needs real
 	// per-element construction — the element class has a user ctor, a
 	// vptr, bases, or object members. var_decl leaves such storage BARE and
@@ -2305,7 +2429,7 @@ public:
 	// zeroed block, a store per clause (the class twin is the owner below).
 	node_t scalar_array_new_list_init(class TokenNEW *tn, DataDef *et,
 					  TokenBase *tb);
-	void class_array_list_init(const char *arr_ptr,
+	void class_array_list_init(const std::function<node_t()> &mint_base,
 			       const std::vector<size_t> &dims,
 			       const std::function<node_t()> &mint_count,
 			       DataDefCLASS *cdd,
@@ -2328,7 +2452,7 @@ public:
 	bool class_dtor_is_pure(DataDefCLASS *cdd);
 	// Dispatch a destructor through the receiver's vtable dtor slot; sname
 	// is "~" (D1 complete — explicit p->~X()) or "~$deleting" (D0 —
-	// delete). recv_vptr/recv_arg = two independent receiver translations.
+	// delete). recv_vptr/recv_arg = two fresh nodes of ONE bound receiver.
 	node_t virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
 			       node_t recv_vptr, node_t recv_arg,
 			       TokenBase *tb);
@@ -2394,6 +2518,16 @@ public:
 			       std::vector<madc::dis::istring> &path,
 			       std::vector<node_t> &out, TokenBase *origin,
 			       bool move);
+	// Its array-member element: element `ci` of the array `array_addr`
+	// mints under `lname` copied from `rname`'s — mc's copy/move ctor, or
+	// (none declared, non-trivial) the member walk over the two elements,
+	// bound to pointer temporaries first since the walk names its objects.
+	void implicit_copy_element_reconstructs(DataDefCLASS *mc,
+			       FuncDef *copy_ctor,
+			       const std::function<node_t(const char *)> &array_addr,
+			       const char *lname, const char *rname,
+			       const char *ci, std::vector<node_t> &out,
+			       TokenBase *origin, bool move);
 	// Its base half: each base of `cls` (in object `obj`, at `off0`) with
 	// a copy/move constructor runs it on its subobject. True when one ran.
 	bool implicit_copy_base_reconstructs(DataDefCLASS *obj,
@@ -2703,6 +2837,8 @@ public:
 	// emits nothing for such classes either). Memoized per builder.
 	bool class_needs_dtor(DataDefCLASS *cdd);
 	std::map<DataDefCLASS *, bool> m_needs_dtor_memo;
+	// class_assign_nontrivial's answers, per builder.
+	std::map<DataDefCLASS *, bool> m_assign_nontrivial_memo;
 	// The class's OWN destructor method (the one it wrote itself), or NULL.
 	// Found name-independently: the method_map carries a "~"-prefixed key for
 	// every reachable dtor (own + inherited via the base-merge at parser.cpp
@@ -2779,9 +2915,16 @@ public:
 	// --finstrument-functions (task #66): the once-per-module exit thunk
 	// `__madc_cyg_exit_thunk` — the cleanup attribute's handler that calls
 	// __cyg_profile_func_exit with the instrumented function's own address.
-	// Demanded by the first instrumented func_def, flushed at Pass 1.95.
+	// Demanded by the first instrumented definition, flushed at Pass 1.95.
 	node_t m_instr_thunk_def = NULL;
 	node_t synth_instr_exit_thunk();
+	// Does fd's definition get the hooks; a body with the hooks around it
+	// (`self` = the symbol the definition declares); a loaded (bound)
+	// definition given them in place.
+	bool instruments(const FuncDef *fd) const;
+	node_t instrumented_body(node_t body, const char *self, TokenBase *origin);
+	bool instrument_loaded_def(node_t def, const FuncDef *fd);
+	std::set<node_t> m_instr_loaded_defs;	// loaded defs given the hooks
 	node_t synth_complete_dtor_def(DataDefCLASS *cdd);
 	node_t synth_deleting_dtor_def(DataDefCLASS *cdd);
 	// `void ALIAS(params) { TARGET(params); }`, linkonce — the Itanium
@@ -2808,7 +2951,7 @@ public:
 	// class globals (their storage already rode in via the dkGlobalVar pass).
 	void collect_global_ctors(Program *prog,
 				  std::vector<node_t> &deferred_globals,
-				  std::set<madc::dis::istring> &emitted_globals);
+				  std::unordered_set<madc::dis::istring> &emitted_globals);
 	// Build the constructor-call statement for a file-scope class global `v`
 	// (type `cdd`), sourcing its initializer from the linked TokenDecl when
 	// present (user source) or from v->data (a const char* literal, built-ins).
@@ -2871,19 +3014,37 @@ public:
 	// storage declaration).
 	void class_decl_construction(class TokenDecl *sdcl, DataDefCLASS *cdcl,
 				     node_t items);
+	// A statement-header declarator (a for-init clause, an if condition's
+	// declaration) whose lowering is more than one declaration: a class
+	// object (storage + construction + cleanup) or an array object
+	// (storage + element construction).
+	bool is_object_declarator(class TokenDecl *td);
+	// A LOCAL object declaration statement (class or carrier) into the
+	// items of the scope it declares into: storage + construction + its
+	// cleanup's arm (header_declarator_stmts). False when `tb` is not one;
+	// the caller translates it as a statement. Serves the scopes that
+	// continue past the declaration: an if / switch init-statement, a
+	// case's statements.
+	bool local_object_decl_into(class TokenBase *tb, node_t items);
+	// The statements that declare ONE statement-header declarator, appended
+	// to `items`: class_decl_stmts for a class object, the storage + element
+	// construction for an array object, else the scalar SPEC_DECL with its
+	// initializer folded in.
+	void header_declarator_stmts(class TokenDecl *td, node_t items);
 	// A block-scope STATIC object is initialized once, the first time
 	// control passes its declaration ([stmt.dcl]/4): `init_items` (its
 	// construction) run inside gcc's guard protocol (-fthreadsafe-statics,
 	// the Itanium ABI) —
 	//   static long long G;
 	//   if (__cxa_guard_acquire(&G)) {
-	//       <abort-G cleanup entry>; init_items; <remove it>;
+	//       <armed abort-G deferred call>; init_items; <disarm it>;
 	//       __cxa_guard_release(&G); }
 	// THREAD SAFETY: concurrent first passes wait in __cxa_guard_acquire
 	// (libstdc++ / libc++abi) and exactly one constructs. A constructor that
-	// THROWS runs __cxa_guard_abort on the SJLJ unwind (the runtime cleanup
-	// stack), so the next pass tries again instead of waiting on a guard
-	// left pending. Appends the guard and the guarded block to `items`.
+	// THROWS runs __cxa_guard_abort as the unwind passes the deferred call's
+	// region (__madc_cleanup_call), so the next pass tries again instead of
+	// waiting on a guard left pending. Appends the guard and the guarded
+	// block to `items`.
 	// thread_local (`per_thread`): a per-thread guard byte, set after the
 	// initialization, instead of the __cxa_guard protocol.
 	// A builtin binary operator on a carrier operand no carrier row served:
@@ -2911,10 +3072,11 @@ public:
 	node_t translate_while(TokenBase *tw);
 	node_t translate_for(TokenFOR *tf);
 	// SJLJ exception lowering: try/catch -> setjmp on __madc_try_push(&ctx), the
-	// try body on the ==0 arm (then __madc_try_pop), the catch dispatch on the
-	// else arm (by __madc_exception_type, bind value, run handler, clear; no
-	// match -> __madc_rethrow). Emitted as block-scoped statements (NOT a stmt-
-	// expr — see the c2mir cleanup-scope gotcha). throw -> __madc_throw_*.
+	// try body on the ==0 arm (its frame guard ends the frame on every normal
+	// exit, __madc_try_leave), the catch dispatch on the else arm (by
+	// __madc_exception_type, bind value, run handler, clear; no match ->
+	// __madc_rethrow). Emitted as block-scoped statements (NOT a stmt-expr —
+	// see the c2mir cleanup-scope gotcha). throw -> __madc_throw_*.
 	node_t translate_try(class TokenTRY *tt);
 	node_t translate_throw(class TokenTHROW *th);
 	// MT-1 `go f(args);` — spawn thunk + site block (src/rt/rt_task.c).
@@ -2932,23 +3094,31 @@ public:
 	node_t main_task_join_wrapper(class TokenFunc *tf, class FuncDef *fd);
 	node_t m_main_wrapper_def = NULL;
 	node_t translate_throw_call(class TokenTHROW *th);
+	// What a throw operand raises; see thrown_kind.
+	enum class ThrownKind { Object, Pointer, Text, Real, Integer, Unsupported };
+	ThrownKind thrown_kind(TokenBase *e, DataDef *&object);
+	node_t throw_payload_call(class TokenTHROW *th);
+	node_t throw_object_items(class TokenTHROW *th);
+	bool thrown_operand_is_implicitly_movable(DataDefCLASS *cdd, TokenBase *src);
+	bool declared_within_innermost_try_body(const Variable &v) const;
+	// The Itanium type-name string a handler and a thrown object match by.
+	madc::dis::istring exception_type_name(DataDef *object);
+	void exception_match_subobjects(DataDefCLASS *cls,
+		std::vector<std::pair<DataDefCLASS *, long> > &out);
+	node_t exception_match_guard(class TokenTRY *tt, size_t ci);
+	// `(void *)<complete-object dtor>` of cdd, declared and referenced.
+	node_t class_dtor_address(DataDefCLASS *cdd, TokenBase *origin);
 	int m_try_ctx_counter = 0;
-	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in
-	// translate_try). Objects constructed in a try body keep their normal
-	// cleanup-attribute (normal-path scope-exit teardown), but ALSO get a runtime
-	// __madc_cleanup_push so __madc_throw_* unwinds them on the longjmp path
-	// (cleanup attributes do NOT fire on longjmp — P1.1c). On normal try exit the
-	// runtime entries are discarded (cleanup-attribute already ran the dtors).
-	int m_try_body_depth = 0;
-	// When in a try body, append a runtime cleanup entry naming `cdd`'s destructor
-	// for the object `varname` (its dtor runs on the exception/longjmp unwind
-	// path). No-op outside a try body or for a class with no dtor. See P1.1c
-	// (docs/plans/refs/exceptions-sjlj.md).
-	// array_elems > 0 = the object is a fixed array of that many elements;
-	// the pushed dtor is then the per-(class,N) array wrapper.
-	void emit_try_body_cleanup_push(const char *varname, class DataDefCLASS *cdd,
-					node_t items, class TokenBase *origin,
-					size_t array_elems = 0);
+	// The try BODIES being lowered, innermost last (pushed around
+	// translate_stmt(tt->try_body) in translate_try; NULL for a body that is
+	// no compound): a handler is not its try's body, so the last entry is the
+	// try whose compound-statement holds a throw lowered now
+	// (declared_within_innermost_try_body). An object constructed anywhere
+	// is a cleanup variable armed after its construction: a region of its
+	// frame, which the unwind runs (B205).
+	std::vector<class TokenCpnd *> m_try_bodies;
+	// The blocks open while translate_block lowers them, innermost last.
+	std::vector<class TokenCpnd *> m_open_blocks;
 	// Range-based for over a madc array (madc::value): `for (T x : arr) body`. The loop
 	// variable is declared in the enclosing scope by the parser, so this only
 	// emits the index loop + per-iteration element fill (php_array_get /
@@ -2969,7 +3139,13 @@ public:
 	// class_nullary_call, so no size Variable is threaded here.
 	node_t translate_foreach_class(class TokenFOREACH *fe,
 				       class DataDefCLASS *cls,
-				       class Variable *opmv);
+				       class Variable *opmv,
+				       std::vector<node_t> *prelude);
+	// A class range's address, captured ONCE ([stmt.ranged]/1) into a
+	// prelude `struct C *` declaration; the captured name, or empty.
+	madc::dis::istring capture_class_range(class TokenFOREACH *fe,
+					       class DataDefCLASS *cls,
+					       std::vector<node_t> *prelude);
 	// Range-for over a raw fixed-size C array: `for (T x : a) body` -> a plain
 	// indexed loop over the array's compile-time element count with a direct
 	// subscript `a[__i]`. (No madc-array runtime helper.)

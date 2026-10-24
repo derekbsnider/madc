@@ -19,15 +19,23 @@
 # aarch64_char_sign.c (plain char is UNSIGNED here: signed char's folds, its
 # emitted spelling and _Generic's match, which read plain char), and
 # aarch64_varargs.c (a program DEFINING a variadic function: its va_arg calls
-# libmir's mir.va_arg / mir.va_block_arg, which an executable could not find). THREE LEGS each:
+# libmir's mir.va_arg / mir.va_block_arg, which an executable could not find),
+# aarch64_blkarg.c (a struct over 128 bytes by value: its copy calls
+# mir.blk_mov, which libmir kept static and nothing exported), aarch64_predef.c (the target's predefined macros and header world, which the
+# cross madc captured from the x86-64 host g++), aarch64_nansl.c (the
+# binary128 signaling NaN), and aarch64_float.c (<float.h>: madc's on the aot
+# leg, c2mir's on the jit leg). THREE LEGS each:
 #   oracle  aarch64-linux-gnu-gcc's binary under qemu — the expected output.
 #   aot     bin/madc-aarch64-linux -c, linked by aarch64 gcc against the target's
-#           libmir (a madc executable gets libmir through libmadc), run under
-#           qemu: every dotted mir.* name it imports must be one that libmir
-#           EXPORTS (mir.va_arg / mir.va_block_arg -- aarch64_varargs.c), and it
-#           must print the oracle's bytes.
+#           libmir, run under qemu: the object carries MIR's call helpers
+#           itself (madc's crt:mir_calls startup member, weak), and any dotted
+#           mir.* name it still imports must be one that libmir EXPORTS
+#           (aarch64_varargs.c, aarch64_blkarg.c); it must print the oracle's
+#           bytes.
 #   jit     a gcc-built aarch64 c2m (MIR's own driver) running the fixture
-#           through the generator (-eg) under qemu — the libmir JIT path.
+#           through the generator (-eg) under qemu — the libmir JIT path. A
+#           fixture whose subject is madc's front end (a builtin c2m lacks)
+#           names why in tests/cross/<fixture>.jit_skip; aot still runs it.
 #
 # CONTROL (two-sided): the oracle must print the binary128-only value
 # `i2ld 9007199254740993.0` (2^53+1 is not a double) AND must not print the
@@ -40,6 +48,9 @@ FIX=tests/cross/aarch64_ldouble.c
 CC=aarch64-linux-gnu-gcc
 NM=aarch64-linux-gnu-nm
 QEMU="qemu-aarch64-static -L /usr/aarch64-linux-gnu"
+# the target's C headers, for the c2m legs (jit, boot): c2m's built-in search
+# opens the host's /usr/include, whose x86-64 bits/ an aarch64 c2m cannot use
+TINC=/usr/aarch64-linux-gnu/include
 MADC=bin/madc-aarch64-linux
 JITB="$PWD/obj/mir/aarch64-native"
 LIBMIR="$JITB/libmir.a" # the native aarch64 libmir the aot leg links (obj/mir/aarch64-linux is the x86-hosted cross build's)
@@ -75,7 +86,7 @@ for fx in tests/cross/aarch64_*.c; do
 	"$CC" -O0 "$fx" -o "$D/$n.gcc" && $QEMU "$D/$n.gcc" > "$D/$n.oracle" \
 		|| { echo "RED  $n: the gcc oracle did not build or run"; fail=1; continue; }
 	# aot: madc-aarch64-linux -c, linked by aarch64 gcc
-	if ! "$MADC" --std=c17 -c -o "$D/$n.o" "$fx" > "$D/$n.aot.log" 2>&1; then
+	if ! "$MADC" --std=gnu17 -c -o "$D/$n.o" "$fx" > "$D/$n.aot.log" 2>&1; then
 		echo "RED  $n aot: madc -c failed"; sed 's/^/    /' "$D/$n.aot.log" | head -5; fail=1
 	else
 		unexported=$("$NM" -u "$D/$n.o" | awk '$2 ~ /^mir\./ { print $2 }' | sort -u \
@@ -91,9 +102,13 @@ for fx in tests/cross/aarch64_*.c; do
 			echo "GREEN $n aot: every dotted import exported by libmir, links, byte-identical to gcc"
 		fi
 	fi
-	# jit: a gcc-built aarch64 c2m through the generator (-eg)
-	if [ -x "$JITB/c2m" ]; then
-		if ! $QEMU "$JITB/c2m" "$fx" -eg > "$D/$n.jit" 2> "$D/$n.jit.err" \
+	# jit: a gcc-built aarch64 c2m through the generator (-eg). A fixture whose
+	# subject is madc's front end (a builtin c2m does not have) names why in a
+	# sibling <fixture>.jit_skip; the aot leg still runs it.
+	if [ -f "${fx%.c}.jit_skip" ]; then
+		echo "SKIP  $n jit: $(head -1 "${fx%.c}.jit_skip")"
+	elif [ -x "$JITB/c2m" ]; then
+		if ! $QEMU "$JITB/c2m" -I"$TINC" "$fx" -eg > "$D/$n.jit" 2> "$D/$n.jit.err" \
 		   || ! diff -q "$D/$n.oracle" "$D/$n.jit" >/dev/null; then
 			echo "RED  $n jit: output differs from the gcc oracle"; head -3 "$D/$n.jit.err"
 			diff "$D/$n.oracle" "$D/$n.jit" | head -12; fail=1
@@ -114,7 +129,7 @@ done
 if [ -x "$JITB/c2m" ]; then
 	M=third_party/mir
 	BS="$M/mir-gen.c $M/c2mir/c2mir.c $M/c2mir/c2mir-driver.c $M/mir.c $M/mir-debug.c $M/mir-debug-gdb.c"
-	BF="-w -DMIR_BOOTSTRAP -I/usr/aarch64-linux-gnu/include -I$M"
+	BF="-w -DMIR_BOOTSTRAP -I$TINC -I$M"
 	if ! timeout 1800 $QEMU "$JITB/c2m" $BF $BS -o "$D/boot1.bmir" > "$D/boot1.log" 2>&1; then
 		echo "RED  boot: stage 1 (gcc-built c2m compiling MIR) failed"; head -3 "$D/boot1.log"; fail=1
 	elif ! timeout 3600 $QEMU "$JITB/c2m" -DMIR_BOOTSTRAP "$D/boot1.bmir" -el $BF $BS -o "$D/boot2.bmir" > "$D/boot2.log" 2>&1; then

@@ -1160,3 +1160,52 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		CHECK(ORACLE_N >= 100);   // non-vacuity: the corpus still exercises the shapes
 	}
 }
+
+// The decoder twin (itanium_function_name): a namespace-scope function's own
+// symbol back to its scope and source name — the dialect per-name demand's
+// reading of a loaded body's callee (docs/plans/2026-10-16-dialect-per-name-plan.md,
+// A4). Round-trips through the encoders, plus g++'s spellings.
+TEST_SUITE("Itanium function-name decoding") {
+
+	static std::string decoded(const madc::dis::istring &sym)
+	{
+		madc::dis::istring scope, name;
+		if (!itanium_function_name(sym.c_str(), scope, name))
+			return "(none)";
+		return scope.str() + "|" + name.str();
+	}
+
+	TEST_CASE("a namespace function, nested or global, plain or static") {
+		CHECK(decoded(itanium_mangle_nested_sub({"ui"}, "post_event",
+			{"void*", "const char*", "const char*"})) == "ui|post_event");
+		CHECK(decoded(itanium_mangle_nested_sub({"madc", "sys"}, "info", {}))
+		      == "madc::sys|info");
+		CHECK(decoded(itanium_mangle_nested_sub({}, "total", {"int"})) == "|total");
+		CHECK(decoded(itanium_mangle_nested_sub({}, "s_fn", {"int"}, true)) == "|s_fn");
+		CHECK(decoded(itanium_mangle_nested_sub({"ns"}, "f", {}, true)) == "ns|f");
+		// g++: php::count(madc::value&), ui_web::posted_event(ui_web::host*)
+		CHECK(decoded("_ZN3php5countERN4madc5valueE") == "php|count");
+		CHECK(decoded("_ZN6ui_web12posted_eventEPNS_4hostE") == "ui_web|posted_event");
+	}
+
+	TEST_CASE("an operator is a name, never a scope") {
+		CHECK(decoded(itanium_mangle_nested_sub({"madc"}, "operator<<",
+			{"std::ostream&", "const madc::value&"})) == "madc|operator<<");
+		CHECK(decoded(itanium_mangle_nested_sub({}, "operator==",
+			{"const madc::value&", "const madc::value&"})) == "|operator==");
+		CHECK(decoded("_ZN4madcls2abEv") == "(none)");
+	}
+
+	TEST_CASE("every other shape is not a namespace function's identity") {
+		CHECK(decoded("_ZN3php7print_rIiEEvRKT_") == "(none)");	// template-id
+		CHECK(decoded("_ZNK4madc7channel2okEv") == "(none)");	// const member
+		CHECK(decoded("_ZN4madc7channelC1Ev") == "(none)");	// constructor
+		CHECK(decoded("_ZNSt7__cxx114stodERKNS_12basic_stringIcSt11char_traitsIcESaIcEEEPm") == "(none)");
+		CHECK(decoded("_ZSt4endlIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_") == "(none)");
+		CHECK(decoded("_ZTV4Base") == "(none)");		// special name
+		CHECK(decoded("_ZZ4mainE1x") == "(none)");		// local entity
+		CHECK(decoded("__php_count") == "(none)");		// not Itanium
+		CHECK(decoded("_ZN3phpE") == "(none)");			// a nested name of one
+		CHECK(decoded("_ZN9toolongE") == "(none)");		// a length past the end
+	}
+}

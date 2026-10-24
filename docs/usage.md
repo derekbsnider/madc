@@ -68,6 +68,8 @@ cout << "hypot(3,4) = " << hypot(3.0, 4.0) << endl;
 | `-D<name>[=value]` | define a macro |
 | `-I<dir>` | add an include search directory |
 | `-l<name>` | bind a library (spelled for the target by the module map: `-lm` → `libm.so.6` / `libSystem.B.dylib` / `ucrtbase.dll`; bare names follow `lib<name>.so` / `.dylib` / `<name>.dll`). JIT: opened globally so its symbols resolve. AOT: a `DT_NEEDED` / load command / PE import. See [language/import.md](language/import.md). |
+| `--import=<name>` | import the module `<name>` ahead of the program, as if its source began with `import <name>;` (repeatable). With no source it only tries the import, so a launcher can test before it starts: exit 0, or the import error and exit **69** (no other failure of madc's uses it). |
+| `--module-path=<dir>` | search `<dir>` for the modules `import` names, after the program's own directory and before madc's module directory (`<prefix>/lib/madc/modules`); repeatable. A module is `<dir>/<name>.so` / `.dylib` / `.dll`. |
 | `--no-embedded-headers` | disable the baked-in headers; use real system headers only |
 | `--no-auto-load` | do not act on `import` / `#load` library bindings; link explicitly via `-l` |
 
@@ -120,6 +122,10 @@ madc prog.o                       # execute .o files as a precompiled cache
 - `-static-libmadc` packs the madc runtime pieces the program needs into the
   emitted image, so it runs with no madc library installed (libc/libstdc++
   stay dynamic).
+- An object another toolchain links names madc's runtime as a g++ object
+  names libstdc++: add `-L<dir>/lib -lmadc_rt` to that link (a function with
+  cleanups references `__madc_personality`; try/catch and VLAs reference the
+  archive's other entries).
 - `-pie` / `-no-pie` select the image layout, gcc-style.
 - `-mwindows` / `-mconsole` (Windows) select the executable's subsystem,
   mingw-gcc-style: a windowed program allocates no console at start; a
@@ -175,13 +181,15 @@ image, the libmadc image, `<exe>.forest` / `<lib>.forest` sidecars,
 Precedence: **CLI > environment > `madc.ini` > defaults.**
 
 The config search takes the first existing file of: `./madc.ini`,
-`$XDG_CONFIG_HOME/madc/madc.ini` (default `~/.config/madc/madc.ini`), then
+`$XDG_CONFIG_HOME/madc/madc.ini` (else `%APPDATA%\madc\madc.ini` on Windows,
+else `~/.config/madc/madc.ini`), then
 the system config dir. `--config=<file>` names one explicitly;
 `--no-config` skips the search (hermetic builds). Recognized keys: `std`
 (for a source with no recognised extension — `--std` > the extension > `std`
 > `madc`), `stdlib`, `forest`, `include` (repeatable), `modules` (repeatable:
-a module or library to load, as `-l<name>` loads it — `modules = madcgit`; the
-command line's `-l` libraries load first, and a name both give loads once),
+a module to import, as `--import=<name>` imports it — `modules = git`; the
+command line's `--import` modules import first, and a name both give imports
+once),
 `cpu-limit`, `mem-limit` — an unknown key is an error.
 
 | Variable | Effect |

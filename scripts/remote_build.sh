@@ -21,7 +21,7 @@
 #   ondisk-win  the win64 twin of ondisk (the packed PE under wine)
 #   exeobj    the native-artifact lanes on the SHIPPED binary:
 #             MADC_BIN=bin/madc-release run_tests.sh --exe --obj
-#   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe/obj).
+#   gui       build the ui_web module; run tests/gui under Xvfb (JIT/exe/obj).
 #             a GUI-module test lifts the runner's memory guard itself;
 #             ordinary compiler runs keep their existing memory guard.
 #   fastlanes the whole FAST tier (scripts/fast_lanes.sh) on the container:
@@ -41,6 +41,12 @@
 #   parsecost-record  re-record that baseline on the container (refuses growth
 #             unless PARSE_COST_ACCEPT='<reason>') and pull it back to the NAS
 #             checkout, where it is committed
+#   perfc2m   madc-release against c2m -O1 (scripts/perf_vs_c2m.sh): callgrind
+#             Ir, interleaved wall and madc's object sha256 per workload of
+#             scripts/perf_vs_c2m/; PERF_C2M_ARGS='--same-objects ...' passes
+#             through
+#   perfc2m-record  record its ledger on the container and pull it back to
+#             the NAS checkout, where it is committed
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
@@ -331,7 +337,7 @@ for stage in $stages; do
 		run_remote "exeobj" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh --exe --obj"
 		;;
 	gui)
-		# ONE body, in scripts/gui_lane.sh — the webview build, the Xvfb
+		# ONE body, in scripts/gui_lane.sh — the ui_web build, the Xvfb
 		# display, the three passes and the zero-tests guard all live there,
 		# so the lane can also run per-commit out of fast_lanes.sh. It used
 		# to be inline here, which is why it had no ledger row for weeks.
@@ -376,6 +382,21 @@ for stage in $stages; do
 		rc=$?
 		echo "pull parse-cost baseline rc=$rc"
 		note_stage "pull parse-cost baseline" "$rc"
+		;;
+	perfc2m|perfc2m-record)
+		# Build both compilers (make is idempotent; c2m is the host MIR
+		# build's), then compare; the record leg brings the ledger back.
+		pc_args="$PERF_C2M_ARGS"
+		[ "$stage" = perfc2m-record ] && pc_args="--record $pc_args"
+		run_remote "$stage" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release $REMOTE_MADC/obj/mir/host/libmir.a; cd $REMOTE_MADC; bash scripts/perf_vs_c2m.sh $pc_args"
+		if [ "$stage" = perfc2m-record ]; then
+			rsync -az --no-perms --no-owner --no-group -e "ssh -p $PORT" \
+				"$REMOTE:$REMOTE_MADC/scripts/perf_vs_c2m/ledger.tsv" \
+				"$LOCAL_MADC/scripts/perf_vs_c2m/ledger.tsv"
+			rc=$?
+			echo "pull perf_vs_c2m ledger rc=$rc"
+			note_stage "pull perf_vs_c2m ledger" "$rc"
+		fi
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.
@@ -504,10 +525,10 @@ for stage in $stages; do
 		#                      VALIDATES (the `packed` rule) — without it the
 		#                      suite ran whatever hosted PE the last `win`
 		#                      stage left, however old.
-		#   make modules-windows: the module DLLs the hosted exe imports
-		#                      from bin/ (madcgit.dll, madcmark.dll) — the
-		#                      same rule; a stale madcgit.dll failed testgit
-		#                      with "'madcgit_status' is not exported".
+		#   make modules-windows: the madc modules the hosted exe imports
+		#                      from lib/madc/modules/ (ui_web, git, markdown) — the
+		#                      same rule; a stale module DLL once failed
+		#                      testgit with an unexported symbol.
 		run_remote "wine" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) hosted-x86-64-windows; make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) modules-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
 		;;
 	warnscan)
@@ -550,14 +571,15 @@ for stage in $stages; do
 		# freshly-pulled compiler into runtime symbol-lookup errors
 		# in the exes it produces (2026-08-26: bin/madcide undefined
 		# __php_file_get_contents — the lib was 3 days behind bin/madc).
-		# The module images (lib/libmadc[a-z]*.so: madcgit, madcmark,
-		# webview) ride along: a program's `import madcgit;` opens
-		# madc's own lib directory first, so a pulled madc without them
-		# aborts at the import.
+		# The module images ride along — lib/libmadc[a-z]*.so and madc's
+		# module directory lib/madc (ui_web, git, markdown): a
+		# program's import opens madc's own lib directory first, so a
+		# pulled madc without them aborts at the import.
 		rsync -az --no-perms --no-owner --no-group --links \
 			-e "ssh -p $PORT" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc.so" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc[a-z]*.so" \
+			"$REMOTE:$REMOTE_MADC/lib/madc" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc.so.0" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc.a" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc_rt.a" \

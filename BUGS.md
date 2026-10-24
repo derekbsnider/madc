@@ -23,10 +23,238 @@ owner schedules it.
   oracles and a `CHANGELOG.md` line. The same commit deletes the entry here.
 
 All outputs were measured 2026-09-25 with `bin/madc` at `8ffd42b8a`, gcc 13
-and clang 18. The madc flags are `--std=c17` for `.c` files and
-`--std=c++17` for `.cpp` files.
+and clang 18, under `--std=c17` for `.c` files and `--std=c++17` for `.cpp`
+files; an entry that names its own flags says so. New entries use the
+defaults the pack precompiles (owner 2026-10-18): `--std=gnu17` for `.c`
+and `--std=gnu++17` for `.cpp`, against `gcc -std=gnu17` / `g++ -std=gnu++17`.
 
 ## Silent wrong answers
+
+### B224. A one-element row of a multi-dimensional array MEMBER loses its braces
+
+```c
+#include <stdio.h>
+struct S { int n; int m[2][4]; };
+struct S s = { 1, {{3},{4}} };
+int main(void)
+{
+	printf("%d %d\n", s.m[0][1], s.m[1][0]);
+	return 0;
+}
+```
+
+- Found 2026-10-22: the benchmark lane's `oggenc` (MIR c-benchmarks) is
+  MADC-FAIL — `oggenc.c:7361` `{{3},{4,5},...}` on `int
+  class_subbook[VIF_CLASS][8]`, "excess elements in scalar initializer"
+  (c2mir check). v0.105.0 the same: not a regression.
+- gcc 13 and clang 18: `0 4`. madc (HEAD and v0.105.0): `4 0`. `--emit=c11`
+  shows `{ 3, { 4 } }` for `{{3},{4}}`: the one-element row is unbraced, so
+  brace elision moves every later row. A mixed row (`{{3},{4,5}}`) is refused
+  instead (the `oggenc` form). A file-scope `int g[2][4] = {{3},{4}}` is right.
+- Layer: cir `unwrap_scalar_braces_list`'s counted-array-member branch
+  unwraps each sub-brace against the member's ELEMENT type (`int`; the member
+  is stored flattened, `member_counts` 8) — a row's slot type is the ROW
+  (`int[4]`, the member's extents: `DataDefSTRUCT::m_array_dims` /
+  `member_array_type`), an aggregate, never a braced scalar.
+
+### B225. A pack-bound struct's multi-dimensional member reads as one extent (latent)
+
+- The forest record `madc::dis::memberrec` (`include/cir_arena.h`) holds a
+  member's array flag and flat count, not its extents: a header member
+  `T m[R][C]` thaws (`src/cir_freeze.cpp`) with `member_dims` `{R*C}`, so
+  `s.m[i][j]` mis-types against a pack-bound struct. Live parsing records
+  `{R, C}`.
+- Latent: no struct the C or C++ packs freeze has a multi-dimensional
+  instance member (2026-10-22: glibc + libstdc++ 13 scan — only tr1/tr2
+  static members). The fix is a dims run in the record (a format bump).
+- Found 2026-10-22 fixing the one-element / flexible member thaw
+  (`tests/testpackarraymember_c`).
+
+### B217. The address of an overload set ignores the target type ([over.over])
+
+```cpp
+#include <cstdio>
+int f(int) { return 1; }
+int f(double) { return 2; }
+struct S { int m(int) { return 1; } int m(double) { return 2; } };
+int main()
+{
+	int (*pi)(int) = &f;
+	int (*pd)(double) = &f;
+	int (S::*mi)(int) = &S::m;
+	int (S::*md)(double) = &S::m;
+	S s;
+	std::printf("%d %d %d %d\n", pi(1), pd(2.0), (s.*mi)(1), (s.*md)(2.0));
+	return 0;
+}
+```
+
+- Found 2026-10-21 writing `tests/testvirtualoverloadslots` (per-signature
+  vtable slots, 5333f374c).
+- g++ 13 and clang++ 18: `1 2 1 2`. madc (HEAD and v0.105.0): `1 1 2 2` —
+  `&f` binds the first free overload, `&S::m` the one `findMethod` returns
+  (the last declared), whatever the target type. A virtual member pointer
+  then encodes the wrong slot too.
+- Layer: no [over.over] selection exists — `&C::m`
+  (`Program`'s member-pointer constant reader, `findMethod(member_name)`) and
+  `&f` / `f` take a by-name lookup. The fix selects against the target type
+  at every target (initializer, assignment, argument, cast, return). Parser
+  — its own session.
+
+### B218. An rvalue object does not select a `&&`-qualified member overload
+
+```cpp
+#include <cstdio>
+#include <utility>
+struct W {
+	int v;
+	int &get() & { return v; }
+	int &&get() && { return static_cast<int &&>(v); }
+};
+static const char *take(int &) { return "lvalue"; }
+static const char *take(int &&) { return "rvalue"; }
+int main()
+{
+	W w = { 5 };
+	std::printf("%s %s\n", take(w.get()), take(std::move(w).get()));
+	return 0;
+}
+```
+
+- Found 2026-10-21 probing ref-qualifier fidelity after 5333f374c.
+- g++ 13 and clang++ 18: `lvalue rvalue`. madc (HEAD and v0.105.0):
+  `lvalue lvalue` — `std::move(w).get()` calls `get() &`.
+- Layer: member overload ranking — the implicit object parameter of a
+  `&&`-qualified member binds an rvalue only ([over.match.funcs]/4-5,
+  [over.ics.rank]/3.2.3); the ranker does not read the object's value
+  category against `FuncDef::ref_qualifier`. Parser — its own session.
+  B220 is probably the same root.
+
+### B221. A method's ref-qualifier is not frozen (latent)
+
+- Found 2026-10-21 reading the freeze path for 5333f374c.
+- `FuncDef::ref_qualifier` (0 / `&` / `&&`) has no defrec or methodrec bit, so
+  a method restored from the pack reads as unqualified: a restored class's
+  `&` / `&&` overload pair (libc++ `__optional_storage_base::__get`, C++20
+  `basic_stringbuf::str`) loses the distinction, and its virtual slot key
+  (`FuncDef::virtual_slot_key`) drops `R` / `O`.
+- No observable reducer yet: the live paths that would show it are B218 /
+  B220 / the KG gap `libstdcxx_optional_payload_get_unresolved`. Home:
+  `methodrec.flags` bits 4/5 (`MF_` 0..3 taken), with a forest format bump.
+
+### B214. A global `using std::abs;` does not add std's overloads to `::abs`
+
+```cpp
+#include <stdlib.h>
+#include <stdio.h>
+int main()
+{
+	printf("%g\n", (double)abs(-2.5));
+	return 0;
+}
+```
+
+- Found 2026-10-20 during the include_next found-dir fix (the libstdc++
+  `<stdlib.h>` wrapper's `using std::abs;`).
+- g++ 13 and clang++ 18 (`-std=gnu++17`) print `2.5`; madc prints `2`, packed
+  and live (`--no-forest-bind`) alike. `std::abs(-2.5)` through `<cstdlib>`
+  prints `2.5`.
+- Layer: name lookup of a namespace-scope using-declaration whose name is
+  already declared there (glibc's `extern int abs(int)`): the imported overload
+  set does not join the existing one. Parser/lookup — its own session.
+
+### B212. A stringized macro loses a GNU attribute madc does not model
+
+```c
+#include <stdio.h>
+#define M1 __attribute__ ((__malloc__))
+#define S2(...) #__VA_ARGS__
+#define S(...) S2(__VA_ARGS__)
+int main(void)
+{
+	printf("[%s]\n", S(M1));
+	return 0;
+}
+```
+
+- Found 2026-10-20 during K2b (glibc's `__attr_dealloc_fclose`).
+- gcc 13 and clang 18 (`-std=gnu17`) print `[__attribute__ ((__malloc__))]`;
+  madc prints `[]`.
+- Layer: the lexer drops an unsupported attribute (`madc_gnu_attribute_kind`
+  → Unsupported) as it lexes, argument pre-expansion included, so `#` sees no
+  tokens. The spelling must survive to stringizing; the drop belongs after
+  phase 4. Core lexer — its own session.
+
+### B205. A throw passing through a function with no try of its own skips its objects' destructors
+
+```cpp
+#include <cstdio>
+struct T { int id; T(int i) : id(i) { std::printf("ctor %d\n", id); }
+	   ~T() { std::printf("dtor %d\n", id); } };
+static void h() { T x(1); throw 2; }
+int main()
+{
+	try { h(); } catch (int v) { std::printf("caught %d\n", v); }
+	return 0;
+}
+```
+
+- Found 2026-10-19 while designing the B202 handler lifetime.
+- g++ 13 and clang++ 18: `ctor 1`, `dtor 1`, `caught 2`. madc: `ctor 1`,
+  `caught 2`, exit 0 — `~T` never runs.
+- Layer: `src/cir_builder.cpp` `emit_try_body_cleanup_push` registers an
+  object on the runtime cleanup stack only inside a LEXICAL try body
+  (`m_try_body_depth > 0`); the longjmp skips every cleanup attribute of the
+  frames between the throw and the catching try. The fix registers every
+  automatic object with a non-trivial destructor (its guard local already
+  removes the entry on a normal exit) — a runtime push and remove on every
+  non-throwing path, the trade waiting on the owner.
+
+### B206. A base named without an access specifier in a `class` is public
+
+```cpp
+#include <cstdio>
+#include <type_traits>
+struct B { int b; };
+class DC : B { public: int d; };
+int main()
+{
+	std::printf("%d\n", (int)std::is_convertible<DC *, B *>::value);
+	return 0;
+}
+```
+
+- Found 2026-10-19 while building the B202 match table (only an unambiguous
+  PUBLIC base takes a derived throw, [except.handle]/3).
+- g++ 13 and clang++ 18: `0` ([class.access.base]/2: private is assumed for
+  the class-key `class`). madc: `1`, exit 0.
+- Layer: `src/parser.cpp`, the base-clause reader (`uint32_t baccess = 0;`)
+  starts every base at public whatever the class-key, so `BaseSpec::access`,
+  the typeinfo's `__public_mask` and every conversion read it as public. Core
+  parser — waits on the owner.
+
+### B197. Inside a namespace, `sizeof(T)` takes a sibling namespace's same-named struct
+
+```cpp
+#include <stdio.h>
+namespace A { struct host { void *a; void *b; int c[6]; }; }
+namespace B { struct host { void *x; void *y; };
+  long sz() { return sizeof(host); } long szp() { host *h = 0; return sizeof(*h); } }
+int main() { printf("%ld %ld\n", B::sz(), B::szp()); }
+```
+
+- Found 2026-10-17 during the dialect-per-name work (task A5).
+- g++ 13 and clang++ 18: `16 16`. madc (`bin/madc`, live parse, and the
+  packed release of cf05fd6f5): `40 16`, exit 0. The declaration `host *h`
+  resolves to `B::host`; the `sizeof` type-id's unqualified name takes the
+  flat `struct_map` bare key — the last-registered `host` — instead of the
+  enclosing namespace's type.
+- Shipped instance, gone since the ws host moved into libmadc
+  (`src/ui_ws.cpp`): `ui_ws::open` in `include/madc/ns_ui_ws` malloced
+  `sizeof(host)` = 40 bytes (`ui_web::host`) for its 16-byte host — an
+  over-allocation, harmless there, wrong.
+- A core-parser fix (the type-id's name lookup): its own focused session
+  (owner 2026-09-13), first in section G of the 0.106.0 arc.
 
 ### B193. On macOS, `NDEBUG` does not disable `assert`
 
@@ -59,6 +287,17 @@ int main(void) { assert_off(); assert_on(); printf("evals=%d\n", evals); return 
   arms' `#define assert(` lines taken from two `clang -E -dD` runs of
   `<assert.h>` (with and without `-DNDEBUG`) under `#ifdef NDEBUG`.
 - Not a regression: the prelude has flattened `assert.h` since August.
+- 2026-10-21, b530bc415: the umbrella carries both arms under `#ifdef NDEBUG`
+  (taken from the two flattens), so `-DNDEBUG` and a `#define NDEBUG` ahead of
+  the first standard include now disable `assert` on macOS
+  (`tests/testndebugflag`, `tests/testndebugfirst_c`). Left: a RE-include
+  under a changed `NDEBUG` (this reducer, `testsysheaderreinclude*`,
+  `testndebugcxxbind` — all `.darwin_skip`, owner 2026-10-21: not a
+  regression). A guard-less stub alone does not reach it:
+  `Program::should_tokenize_include` keeps every named (embedded) include
+  once-only, so the stub is never read twice. The fix is the include
+  machinery's, with the umbrella's per-header scoping (KG Gap
+  darwin_umbrella_prelude_whole_set_visibility) — its own session.
 
 ### B181. A non-type template argument naming a variable is keyed and spliced by its spelling
 
@@ -94,54 +333,6 @@ int main(int argc, char **argv)
   converted constant expression evaluated at the template-id: its VALUE is
   the key and the splice, and an argument that does not fold (and is not
   dependent) is an error.
-
-### B168. `__DATE__` / `__TIME__` are madc's own build date, not the compile's
-
-```c
-#include <stdio.h>
-int main(void) { printf("%s\n", __DATE__); return 0; }
-```
-
-- C11 6.10.8.1: the date of translation of the source file. gcc 13 and
-  clang 18 (2026-10-04): `Oct  4 2026`. The v0.101.0 release madc
-  (`tmp/release-bins/v0.101.0`) the same day: `Oct  3 2026` — the day madc
-  itself was built: `src/lexer.cpp` sets `define_map["__DATE__"]` from the
-  C++ compiler's own `__DATE__` (and `__TIME__` likewise).
-- Consumers: Help ▸ About's copyright year (`product_about`) reads
-  `__DATE__`; it is right only while madc and the product are built in the
-  same year.
-- Not a one-line fix: the frozen forest is keyed by the predefined-macro
-  table (the context hash and the producer config), so a per-compile date
-  must stay out of that key (gcc's `SOURCE_DATE_EPOCH` is the reproducible-
-  build convention to honour too).
-- Found 2026-10-04 writing Help ▸ About.
-
-### B156. `__is_same` is false for a namespace-scope scalar typedef and its type
-
-```cpp
-#include <type_traits>
-#include <cstddef>
-#include <cstdio>
-namespace w { typedef int i; }
-int main() {
-	std::printf("%d %d %d %d\n", (int)std::is_same<std::size_t, unsigned long>::value,
-		    (int)std::is_same<w::i, int>::value,
-		    (int)std::is_same<std::ptrdiff_t, long>::value,
-		    (int)__is_same(std::size_t, unsigned long));
-	return 0;
-}
-```
-
-- g++ 13 and clang++ 18 (libstdc++ and libc++): `1 1 1 1`. madc
-  (2026-10-03, libstdc++): `0 0 0 0`; under `-stdlib=libc++`: `1 0 1 1`.
-  v0.100.1 gives the same answers.
-- Layer: `TraitTypeArg::same_as` (src/parser.cpp) compares `dd->name`. The
-  namespace-scope arm of `TokenTYPEDEF::parse`'s `finish_alias` mints an
-  alias dd named for the typedef, linked to its type by `scalar_alias_of`.
-  `proven_scalar_identity` walks that link; `same_as` does not.
-- Found 2026-10-03 while fixing the libc++ `add_volatile` regression
-  (tests/testvolatiletypetraitscxx). Off the release path (shipped in
-  v0.100.1), filed per owner 2026-09-30.
 
 ### B157. libc++: `std::vector::push_back(std::move(x))` copies instead of moving
 
@@ -231,85 +422,6 @@ int main() {
 - Found 2026-10-02 while fixing the `[subbind]` bind gate. Off the release
   path, filed per owner 2026-09-30.
 
-### B144. A cast to an lvalue reference deduces a forwarding reference as an rvalue
-
-```cpp
-#include <cstdio>
-#include <utility>
-void f(int &) { puts("L"); }
-void f(int &&) { puts("R"); }
-template<class T> void g(T &&t) { f(std::forward<T>(t)); }
-int main() {
-	int x = 1;
-	g(static_cast<int &>(x));
-	g(static_cast<int &&>(x));
-	g((int &)x);
-	return 0;
-}
-```
-
-- g++ 13 and clang++ 18 (`-std=c++17`): `L R L`. madc (`--std=c++17`,
-  2026-10-02): `R R R`, exit 0.
-- Layer: deduction's lvalue test, `fn_template_call_arg_is_lvalue`
-  (`src/parser.cpp`), is a second value-category reader beside
-  `Program::argument_value_category`. It sends a `TokenCast` to
-  `is_addressable_expression`, which answers false for every cast, so
-  [temp.deduct.call]/3 deduces `T = int` for an lvalue. `argument_value_category`
-  reads the cast's kind (`static_cast<T&>` an lvalue) correctly. The fix is to
-  make the deduction reader defer to the one reader. The two also differ on a
-  string literal (an lvalue there, an rvalue here).
-- Found 2026-10-02 while fixing the vecbind gate (substituted call arguments'
-  value category). Off the release path, filed per owner 2026-09-30.
-
-### B145. A member template's direct-initialization picks its constructor once, for every instantiation
-
-```cpp
-#include <utility>
-#include <cstdio>
-struct S {
-	int v;
-	S(int x) : v(x) {}
-	S(const S &o) : v(o.v) { printf("copy "); }
-	S(S &&o) : v(o.v) { printf("move "); }
-};
-struct Relay {
-	template<class T> void make(T &&t) { S s(std::forward<T>(t)); (void)s; }
-};
-template<class T> void free_make(T &&t) { S s(std::forward<T>(t)); (void)s; }
-int main() {
-	Relay r;
-	S a(3);
-	printf("member: ");
-	r.make(a);
-	r.make(std::move(a));
-	printf("\nfree: ");
-	free_make(a);
-	free_make(std::move(a));
-	printf("\n");
-	return 0;
-}
-```
-
-- g++ 13 and clang++ 18: `member: copy move` / `free: copy move`. madc
-  (2026-10-02): `member: move move` / `free: copy move`, exit 0. It moves
-  from an lvalue.
-- Layer: a member template's body is lowered once as a Tree-1 pattern and
-  copied per instance. `translate_block` defers a local declaration's
-  construction (the decl marker that `tsubst_relower_deferred_construction`
-  relowers) only when its ctor args hold a pack expansion
-  (`tsubst_args_have_pack_expansion`). A non-pack dependent argument
-  (`std::forward<T>(t)`) gets its constructor picked in the PATTERN, where
-  `argument_value_category`'s identity-forward arm reads the dependent `T` as a
-  non-reference (an xvalue). `S(S&&)` is baked in for every `T`. The fix is to
-  defer the construction whenever an argument is type-dependent ([temp.dep.expr]:
-  overload resolution of a dependent call happens at instantiation).
-- The functional-cast form `return A(std::forward<U>(u)).v;` in a member
-  template, and `w = A(std::forward<U>(u)).v;` in a constructor template's
-  body, also move from an lvalue argument. `U` itself deduces correctly
-  (`std::is_lvalue_reference<U>::value` is 1), and
-  `A(static_cast<U &&>(u)).v` copies (2026-10-02).
-- Found 2026-10-02 with B144. Off the release path, filed per owner 2026-09-30.
-
 ### B121. A const object binds the non-const reference overload
 
 ```cpp
@@ -347,31 +459,11 @@ int main()
   `%whos` lists `p` with Type `char *` under `--std=c++17` and `--std=madc`
   (the Variables view too), `const char *` under `--std=c17`. The binding's
   type is spelled from the type, which carries no C++ const.
-
-### B102. A namespace-scope object's destructor never runs at exit
-
-```cpp
-#include <cstdio>
-struct D { ~D() { printf("dtor\n"); } };
-D g;
-int main() { printf("main\n"); return 0; }
-```
-
-- g++ 13 and clang++ 18: `main` / `dtor` ([basic.start.term]/1: an object
-  of static storage duration is destroyed when `main` returns, in reverse
-  order of construction). madc (`--std=c++17`, `bin/madc` at `409fceb08`),
-  JIT and `-o` executable alike: `main` only. Exit 0. `--emit=c11` holds the
-  destructor's body, but nothing registers it.
-- Found 2026-10-01 building the plugin `source` transport (plan §41.11a
-  step 5): what `madc::code_close` must do with opened code's static objects
-  depends on it.
-- Layer (suspected): `__madc_global_init`'s dynamic initialization
-  (`CirBuilder`, src/cir_builder.cpp) constructs each class-typed global and
-  queues no destruction. The g++ model: each construction is followed by
-  `__cxa_atexit(dtor, &obj, __dso_handle)`, and `dlclose` runs that DSO's
-  entries through `__cxa_finalize`. When the fix lands, `code_close`
-  (src/madc_program.cpp) must run its code's entries before it frees the
-  code, as `dlclose` does, or the exit-time handlers call freed code.
+- Same root, seen 2026-10-19 while fixing B156: `__is_same(const int *,
+  int *)` and `std::is_same<const int *, int *>::value` are 1 under
+  `--std=gnu++17` (g++ 13 and clang++ 18: 0). The trait argument's type-id
+  (`parse_type_id`) qualifies each pointee with `modeled_cv()`, which has no
+  const in C++, so the two arguments are one type.
 
 ### B81. A mem-initializer flattens a nested braced list, losing its nesting
 
@@ -639,6 +731,38 @@ int main(void)
 
 ## Crashes
 
+### B200. `__builtin_setjmp` / `__builtin_longjmp` crash, layout-sensitive
+
+Two programs, both exit 0 under gcc 13 and clang 18:
+
+1. gcc.c-torture/execute/pr84521.c (in the c-torture lane's corpus):
+   madc-release (-O2) `--std=c17`, `--no-forest-bind` or not: "madc: caught
+   SIGSEGV (segmentation fault) at address (nil)", rc=139 — the same on the
+   archived 0.105.0 release. The dev binary (-O0): exit 0.
+2. pr84521 without its `test2` (no `__builtin_alloca` frame):
+
+   ```c
+   void broken_longjmp (void *p) { __builtin_longjmp (p, 1); }
+   volatile int x = 256;
+   void *volatile p = (void*)&x;
+   void test (void) {
+     void *buf[5]; void *volatile q = p;
+     if (!__builtin_setjmp (buf)) broken_longjmp (buf);
+     if (p != q) __builtin_abort ();
+   }
+   int main (void) { test (); return 0; }
+   ```
+
+   The inverse: the dev binary crashes (rc=139), madc-release exits 0.
+
+- Found 2026-10-18 running the fast lanes on the packed release (section J's
+  C layer check): program 1 was the c-torture lane's one non-baseline failure
+  there. The lanes' baselines are taken on the dev binary, which passes it.
+- Layer: not yet traced. The crash is in the JIT-run program and flips with
+  the madc/libmir build mode, so it depends on stack layout — the first
+  suspect is a frame or stack-pointer assumption in the builtin
+  setjmp/longjmp lowering.
+
 ### B187. MIR branches between code holders still assume reach on aarch64 and in lazy basic-block generation
 
 Found 2026-10-06 while fixing B186 (fc7ffa868, the x86-64 lazy-gen wrapper).
@@ -801,6 +925,432 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+Redis 8.10.2 (`make MALLOC=libc CC=madc`, 2026-10-23, madc 0.106.0 at
+`787813947`) stops on B241-B250 (B247, the option gaps, is under
+Diagnostics); gcc 13 builds it in 25 s. Each reproduces on 0.105.0: none is a regression. Redis's own flag is
+`-std=c99`, so these entries were measured with `-std=c99` against `gcc
+-std=c99` / `clang -std=c99`.
+
+### B241. A quoted include from a bare source name searches the system directories before the includer's
+
+```c
+/* quotedinc.c, beside a local limits.h holding: #define QUOTEDINC_LOCAL_LIMITS 42 */
+#include "limits.h"
+#include <stdio.h>
+int main(void) { printf("local header=%d\n", QUOTEDINC_LOCAL_LIMITS); return 0; }
+```
+
+- Run from its own directory as `madc quotedinc.c` (make's spelling, `cc -c
+  foo.c`): `use of undeclared identifier 'QUOTEDINC_LOCAL_LIMITS'`; the
+  system `<limits.h>` was read. `madc ./quotedinc.c` or an absolute path:
+  `local header=42`. gcc 13 and clang 18, either spelling: `local header=42`
+  (C11 6.10.2p3: the includer's directory first, then `-iquote`, `-I`, the
+  system directories).
+- Redis: `src/sha256.c` and `src/sha1.c` read libmd's `/usr/include/sha256.h`
+  / `sha1.h` (strace) instead of Redis's own, and hiredis, `sds.c`, `util.c`
+  and every `server.h` user fail behind it — most of Redis's ~42k cascading
+  errors. With a header of the same name and a compatible shape the program
+  compiles against the WRONG header: this can go silent.
+- Where: the includer-directory step of the quoted-include search takes the
+  current file's directory from its spelled path; a path with no directory
+  component yields an empty one and the step is skipped.
+
+### B242. A block-scope typedef of an anonymous struct or union is refused by the CIR builder
+
+```c
+#include <stdio.h>
+int main(void)
+{
+	typedef struct { unsigned int index, order; } pick;
+	typedef union { unsigned char c[4]; unsigned int l; } word;
+	pick p = {7, 9};
+	word w;
+	w.l = 0x01020304u;
+	printf("pick=%u,%u size=%d word=%d,%d\n", p.index, p.order, (int)sizeof(pick), (int)sizeof w, w.c[0] + w.c[3]);
+	return 0;
+}
+```
+
+- gcc 13 and clang 18: `pick=7,9 size=8 word=4,5`. madc: `cir error:
+  unhandled expression: TokenStructDef (CIR builder has no translation for this
+  construct; token type 27, id 0)` at each typedef.
+- Redis: `sha1.c:58` (`CHAR64LONG16`), `ziplist.c:1602` and `listpack.c:1966`
+  (`rand_pick`).
+- Where: the CIR builder's statement lowering meets the typedef's struct
+  definition as an expression; a block-scope struct definition is a
+  declaration to emit at block scope.
+
+### B243. A type qualifier after a struct or union body is refused
+
+```c
+#include <stdio.h>
+static union { int dummy; char endian; } const native = {1};
+struct pt { int x, y; } volatile vp = {3, 4};
+int main(void) { printf("endian=%d vp=%d\n", native.endian, vp.x + vp.y); return 0; }
+```
+
+- gcc 13 and clang 18: `endian=1 vp=7`. madc: `Expecting variable name or ';'
+  after struct definition` at `const` and at `volatile`, then `native`
+  undeclared. A storage class in the same place (`struct { int a; } static
+  sa;`) is accepted.
+- Redis: `deps/lua/src/lua_struct.c:79`.
+- Where: the declaration-specifier reader after a struct/union body (C11 6.7:
+  the specifiers and qualifiers come in any order).
+
+### B244. `<limits.h>` lacks `SSIZE_MAX` and `IOV_MAX`
+
+```c
+#define _XOPEN_SOURCE 600
+#define _POSIX_C_SOURCE 200112L
+#include <limits.h>
+#include <stdio.h>
+int main(void) { printf("SSIZE_MAX=%lld IOV_MAX=%d\n", (long long)SSIZE_MAX, (int)IOV_MAX); return 0; }
+```
+
+- gcc 13 and clang 18: `SSIZE_MAX=9223372036854775807 IOV_MAX=1024`. madc:
+  `use of undeclared identifier 'SSIZE_MAX'`; with `_GNU_SOURCE` alone,
+  `IOV_MAX` undeclared too.
+- Redis: `deps/hiredis/sds.c:731`, `src/config.c:3611` (SSIZE_MAX);
+  `networking.c:2600`, `socket.c:61`, `unix.c:81` (IOV_MAX).
+- Where: the embedded `limits.h` (glibc's own: `bits/posix1_lim.h` under
+  `__USE_POSIX`, `bits/xopen_lim.h` under `__USE_XOPEN`).
+
+### B245. A VLA of pointers to an incomplete struct asks c2mir for the struct's size
+
+```c
+#include <stdio.h>
+struct opaque;
+static int count(int n)
+{
+	struct opaque *p[n];
+	int i;
+	for (i = 0; i < n; i++)
+		p[i] = (struct opaque *)0;
+	return (int)(sizeof p / sizeof p[0]) + (p[n - 1] == 0);
+}
+int main(void) { printf("count=%d\n", count(5)); return 0; }
+```
+
+- gcc 13 and clang 18: `count=6`. madc: c2mir `sizeof of incomplete type
+  requested` and `incompatible types in assignment to a pointer` at the
+  declaration.
+- Redis: `evict.c:136` (`dictEntry *samples[server.maxmemory_samples]`).
+- Where: the VLA lowering (`__builtin_alloca(n * sizeof(...))`) sizes the
+  pointer's POINTEE; the element type is the pointer.
+
+### B246. glibc's transparent-union socket-address parameters are refused under `_GNU_SOURCE`
+
+```c
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+int main(void)
+{
+	struct sockaddr_un un;
+	struct sockaddr *sa = (struct sockaddr *)&un;
+	socklen_t len = sizeof un;
+	int s = socket(AF_UNIX, SOCK_STREAM, 0);
+	memset(&un, 0, sizeof un);
+	un.sun_family = AF_UNIX;
+	int r = getsockname(s, sa, &len);
+	printf("socket=%d getsockname=%d family=%d\n", s >= 0, r, un.sun_family);
+	close(s);
+	return 0;
+}
+```
+
+- gcc 13 and clang 18: `socket=1 getsockname=0 family=1`. madc: c2mir
+  `incompatible argument type for struct/union type parameter` at the call.
+- Redis: `anet.c:503` (`bind`), `:609` (`accept4`), `:670`, `:672`.
+- Where: glibc declares `__SOCKADDR_ARG` as a `__transparent_union__` under
+  `__USE_GNU`; a pointer argument to a transparent-union parameter passes as
+  the union's first member (gcc's ABI), never as a struct/union by value.
+
+### B248. SSE2 intrinsics through gcc's `<emmintrin.h>`: vector-to-vector casts are refused
+
+- Redis's `deps/xxhash` takes its SSE2 path (`__SSE2__` is predefined, as by
+  gcc) and includes `/usr/lib/gcc/x86_64-linux-gnu/13/include/emmintrin.h`
+  from disk. c2mir refuses its casts: `conversion to non-scalar type
+  requested` at `emmintrin.h:1180` (`_mm_mul_epu32`, `(__m128i)
+  __builtin_ia32_pmuludq128(...)`), `:1198` (`_mm_slli_epi64`), `:1263`
+  (`_mm_srli_epi64`). A plain `_mm_set1_epi32` / `_mm_add_epi32` /
+  `_mm_storeu_si128` program runs (`sse2 7 7`, as gcc).
+- Two questions behind it: a cast between same-size vector types (a
+  bit reinterpretation in gcc), and the `__builtin_ia32_*` set those
+  intrinsics call. The header is a compiler header read from disk, not from
+  libmadc.
+
+### B249. Redis `dict.c`: madc emits `struct dictEntry`'s definition twice
+
+- `src/dict.c` (Redis 8.10.2): c2mir `tag dictEntry redeclaration`. `madc
+  --emit=c11 ./dict.c` defines `struct dictEntry` at line 21 (as `typedef
+  struct dictEntry { ... }`, where `dict.h:68`'s opaque `typedef struct
+  dictEntry dictEntry;` stands) and again at line 180 (its definition,
+  `dict.c:49`).
+- A reducer of the same shape (opaque typedef in front, definition later, a
+  twin struct and `_Static_assert(offsetof(...))` over both) compiles and runs
+  as gcc: the trigger is not narrowed yet.
+
+### B250. Redis `config.c:573`: `config->name` resolves `config` to the `char *` parameter
+
+- `src/config.c` (Redis 8.10.2), `loadServerConfigFromString(char *config)`:
+  inside, a loop-body `standardConfig *config` shadows the parameter, and its
+  else-branch declares `for (deprecatedConfig *config = deprecated_configs;
+  config->name != NULL; config++)`. madc: `member reference type 'char' is not
+  a structure or union (member 'name')`.
+- A reducer of the same three-level shadowing compiles and runs as gcc
+  (`n=10`): the trigger is not narrowed yet.
+
+### B227. Throwing or catching an aggregate class (no user-declared constructor) is refused
+
+```cpp
+#include <cstdio>
+struct E { int v; };
+int main() { try { throw E{7}; } catch (E &e) { std::printf("%d\n", e.v); } }
+```
+
+- g++ 13 and clang++ 18 (`-std=gnu++17`): `7`. madc 0.106.0 and 0.105.0
+  (`--std=gnu++17`): `error: member reference is not a structure or union`
+  at `e.v`; with no member use (`catch (E &e) { std::printf("caught\n"); }`)
+  c2mir's check refuses the throw: `incompatible argument type for arithmetic
+  type parameter`. `throw E()` and an lvalue throw (`E t; t.v = 7; throw t;`)
+  fail the same way; with a constructor (`E(int x) : v(x) {}`) it prints `7`.
+- Found 2026-10-22 writing a dependency probe. Not a regression.
+
+### B215. `typeid(ns::S)` of a namespace-scope struct that is not a class is refused
+
+```cpp
+#include <cstdio>
+#include <typeinfo>
+namespace data { struct node { int w; long pad; }; }
+int main()
+{
+	std::printf("%s %zu\n", typeid(data::node).name(), sizeof(data::node));
+	return 0;
+}
+```
+
+- Found 2026-10-21 writing `tests/testnsclasstagcollide` (the namespace-class
+  canonical-spelling fix).
+- g++ 13 and clang++ 18 (`-std=gnu++17`): `N4data4nodeE 16`. madc (the
+  packed release binary before that fix, the dev binary after it): `error:
+  'node' is not a member of namespace 'data'` at the `typeid` operand. `sizeof(data::node)` and a
+  declaration `data::node d` resolve; `typeid(lib::node)` of a class (a
+  struct with a virtual member) resolves.
+- Layer: the `typeid` operand's type-id-or-expression reading of a qualified
+  name — the namespace's data-only struct is not taken as a type there.
+  Parser — its own session.
+
+### B216. libc++: a range-for over a `std::map` returned by reference does not compile
+
+- `tests/testrangefor_ref_call.mad` under `-stdlib=libc++` (Linux and the
+  darwin lane): c2mir check errors in libc++'s bodies — `map:1212`
+  "incompatible argument type for struct/union type parameter",
+  `__tree:1109` "invalid type argument of unary *", `__tree:1739/1755`
+  "conversion of non-scalar value requested". g++/clang++ print the
+  `.expect`. v0.105.0 refuses it under libc++ too (a different check error),
+  so not a regression; `.libcxx_skip` (owner 2026-10-21).
+- Found 2026-10-21 on the native darwin lane. Layer: unknown — the CIR
+  lowering of a libc++ `__tree` member body; recon first.
+
+### B219. Unary `*` on a call-expression class operand does not call `operator*`
+
+```cpp
+#include <cstdio>
+#include <utility>
+struct W {
+	int v;
+	int &operator*() & { return v; }
+	int &&operator*() && { return static_cast<int &&>(v); }
+};
+static const char *take(int &) { return "lvalue"; }
+static const char *take(int &&) { return "rvalue"; }
+int main()
+{
+	W w = { 5 };
+	std::printf("%s %s\n", take(*w), take(*std::move(w)));
+	return 0;
+}
+```
+
+- Found 2026-10-21 probing ref-qualifier fidelity after 5333f374c.
+- g++ 13 and clang++ 18: `lvalue rvalue`. madc (HEAD and v0.105.0):
+  `error: no matching overload for '::take' with argument types (W)` at
+  `take(*std::move(w))` — the operand keeps its class type, so no
+  `operator*` was applied. `*w` on the named object resolves.
+- Layer: the unary `*` over a call-expression operand of class type
+  (`Program::build_indirection` / its class-operator arm). Parser — its own
+  session.
+
+### B223. A bind whose only staged content is namespace imports drops them
+
+- Found 2026-10-22 writing the bind gate's k2d-import case.
+- `Program::forest_apply_pending` returns before the namespace-surface
+  restore (using-declaration imports, inline-namespace links, namespace
+  aliases) when no global, function or datatype is staged. A bound header
+  whose only content the TU uses is `namespace N { using ::f; }` leaves `N`
+  unknown (`Unknown namespace 'N'`). Every real libstdc++ / libc++ bind stages
+  content, so no shipped reducer shows it yet. The fix needs an "applied up to"
+  mark for the namespace surface (like `ForestSide::restored_chain_size`),
+  since the flush runs several times per TU.
+
+### B220. C++20: `std::ostringstream::str()` is refused
+
+```cpp
+#include <sstream>
+#include <string>
+#include <cstdio>
+int main()
+{
+	std::ostringstream o;
+	o << "abc";
+	std::string a = o.str();
+	std::string c = std::move(o).str();
+	std::printf("%s %s [%s]\n", a.c_str(), c.c_str(), o.str().c_str());
+	return 0;
+}
+```
+
+- Found 2026-10-21 probing ref-qualifier fidelity after 5333f374c.
+- `g++ -std=gnu++20`: `abc abc []`. madc `--std=gnu++20` (HEAD and
+  v0.105.0): `error: member reference is not a structure or union` at
+  `o.str().c_str()`. Under `--std=gnu++17` (one `str() const`) madc prints
+  g++'s `abc abc [abc]`.
+- Layer: C++20 declares `str() const &` and `str() &&`; the selection
+  between them (B218's ranker) is the likely root. Parser — its own session.
+
+### B209. A braced single same-class element (`S q{s};`) is lowered as a member list
+
+```cpp
+#include <stdio.h>
+struct S { int v; };
+struct E { int v; explicit operator bool() const { return v != 0; } };
+int main()
+{
+	S s = { 4 };
+	S q{s};
+	printf("block-brace: %d\n", q.v);
+	E e = { 5 };
+	E r{e};
+	printf("block-brace-E: %d\n", r.v);
+	if (E c{e}) printf("if-brace: %d\n", c.v);
+	return 0;
+}
+```
+
+- Found 2026-10-20 while writing the reducer for the class-typed if
+  condition declaration fix (`d97509826`).
+- g++ 13 and clang++ 18 (`-std=c++17`): `block-brace: 4`, `block-brace-E: 5`,
+  `if-brace: 5`. madc (`bin/madc` over `d97509826`, `--std=c++17`): refused —
+  `incompatible types in assignment to an arithmetic type lvalue` (c2mir).
+  The emitted C is `struct S q = { s };` (the S becomes member `v`'s
+  initializer), and for a class aggregate `struct E r = { e }; r = e;`.
+- [dcl.init.list]/3.2: an aggregate class list-initialized from ONE element
+  of its own class (or a derived class) is initialized from that element —
+  a copy, as `S q = s;` (which madc lowers correctly). C has no such rule:
+  gcc -std=c17 rejects `struct S q = { s };` too, so the fix is C++-only.
+- Layer: the parser keeps `T x{e}` as a braced `init_list`; every lowering
+  that consumes a braced list (CirBuilder::var_decl's aggregate list, the
+  file-scope dynamic-init queue, the static-local once) treats it as a
+  member list. The uniform fix reads [dcl.init.list]/3.2 where the parser
+  builds the TokenDecl (`initialize` = the element, as `T x = e`) — a
+  core-parser change, so it waits for a focused parser session (owner
+  2026-09-13). Loud, not silent.
+
+### B210. A class-typed while or switch condition declaration (`while (S q = f())`) is refused
+
+```cpp
+#include <stdio.h>
+struct S { int v; explicit operator bool() const { return v != 0; } };
+struct N { int v; operator int() const { return v; } };
+static int left = 3;
+S next_s() { S s = { left > 0 ? left-- : 0 }; return s; }
+int main()
+{
+	N n = { 2 };
+	while (S q = next_s()) printf("while: %d\n", q.v);
+	switch (N q = n) { case 2: printf("switch: %d\n", q.v); break; default: printf("switch: wrong\n"); }
+	while (int i = left) { printf("while-int: %d\n", i); break; }
+	return 0;
+}
+```
+
+- Found 2026-10-20 alongside B209.
+- g++ 13 and clang++ 18 (`-std=c++17`): `while: 3`, `while: 2`, `while: 1`,
+  `switch: 2`. madc (`bin/madc` over `d97509826`): refused at parse —
+  `use of undeclared identifier 'S'` (and `'N'`). A scalar condition
+  declaration is accepted (`int left = 2; while (int i = left) { left = 0;
+  return i; }` exits 2, as g++ does): the expression parser reads a builtin
+  type keyword there, not a class name.
+- [stmt.while]/2: the condition's object is created and destroyed on every
+  iteration; [stmt.switch]/1: a switch condition may declare one object.
+- Layer: TokenWHILE::parse and TokenSWITCH::parse read a parenthesized
+  expression (a scalar declaration rides the expression parser);
+  TokenIF::parse is the one statement parser with the class-aware
+  condition-declaration read (resolve_declared_type_token + parseDeclaration
+  into `condition_decl`). The fix shares that read across the three and
+  lowers a while condition as `while (1) { decl; if (!cond) break; body }`
+  (the object's cleanup at each iteration's block exit) — a core-parser
+  change, so it waits for a focused parser session with B209.
+
+### B203. A qualified member call (`p->B::f()`, `r.B::f()`) is refused
+
+```cpp
+#include <cstdio>
+struct B { virtual const char *f() const { return "B::f"; } virtual ~B() {} };
+struct D : B { const char *f() const override { return "D::f"; } };
+int main()
+{
+	D d;
+	B *p = &d;
+	const B &r = d;
+	printf("%s %s\n", p->f(), r.f());
+	printf("%s %s\n", p->B::f(), r.B::f());
+	printf("%s\n", d.B::f());
+	return 0;
+}
+```
+
+- Found 2026-10-19 while checking the virtual-call arm for the library
+  dispatch fix.
+- g++ 13 and clang++ 18: `D::f D::f`, `B::f B::f`, `B::f`. madc (`bin/madc`
+  over `1d0044cbb`): `error: no member named 'B'` at `p->B::f`.
+- Layer: member access after `->` / `.` reads one identifier as the member
+  name; a nested-name-specifier there ([expr.ref]/2, a qualified-id naming
+  a member of the class or a base) is not read, so the call cannot suppress
+  virtual dispatch ([class.virtual]/16). A core-parser change: raised with
+  the owner before fixing. KG Gap `qualified_member_call_refused`.
+
+### B201. A new-expression whose type-id is cv-qualified (`new const D`) is refused
+
+```cpp
+#include <cstdio>
+struct D { int id; D() : id(7) {} };
+int main()
+{
+	const D *p = new const D;
+	volatile int *q = new volatile int(3);
+	printf("%d %d\n", p->id, *q);
+	delete p;
+	delete q;
+	return 0;
+}
+```
+
+- Found 2026-10-19 while writing the volatile-object reducer
+  (`tests/testvolatile_ctor_dtor.mad`, which uses placement new instead).
+- g++ 13 prints `7 3`. madc (`bin/madc` at `a033d9477`): `use of undeclared
+  identifier 'new'` at the `new` keyword.
+- Layer: `TokenNEW::parse` (src/parser.cpp) reads the allocated type as ONE
+  type token through `Program::resolve_declared_type_token`, not through the
+  type-id owner `Program::parse_type_id`, so a leading cv-qualifier (and any
+  ptr-operator in the new-type-id) is not part of the allocated type. A
+  core-parser change: raised with the owner before fixing. KG Gap
+  `new_expression_cv_qualified_type_id`.
 
 ### B196. A declaration whose type is spelled with the global qualifier (`::T`) is refused
 
@@ -1403,37 +1953,6 @@ int main(void) { printf("%zu\n", offsetof(struct { char c; int i; }, i)); return
 - Found 2026-10-02 with B151. Off the release path, filed per owner
   2026-09-30.
 
-### B153. Packed binary, `--project`, `<string>` in two TUs: SIGSEGV under forest bind
-
-```cpp
-// m.cpp
-#include <cstdio>
-int fa(); int fb();
-int main() { printf("%d %d\n", fa(), fb()); return 0; }
-// a.cpp
-#include <string>
-int fa() { std::string s("abc"); return (int)s.size(); }
-// b.cpp
-#include <string>
-int fb() { std::string s("hello"); return (int)s.size(); }
-```
-
-- `cc.json` names the three TUs; `madc-release --project cc.json`.
-- g++ 13 and clang++ 18: `3 5`. Packed `bin/madc-release` (2026-10-02):
-  SIGSEGV, core dumped. `--no-forest-bind` prints `3 5`.
-- Release archive (`scripts/release_bins.sh`): v0.92.0 through v0.94.0
-  print `3 5`; v0.95.0 through v0.100.0 crash. It entered between v0.94.0
-  (caae16af6) and v0.95.0 (36fc42fc5), the cold-startup release.
-- Stack: `madc_thaw_member_template` ←
-  `instantiate_member_ctor_template_candidate` ←
-  `parse_functional_type_expression` ← `rebuild_forest_param_defaults` ←
-  `flush_forest_pending_globals` ← `Program::tokenize` ←
-  `madc_project_execute`. The second TU's bind thaws a member constructor
-  template; layer not yet traced.
-- tests/testprojectmtiorder runs with `--no-forest-bind` until this is
-  fixed. Found 2026-10-02 in the seam battery's packed lanes. Off the
-  release path (shipped since v0.95), filed per owner 2026-09-30.
-
 ### B148. A constructor template's mem-initializer that reads a member of a class temporary crashes c2mir
 
 ```cpp
@@ -1621,27 +2140,6 @@ int main() { printf("%d %d %d\n", eat(), eat(1), eat(1, 2.5)); return 0; }
   owner 2026-09-30.
 - Layer: not yet traced: the pack-expansion parameter declarator of an
   instantiated `const T&...` (empty and one-element packs).
-
-### B107. `sizeof(typename C<T>::m)` outside a template is refused: "Expecting identifier"
-
-```cpp
-#include <cstdio>
-template<typename T> struct traits {};
-template<typename T> struct traits<T *> { typedef int category; };
-int main() { traits<int *>::category c = 3; printf("p1 %d %zu\n", c, sizeof(typename traits<int *>::category)); return 0; }
-```
-
-- g++ 13 and clang++ 18 (`-std=c++17`): `p1 3 4`. madc: `4:109: error:
-  Expecting identifier` at the `typename` inside `sizeof(...)`.
-- C++11 allows `typename` before a qualified name outside a template
-  ([temp.res]/5). The same operand in a template's default argument
-  (`enable_if<sizeof(typename traits<It>::category) != 0>`) is refused too,
-  which there surfaces as a lost candidate: `no matching constructor`.
-- Found 2026-10-01 during B96's recon. Off the release path, filed per owner
-  2026-09-30.
-- Layer (suspected): `sizeof`'s type-id operand reader (`parse_type_id` is
-  the type-id owner, `indirection.md`) does not take a `typename`-prefixed
-  qualified name.
 
 ### B100. A `const var &` parameter refuses a text prvalue: `take("x")`, `take(format(...))`
 
@@ -1850,20 +2348,6 @@ int main() { int k2 = ++K<int>::n; printf("%d %d\n", k1, k2); return 0; }
   that instantiates nothing) are undefined imports too (`_ZN1AIcE1wE`).
   This blocks the test for KG Gap `qualified_template_id_compound_assign_statement`.
 
-### B18. A file-scope lambda global is never defined
-
-- Found 2026-09-26, during slice 3 (measured at `431ee5ef1`). A session is
-  affected the same way.
-
-```cpp
-#include <stdio.h>
-auto inc = [](int x) { return x + 1; };
-int r1 = inc(2);
-int main() { printf("%d %d\n", r1, inc(3)); return 0; }
-```
-
-- g++: `3 4`. madc: `MIR error: import of undefined item inc`.
-
 ### B20. A script's top-level `S::count = 3;` is refused
 
 - Found 2026-09-26, during slice 3. An interactive entry takes it as a
@@ -1917,31 +2401,6 @@ int main() { { J j; } printf("dv=%d\n", dv); return 0; }
   named by a per-builder counter, so two modules can define the same name
   with different bodies. linkonce would be wrong here. It needs a name
   derived from what it marshals, or internal linkage.
-
-### B23. A cast of a `<cmath>` call, then a binary operator, is refused
-
-- Found 2026-09-26, while testing the session's includes. It fails in file
-  mode too, measured at `abd480473`.
-
-```cpp
-#include <cmath>
-int main()
-{
-    int a = (int)std::floor(4.5) + 3;
-    return a - 7;
-}
-```
-
-- g++, clang++: accept, exit 0. madc: `4:34: error: Malformed expression: 2
-  operands with no operator between them`. The same for `std::sqrt`.
-- Passes: `(int)(std::floor(4.5)) + 3`, `(int)sqrt(16.0) + 3`, and a
-  header-free `(int)N::f(4.0) + 3`, where `f` is a plain namespace function
-  or a `using ::g;` redeclaration with an overload.
-- The same family, found 2026-09-26 while writing D10's tests: `int k =
-  std::signbit(-0.0) && (-0.0) == 0;` after `#include <cmath>` gives
-  `expected label name after '&&'` (it reads GNU's `&&label`). g++ gives 1.
-- Where: not traced. The cast's operand is read by `parseCastExpression`,
-  the one owner. What differs is `<cmath>`'s `std::` overload set.
 
 ### B28. A compound literal of a two-dimensional array is refused
 
@@ -2043,26 +2502,6 @@ int main() { P p{1, 2}; auto [a, b] = p; std::printf("%d %d\n", a, b); return 0;
   (`auto [` is read as an array declarator's bound). A parser feature
   ([dcl.struct.bind]) for its own focused session.
 
-### B41. A function name after `==` and before `;` is called
-
-- Found 2026-09-27, while gating D12's prerequisite A (plan §41.6a): an
-  entry's shown function pointer compared with the function.
-
-```c
-#include <stdio.h>
-int g(int v) { return v; }
-int main(void) { int (*p)(int) = g; int k = p == g; printf("%d\n", k); return 0; }
-```
-
-- gcc 13 and clang 18: `1`. madc `--std=c17` and `--std=c++17`: `3:51: too
-  few arguments` (c2mir), after "comparison of integer with a pointer".
-  `p == g,` and `(p == g)` are right, and so is `g == p;`.
-- Where: the function-name arm of `parseExpression` decides decay or call by
-  the next token. A `;` decays only with an empty operator stack (so
-  `cout << endl;` keeps its call), and here the stack holds `==`. The rule
-  C gives is not a token rule: a function designator decays unless it is the
-  operand of `&` or `sizeof`, or the callee of a call (C11 6.3.2.1p4).
-
 ### B44. A namespace-scope lambda's init-capture is refused
 
 - Found 2026-09-27, while testing D12's result names in a lambda capture.
@@ -2109,23 +2548,6 @@ int main() { std::vector<int> v = {1}; (std::vector<int>&&)v; return 0; }
 
 - g++ 13: compiles. madc `--std=c++17`: "use of undeclared identifier
   'std'" at the cast's `std`, at block scope and at an entry's top level.
-
-### B48. `std::vector<int>(3, 7)` fails in the parse-once instantiation
-
-- Found 2026-09-27, while testing functional casts at an entry's top level
-  (plan §41.6a, E).
-
-```cpp
-#include <stdio.h>
-#include <vector>
-int main() { printf("%zu\n", std::vector<int>(3, 7).size()); return 0; }
-```
-
-- g++ 13: `3`. madc `--std=c++17`: "cir error: parse-once internal: tsubst
-  bailed on the covered instantiation ... of std::vector::vector<_InputIterator,
-  __anon_tparam0> [why: tsubst: unresolved dependent member call]" at
-  `stl_vector.h:709`. The error names the iterator-range constructor
-  template, where g++ calls the count-and-value constructor. Not traced.
 
 ### B49. A file-scope compound literal's address is refused as an initializer
 
@@ -2201,24 +2623,6 @@ int main() { T t; return t.h() ? 0 : 1; }
   legacy `__has_*` spellings belong in that dispatch, converted once to the
   trait they mean. The three string ladders should become one enum at the
   boundary (enum-over-strings.md).
-
-### B66. `_Alignas` above 16 is refused by c2mir
-
-- Found 2026-09-29 with B62-B65; measured with `bin/madc` at 6671bd11a.
-
-```c
-#include <stdio.h>
-struct L { char c; int x __attribute__((aligned(32))); };
-int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L)); return 0; }
-```
-
-- gcc = clang: `a32: 64 32`. madc: `2:24: unsupported alignmnent`,
-  `cir_compile failed` (c2mir's check, on the `_Alignas(32)` madc emits).
-- Where: c2mir's `invalid_alignment`
-  (`third_party/mir/c2mir/<target>/c<target>-code.c`) accepts only 0, 1, 2,
-  4, 8 and 16, on every target. A local aligned to 32 needs a realigned
-  frame in MIR, so this may be a floor change
-  (`lowering-vs-raising.md` Tier 2/3), not only the check.
 
 ## Diagnostics
 
@@ -2566,24 +2970,6 @@ int main(void) { return t; }
   `bd3c56500`) throws at `where`, the token its caller passes, and that
   token is not the declarator-id. Reducer: `tmp/repl/d20s2/redef.c`.
 
-### B36. An entry spells a class type with its default template arguments
-
-- Found 2026-09-27, while measuring which values D12 can copy (plan §41.6a).
-  Its silent half is fixed (2026-09-28): a `std::unique_ptr` built from a
-  pointer held null.
-
-```cpp
-#include <memory>
-std::unique_ptr<int> p(new int(3));
-```
-
-- An entry's `p` shows its type as
-  `std::unique_ptr<int32_t,std::default_delete<int32_t>>`. The source's
-  spelling is `std::unique_ptr<int>`, without the default argument (and
-  `int`, not madc's `int32_t`).
-- Where: not traced. The entry's value display spells the instance's
-  canonical name.
-
 ### B39. A missing `;` after an `auto` declaration is cited inside the next line
 
 - Found 2026-09-27, while tracing why an entry's `auto x = 5` shows nothing
@@ -2637,6 +3023,150 @@ int main(void) { return x; }
   record each one's C standard (`c_since`), which a C-side gate can read.
   `typeof`, `typeof_unqual` and `_BitInt` are C23's alone.
 
+### B234. A diagnostic after `#line N "file"` names the physical file
+
+```c
+void f(char *buf);
+#line 100 "other.c"
+void h(void) { const char *z = 0; f(z); }
+int main(void) { return 0; }
+```
+
+- Found 2026-10-23 in issue #8's attachment (a lair-generated Lua parser
+  whose `#line` directives name `11_lua53.c` and `lua53.y`).
+- gcc 13: `other.c:100:37: warning: ...`. madc: `w.c:100:36: warning ...`
+  — the line follows `#line`, the file name does not. Errors too: `#line 50
+  "zz.c"` ahead of an undeclared identifier reports `e2.c:51:10`.
+- Where: the lexer sets the presumed name (`source.fname(newname)`,
+  lexer.cpp's `#line` arm); the diagnostic printers read the physical one.
+
+### B235. Passing `const T *` to a `T *` parameter is warned by c2mir, not madc
+
+Same reducer as B234, without the `#line`.
+
+- gcc 13: `w.c:2:37: warning: passing argument 1 of 'f' discards 'const'
+  qualifier from pointer target type [-Wdiscarded-qualifiers]` plus `note:
+  expected 'char *' but argument is of type 'const char *'`; clang 18:
+  `-Wincompatible-pointer-types-discards-qualifiers` at 2:37 with a note.
+- madc: `w.c:2:36: warning -- discarding type qualifiers in passing
+  argument` — c2mir's text (`c2mir.c` N_CALL arm), its column (one short),
+  no argument number, callee, flag name or note. madc's front end does not
+  diagnose the constraint violation (C11 6.5.2.2p2 → 6.5.16.1p1) itself.
+- Where: the call's argument conversion in the parser; the warning belongs
+  there, in gcc's form, so c2mir never sees a call it has to complain about.
+
+### B240. `madc -v` dumps the parser's debug trace and opens the REPL — next release
+
+- `madc -v` alone, on a terminal: ~950 lines of internal DBG trace (struct
+  layouts, every built-in declared), then the REPL (`madc 0.106.0. Ctrl-D
+  exits.`) in verbose mode. 0.105.0 does the same.
+- gcc 13 / clang 18 `-v` alone: version, target, thread model, configuration
+  (clang: InstalledDir), exit 0. With a source, `-v` shows the driver's steps
+  and the include search list — never compiler internals.
+- Owner 2026-10-23: "it's really weird that it does now" — next release.
+- Where: madc's option table (`src/madc_cli.cpp`): `-v` alone = the version
+  and configuration report, exit 0; `-v` with input = gcc's verbose (search
+  list, steps); the DBG trace (`madc_set_verbose`) moves to its own developer
+  flag.
+
+### B236. `-fsyntax-only` is refused
+
+- `madc -fsyntax-only x.c`: `madc: error: unrecognized command-line option
+  '-fsyntax-only'`. gcc and clang check the program and write nothing.
+- Found 2026-10-23 with B234/B235.
+- Where: a row in madc's option table (`src/madc_cli.cpp`, read by
+  `madc::cli::parse`) and a driver mode that stops after the front end.
+
+### B247. Common gcc driver flags are refused, so a gcc Makefile stops before compiling
+
+- madc 0.106.0 refuses (exit 1): `-Os` `-Oz` `-Og` `-Ofast` (`invalid value
+  's' for '-O': expected one of 0, 1, 2, 3`); `-ggdb` and `-g3`; `-pedantic`;
+  `-MMD` `-MD` `-MP` `-MF f` `-MT t` (no dependency files);
+  `-flto=auto`; `-fno-omit-frame-pointer`; `-Werror` and `-Werror=...`
+  (`not supported (madc's warnings are never errors)`). gcc 13 accepts every
+  one. 0.105.0 read each of them as a file name, so none is a regression.
+- Redis 8.10.2 passes all of them (`-O3 -flto=auto -ffat-lto-objects
+  -fno-omit-frame-pointer -g -ggdb -pedantic -Werror=deprecated-declarations`,
+  deps `-Os`, hiredis `-Werror`, xxhash `-MMD -MP -MF -MT`): the build stops in
+  1 s before any source error.
+- Where: rows in madc's option table (`src/madc_cli.cpp`): `-Os/-Oz/-Og` as
+  the nearest level, `-Ofast` as `-O3`, `-ggdb*`/`-g1..3` as `-g`, `-pedantic`
+  accepted (madc has no pedantic diagnostics yet), the `-M` family writing a
+  make dependency file, `-flto*`/`-f[no-]omit-frame-pointer` accepted and
+  ignored, `-Werror` decided by the owner (gcc: warnings become errors).
+
+## Performance
+
+### B238. Compiling a C file takes 83 MB peak (issue #8's open half) — next release
+
+- Issue #8 (madc 0.105.0, macOS arm64): `madc lua53.c` (a 6k-line lair-generated
+  Lua parser) peaks at 84 MB. 0.106.0 fixed the BUILT program (1.6 MB, libc
+  alone, gcc's 1.5 MB); the compiler's own peak is unchanged. Owner 2026-10-23:
+  the next release's work, not 0.106.0's.
+- Container, peak RSS best of 3, 0.105.0 → 0.106.0: lua53.c compile + run 83.0 →
+  82.7 MB, `-o` 83.2 → 82.9 MB; hello.c 19.1 → 19.1 MB. Oracles on the same
+  file: gcc -O0 -c 59.6 MB, clang -O0 -c 107.6 MB, tcc -run 3.8 MB.
+- Measure with the libraries' page cache flushed (fsync + POSIX_FADV_DONTNEED on
+  madc and libmadc.so): a freshly built libmadc.so maps larger folios and reads
+  13 MB higher.
+- Where: profile the compile's heap and mappings (libmadc's mapped text and
+  forest, the parse, CIR, c2mir/MIR) before choosing a fix.
+
+### B233. parse-cost `c_headers.forest` drifted +0.50% past its baseline
+
+- `scripts/parse_cost/c_headers.c` with the pack: 34,990,638 Ir at the
+  baseline's record (`acb5da696`, 2026-10-21) -> 35,162,211 at `9adba41c5`
+  (+0.49%, the 0.106.0 seam battery green) -> 35,166,460 at `c8ce207ae`
+  (+0.50%: red at the 0.5% tolerance). The same row without the pack
+  (`c_headers.live`) is +0.08%, so the growth is in the pack-bind path; the
+  candidates are the pack-bind fixes of 2026-10-22 (`6f7329dc0`, `fb2755787`,
+  `94f9a664b`, `7915e1be2`, `55909b864`, `2ad1c9428`, `085b0f3b0`).
+- Not a regression against the last release: 0.105.0 runs the row at
+  244,988,067 Ir, and every other row is cheaper than 0.105.0 too.
+- At `041919c78` (the packaging fixes on top of the release commit): 35,190,814
+  (+0.57%); the archived v0.106.0 binary (`60679aed1`) runs it at 35,175,556 on
+  the same host. The +15,258 is all libc `__strcmp_avx2` under `__dynamic_cast`
+  (the same 4,146 calls, more instructions per compare: where the `_ZTS` names land),
+  every madc function's self cost unchanged; the dialect rows move -1.8K / +0.7K
+  / +0.3K.
+- To find it: build `acb5da696` and HEAD packed and unstripped
+  (`PATH=tmp/nostrip:$PATH make -C src release` in the container's
+  `tmp/cost_sweep` clone; that clone's own uncommitted edits sit in its stash
+  "pc231: kept before the acb5da696/c8ce207ae sweep"), callgrind the row on
+  each, diff per function (`tmp/cg_diff.sh`). Then win it back, or the
+  operator accepts the baseline (`parse_cost_gate.sh --record
+  --accept-increase`). Owner 2026-10-23: noted, to come back to after 0.106.0.
+
+### B226. The main source file's first buffer is read twice
+
+- `strace madc test.c` (one `#include`): `read` 8191, `lseek(0, SEEK_SET)`,
+  then `lseek` `SEEK_END` / `SEEK_CUR` / `SEEK_CUR` / `SEEK_SET`, then the
+  same `read` again. Found by the owner 2026-10-22 on 0.106.0.
+- `Program::tokenize` (`src/lexer.cpp`): a `getline` of the first line for
+  `adopt_shebang_standard` (6a21775f5, 2026-10-16 — new since 0.105.0), then
+  a rewind; then a seek-to-end / `tellg` byte count for `--show-stats`
+  (`_input_bytes`, every compile, not only under the flag); then
+  `source.copybuf` reads the file for real.
+- Cost: one extra `read` of the first ≤8 KB and five `lseek`s, page-cached —
+  microseconds. Not the whole file twice.
+- Fix: read once; take the shebang line from the buffer (it must still be
+  seen before `_tokenizer_init()`) and the byte count from the buffer's
+  length. Owner 2026-10-22: after 0.106.0 — a `src/` change now restales
+  every lane.
+
+### B228. MIR's `except` benchmark runs at half its September speed
+
+- `third_party/mir/c-benchmarks/except.c`, argument 200000000, `-O2` native
+  binaries: 2026-09-21 (`b3dc26b79`, docs/benchmarks) gcc 3487 ms, madc
+  1775 ms (0.51×); 2026-10-22 gcc 3453 ms, madc ~3390 ms (0.97×). madc
+  0.101.0 through 0.106.0 all ~3370 ms; archived releases before 0.101.0 no
+  longer compile the file (`jmp_buf` unresolved), so the bisect stops there.
+- Both madc and gcc binaries call `_setjmp` / `longjmp` from libc: the
+  September gain was generated code (MIR's README: "except was considerably
+  improved by inlining"), not a different library call.
+- It alone moves the exec-c geometric mean from 1.24× to 1.30× (81% → 77%
+  of gcc). Not a regression from 0.105.0.
+
 ## madcide (the editor)
 
 ### B88. vi NORMAL mode's Enter and Backspace edit the buffer
@@ -2680,6 +3210,63 @@ int main(void) { return x; }
 
 ## Build and packaging
 
+### B239. macOS tarball: `--no-embedded-headers` finds no C++ headers on disk
+
+- Found 2026-10-23 running the full suite on the SHIPPED 0.106.0
+  `madc-0.106.0-macos-arm64.tar.gz` on the arm64 Mac Mini (macOS 14):
+  2101 passed, 23 failed. The 23 are `testnoreturn_c11` (known RED) and 22 of
+  the 30 tests whose `.flags` say `--no-embedded-headers`: every one that
+  includes a C++ header (`teststdmapint`: `Failed to open include file: map`);
+  the C-header ones pass. The x86_64 tarball on the Intel MacBook (macOS 15)
+  fails the same 23 (2104 passed).
+- The natively built madc on the same Mac passes all of them (darwin-suite
+  2123/0); the 0.105.0 tarball and the earlier 0.106.0 tarball (`60679aed1`)
+  fail the same 23 — not a regression.
+- Where: the tarball is cross-built on the container; its on-disk C++ header
+  directories are the build's, not the user's Mac (the SDK's `usr/include/c++/v1`,
+  found as clang finds it: SDKROOT, `xcrun --show-sdk-path`, the CLT SDK).
+
+### B237. win64: a C program calling printf needs libmadc-0.dll
+
+```c
+#include <stdio.h>
+int main(void) { printf("hi\n"); return 0; }
+```
+
+- Found 2026-10-23 with issue #8's fixes (MIR's call helpers now ride the
+  image on win64 too): the madc-built PE still imports `libmadc-0.dll`, for
+  one name, `__mingw_vfprintf`.
+- madc's win64 headers are UCRT with `__USE_MINGW_ANSI_STDIO=1`
+  (`win_ucrt_gate.sh` W0.1: long double `%Lf`), so mingw's `<stdio.h>` makes
+  `printf` an inline wrapper over `__mingw_vfprintf`. gcc links that from
+  `libmingwex.a` into the image; madc binds it out of libmadc-0.dll, so every
+  such program loads all of libmadc — issue #8's cost, on Windows.
+- Where: the image needs mingwex's printf family the way it now carries
+  MIR's helpers (a startup member, or the ledger), or a UCRT entry that
+  formats x87 long double.
+
+### B230. macOS: a C++ program using a libc++ container needs libmadc
+
+```cpp
+#include <iostream>
+#include <string>
+int main() { std::string who = "world"; std::cout << "Hello, " << who << "!\n"; }
+```
+
+- `madc -o hx h.cpp` on the arm64 Mac mini (macOS 14), the published 0.105.0
+  tarball and 0.106.0 alike: `otool -L` lists `@rpath/libmadc-0.dylib`;
+  undefined `___madc_throw_object` / `___madc_try_push` / ... (0.106.0:
+  `___madc_throw_class`, `___madc_exception_alloc`, ...). The same file on
+  Linux and Windows (libstdc++) needs no madc library: libstdc++'s
+  `__throw_*` helpers are out of line in libstdc++.so, libc++'s are inline
+  header code with a `throw`, which madc compiles into the program.
+- clang++ (libc++): the throw is `__cxa_allocate_exception` /
+  `__cxa_throw` from libc++abi, which every C++ link carries. madc lowers a
+  `throw` to its own runtime (the setjmp/longjmp try model), so a libc++
+  inline throw imports libmadc. The README's "needs only the C and C++
+  runtime libraries" holds on Linux and Windows only.
+- Found 2026-10-22 checking B229 on macOS. Not a regression.
+
 ### B194. A native executable's RUNPATH names the building madc's install and `/usr/local/lib`
 
 ```c
@@ -2700,14 +3287,6 @@ int main(void) { return 0; }
   is what lets a program beside madc's `lib/` run; the absolute entries
   should not be baked in by default.
 - Found 2026-10-07 inspecting Chthonia's packages.
-
-### B195. madc's driver has no `-L`
-
-- `madc -o x -L/opt/nowhere hello.c` → `-L/opt/nowhere:0:0: error: Failed
-  to open file`; `-L /opt/nowhere` → `-L:0:0: error: Failed to open file`.
-  `madc --help` lists `-l<name>` but no `-L`. gcc and clang take both
-  forms (a library search directory). Measured 2026-10-07, madc 0.102.0.
-- Found 2026-10-07 with B194.
 
 ### B191. On macOS, a dialect call to `php::array_key_exists` binds 760 of the forest's 836 units
 
@@ -2893,20 +3472,6 @@ scans), `peek_after_balanced_template_id_from`,
 - Fix: each asks `declarator_written_cv` and applies its own mask. Then a
   gate marker (`const_after_star ? cvCONST` outside the owner) at zero.
 
-### B91. Where a user's configuration lives, in two programs
-
-- Found 2026-09-30 in the bundle work's dupaudit. The compiler's
-  `config_file::search_paths` (`src/madc_config_file.cpp`, madc.ini) reads
-  `$XDG_CONFIG_HOME/<app>`, else `~/.config/<app>`. madcide's
-  `madcide_config_dir` (`tools/madcide/madcide_plugins.inc`, settings.json
-  and `plugins/`) reads `MADCIDE_CONFIG_DIR`, then the same two, and
-  `%APPDATA%/madcide` on Windows before `~/.config`.
-- Divergent on Windows: with no `XDG_CONFIG_HOME`, madc.ini is looked for
-  under `$HOME/.config`, and madcide's configuration under `%APPDATA%`.
-- Fix: one engine owner (`madc::user_config_dir(app)`, also served to the
-  dialect), which both read. The Windows rule is the owner's to decide
-  (`%APPDATA%` is the platform's convention).
-
 ### B59. `(`: twelve hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
@@ -3037,9 +3602,7 @@ entry above when it's next touched.
 
 - Copy elision into heap and array elements.
 - `thread_local` is process-wide (a missing MIR TLS feature).
-- Statics and globals are not destroyed at exit.
 - No `std::bad_array_new_length`.
 - No user conversion operators to scalars.
-- `__sync_*` builtins.
 - The aggregate-predicate duplication family.
 - `u8` prefix and UCN validity.

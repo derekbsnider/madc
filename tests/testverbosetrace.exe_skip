@@ -1,0 +1,1 @@
+the expected lines are the compiler's -v trace, printed while madc compiles; a built executable or object prints nothing

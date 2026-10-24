@@ -192,6 +192,25 @@ run_linux() {
         *"forest-bind:"*) fail "$kind" "negative control broken: non-verbose run mentions forest-bind" ;;
         *) ok "$kind" "negative control: forest-bind evidence absent without -v" ;;
     esac
+
+    # 3. the installed madc imports its own modules: madc_module_dir is
+    # madc/modules beside the libmadc image (the deb's multiarch dir, the
+    # rpm's lib64, the tarball's lib/). git and markdown carry their
+    # libraries; ui_web needs the system's WebKitGTK, a weak dependency.
+    local moddir="${libdir:-$root/lib}/madc/modules" m
+    for m in git markdown; do
+        out=$( ( ulimit -t 120; timeout 60 "${runenv[@]}" "$madc" --import="$m" ) 2>&1 ) \
+            || fail "$kind" "installed madc cannot import its $m module (got: $out)"
+    done
+    ok "$kind" "installed madc imports its git and markdown modules ($moddir)"
+    # negative control: the module directory hidden => the import fails
+    [ -d "$moddir" ] || fail "$kind" "no module directory $moddir in the artifact"
+    mv "$moddir" "$moddir.hidden"
+    out=$( ( ulimit -t 120; timeout 60 "${runenv[@]}" "$madc" --import=git ) 2>&1 )
+    local rc=$?
+    mv "$moddir.hidden" "$moddir"
+    [ "$rc" -ne 0 ] || fail "$kind" "negative control broken: --import=git succeeded with $moddir hidden"
+    ok "$kind" "negative control: hidden $moddir => import fails ($rc)"
 }
 
 gate_deb() {
@@ -318,7 +337,7 @@ gate_mactar() {
     esac
     [ -x "$root/bin/madc" ]        || fail mactar "no executable bin/madc in the artifact"
     [ -f "$root/lib/libmadc_rt.a" ] || fail mactar "no lib/libmadc_rt.a in the artifact"
-    [ -f "$root/lib/libmadcwebview.dylib" ] || fail mactar "no lib/libmadcwebview.dylib in the artifact"
+    [ -f "$root/lib/madc/modules/ui_web.dylib" ] || fail mactar "no lib/madc/modules/ui_web.dylib in the artifact"
     [ -f "$root/lib/libmadc-0.dylib" ] || fail mactar "no lib/libmadc-0.dylib in the artifact"
 
     # 1. the shipped madc runs a program

@@ -1,0 +1,28 @@
+/* A condition's closing `)` ends its expression: `if( fp ) (void)0;` is the
+ * condition `fp` and the statement `(void)0`, never the call `(fp)(void)`.
+ * The `)` that closes an if / while condition (the caller's paren) was read
+ * as a parenthesized sub-expression a postfix call could continue when the
+ * operand had a function-pointer type -- refused as "Expecting identifier"
+ * (SQLite's `if( xBusy2 ) (void)walEnableBlocking(pBt);`).
+ * Oracle: gcc and clang -O0 print "called=7 n=1". */
+#include <stdio.h>
+#define walEnableBlocking(x) 0
+static int called;
+static int f(int *p) { called = *p; return 1; }
+
+int main(void)
+{
+	int k = 9, *pk = &k;
+	int (*xBusy2)(void *) = 0;
+	int (*g)(int *) = f;
+	int y = 1, n = 0;
+	if( y ) (void)walEnableBlocking(pk);
+	if( y ) (void)f(pk);
+	if( xBusy2 ) (void)walEnableBlocking(pk);
+	if( g ) (void)0;
+	while( g ) (void)(g = 0, n++);
+	k = 7;
+	if( (g = f) ) (void)(*g)(pk);
+	printf("called=%d n=%d\n", called, n);
+	return 0;
+}

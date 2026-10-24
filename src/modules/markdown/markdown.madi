@@ -1,0 +1,19 @@
+// The face of `markdown`, the madc module (include/madc_module.h): what a
+// program that says `import markdown;` may call. GitHub-flavoured Markdown
+// parsed into a value tree by cmark-gfm, linked into the module (plan
+// docs/plans/2026-10-03-chthonia-windows-macos.md §7d). Declarations only: the
+// module's C++ (markdown.cpp) defines them, and the build generates the
+// module's declaration table from this file (madc --emit-module-table).
+//   markdown::parse(out, text): the document node — every node {kind (a
+//     markdown::node_kind code), line, col, end_line, end_col (1-based source
+//     positions; 0 where none, a soft break's), text (a literal's decoded
+//     text), children}, and by kind: heading level; list list (a
+//     markdown::list_kind code), start, tight; item task, checked;
+//     code_block info, fenced; link and image url, title; table align (a
+//     markdown::column_align code per column); table_row header.
+// THREAD CONTRACT: parse is a pure function of its text.
+#include "markdown_enums"	// markdown::node_kind / list_kind / column_align: the tree's codes
+
+namespace markdown {
+    var &parse(var &out, const char *text);
+}

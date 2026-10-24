@@ -1,21 +1,25 @@
 #!/bin/bash
 # check-module-exports.sh — a madc module exports no symbol of the library it
-# links statically: madcgit no libgit2 symbol, madcmark no cmark-gfm symbol.
+# links statically (git no libgit2 symbol, markdown no cmark-gfm symbol), and
+# does export its own namespace's symbols: madc resolves a module's publics by
+# mangled name (_ZN3git..., _ZN8markdown...), so a module that exports only its
+# entry point fails every import (PE: one dllexport turns ld's auto-export off).
 #
-# Each module links its dependency statically (src/madcgit.mk,
-# src/madcmark.mk), and madc loads modules RTLD_GLOBAL (src/madc_dl.cpp): an
+# Each module links its dependency statically (src/git.mk,
+# src/markdown.mk), and madc loads modules RTLD_GLOBAL (src/madc_dl.cpp): an
 # exported dependency symbol would enter the process's global scope beside
 # any copy of that library a program loads itself, and a script's dlsym
-# fallback would bind to the module's copy. A module's own C API is its
-# madc<name>_* (include/madc/madcgit.h, include/madc/madcmark.h).
+# fallback would bind to the module's copy. A module's own exports are its
+# entry point madc_module_<name> and its namespace's symbols
+# (include/madc_module.h).
 #
 # The MODULES table below is the data: a module, its dependency's symbol
 # pattern, and the images a target's build leaves in the tree (an absent
 # image is skipped):
-#   lib/lib<module>.so                         ELF: nm -D
-#   lib/lib<module>.dylib, lib/<module>/*-macos/lib<module>.dylib
+#   lib/madc/modules/<module>.so               ELF: nm -D
+#   lib/madc/modules/<module>.dylib, lib/madc/modules/*-macos/<module>.dylib
 #                                              Mach-O: llvm-nm -g
-#   bin/<module>.dll                           PE: objdump -p, the export table
+#   lib/madc/modules/<module>.dll              PE: objdump -p, the export table
 # An image present with no tool to read it FAILS: a gate that cannot look
 # must not pass.
 #
@@ -27,9 +31,9 @@ set -u
 cd "$(dirname "$0")/.." || exit 2
 
 # module|dependency|the dependency's exported-symbol pattern
-MODULES="madcgit|libgit2|^(git|giterr)_
-madcmark|cmark-gfm|^(cmark_|CMARK_|houdini_|_scan_|_ext_scan_|create_[a-z]+_extension$|normalize_map_label$)"
-FORBIDDEN='^(git|giterr)_'	# the control's pattern (madcgit's row)
+MODULES="git|libgit2|^(git|giterr)_
+markdown|cmark-gfm|^(cmark_|CMARK_|houdini_|_scan_|_ext_scan_|create_[a-z]+_extension$|normalize_map_label$)"
+FORBIDDEN='^(git|giterr)_'	# the control's pattern (git's row)
 
 first_tool() {
 	local t
@@ -61,16 +65,23 @@ exports() {
 	esac
 }
 
-# check KIND FILE — prints each forbidden export; 0 = clean, 1 = forbidden
-# exports, 2 = the image could not be read.
+# check KIND FILE OWN — prints each forbidden export, and the absence of any
+# export spelled OWN* (the module's namespace); 0 = clean, 1 = forbidden
+# exports or no namespace export, 2 = the image could not be read.
 check() {
-	local out
+	local out bad rc=0
 	out=$(exports "$1" "$2") || return 2
-	out=$(printf '%s\n' "$out" | grep -E "$FORBIDDEN")
-	[ -z "$out" ] && return 0
-	printf '%s\n' "$out" | sed "s|^|$2: |" | head -5
-	echo "$2: $(printf '%s\n' "$out" | wc -l) $DEPENDENCY symbol(s) exported"
-	return 1
+	bad=$(printf '%s\n' "$out" | grep -E "$FORBIDDEN")
+	if [ -n "$bad" ]; then
+		printf '%s\n' "$bad" | sed "s|^|$2: |" | head -5
+		echo "$2: $(printf '%s\n' "$bad" | wc -l) $DEPENDENCY symbol(s) exported"
+		rc=1
+	fi
+	if ! printf '%s\n' "$out" | grep -q "^$3"; then
+		echo "$2: no $3* export — the module's namespace symbols are not exported"
+		rc=1
+	fi
+	return $rc
 }
 
 # --- negative control --------------------------------------------------------
@@ -80,17 +91,21 @@ fail_control() {
 	echo "check-module-exports: CONTROL FAILED — $1" >&2
 	exit 2
 }
-printf 'int git_x(void) { return 1; }\nint madcgit_y(void) { return git_x(); }\n' > "$tmpd/bad.c"
-printf '__attribute__((visibility("hidden"))) int git_x(void) { return 1; }\nint madcgit_y(void) { return git_x(); }\n' > "$tmpd/good.c"
+# _ZN3git1yEv is git::y()'s mangled name, spelled as a C identifier.
+printf 'int git_x(void) { return 1; }\nint _ZN3git1yEv(void) { return git_x(); }\n' > "$tmpd/bad.c"
+printf '__attribute__((visibility("hidden"))) int git_x(void) { return 1; }\nint _ZN3git1yEv(void) { return git_x(); }\n' > "$tmpd/good.c"
+printf '__attribute__((visibility("hidden"))) int _ZN3git1yEv(void) { return 1; }\nint madc_module_git(void) { return _ZN3git1yEv(); }\n' > "$tmpd/noown.c"
 case "$(uname -s)" in
 Darwin) ckind=macho; cflags=(-dynamiclib) ;;
 *)      ckind=elf;   cflags=(-shared -fPIC) ;;
 esac
 cc "${cflags[@]}" -o "$tmpd/bad.so" "$tmpd/bad.c" 2>/dev/null || fail_control "cc could not build the control"
 cc "${cflags[@]}" -o "$tmpd/good.so" "$tmpd/good.c" 2>/dev/null || fail_control "cc could not build the control"
+cc "${cflags[@]}" -o "$tmpd/noown.so" "$tmpd/noown.c" 2>/dev/null || fail_control "cc could not build the control"
 DEPENDENCY=libgit2
-check "$ckind" "$tmpd/bad.so" >/dev/null; [ $? -eq 1 ] || fail_control "an exported git_x passed"
-check "$ckind" "$tmpd/good.so" >/dev/null || fail_control "a hidden git_x failed"
+check "$ckind" "$tmpd/bad.so" _ZN3git >/dev/null; [ $? -eq 1 ] || fail_control "an exported git_x passed"
+check "$ckind" "$tmpd/good.so" _ZN3git >/dev/null || fail_control "a hidden git_x failed"
+check "$ckind" "$tmpd/noown.so" _ZN3git >/dev/null; [ $? -eq 1 ] || fail_control "an image without git:: exports passed"
 rm -rf "$tmpd"
 
 # --- the tree ---------------------------------------------------------------
@@ -98,18 +113,19 @@ status=0
 seen=0
 while IFS='|' read -r module DEPENDENCY FORBIDDEN; do
 	[ -n "$module" ] || continue
-	for row in "elf lib/lib$module.so" "macho lib/lib$module.dylib" \
-		   "macho lib/$module/arm64-macos/lib$module.dylib" \
-		   "macho lib/$module/x86-64-macos/lib$module.dylib" "pe bin/$module.dll"; do
+	for row in "elf lib/madc/modules/$module.so" "macho lib/madc/modules/$module.dylib" \
+		   "macho lib/madc/modules/arm64-macos/$module.dylib" \
+		   "macho lib/madc/modules/x86-64-macos/$module.dylib" \
+		   "pe lib/madc/modules/$module.dll"; do
 		kind=${row%% *}
 		f=${row#* }
 		[ -f "$f" ] || continue
 		seen=$((seen + 1))
-		check "$kind" "$f" >&2
+		check "$kind" "$f" "_ZN${#module}${module}" >&2
 		case $? in
 		0) ;;
 		1) status=1
-		   echo "  -> $module links $DEPENDENCY hidden: src/$module.mk (--exclude-libs on ELF and PE, -load_hidden on Mach-O)" >&2 ;;
+		   echo "  -> src/$module.mk links $DEPENDENCY hidden (--exclude-libs on ELF and PE, -load_hidden on Mach-O) and exports the module's own symbols (--export-all-symbols on PE)" >&2 ;;
 		*) echo "check-module-exports: cannot read $f's exports (no $kind symbol tool)" >&2; status=1 ;;
 		esac
 	done
@@ -120,5 +136,5 @@ EOT
 if [ $seen -eq 0 ]; then
 	echo "check-module-exports: OK (no module image built; nothing to check)"
 else
-	echo "check-module-exports: OK ($seen module image(s), none exporting its dependency's symbols)"
+	echo "check-module-exports: OK ($seen module image(s): each exports its namespace, none its dependency's symbols)"
 fi

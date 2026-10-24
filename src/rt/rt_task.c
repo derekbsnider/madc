@@ -64,11 +64,12 @@
 // The task (a stack + state)
 // ---------------------------------------------------------------------------
 
-// Opaque per-task exception-state buffer (rt_except's try/cleanup chains +
-// the in-flight exception — per-CONTEXT state switched like registers).
+// Opaque per-task exception-state buffer (rt_except's try and caught chains +
+// the in-flight exception and, on Windows, the in-flight unwind — per-CONTEXT
+// state switched like registers).
 // Zero-filled = the empty state a fresh task starts with; capacity checked
 // loud at init against __madc_except_state_size().
-#define MADC_TASK_EXC_BYTES 64
+#define MADC_TASK_EXC_BYTES 80
 
 // The trampoline's scope catch-all frame (MT-3) — an opaque MadcTryContext
 // on the task body's stack. Capacity checked loud at init against
@@ -292,9 +293,6 @@ typedef struct madc_scope {
 	int cancel_req;
 	int joining;                  // opener parked in scope_end
 	int err_set;
-	void *block_entry;            // exception-runtime cleanup entry while a
-				      // `scope { }` keyword block is open
-				      // (NULL = publics-opened scope)
 	char err[MADC_SCOPE_ERR_BYTES];
 } madc_scope;
 
@@ -390,14 +388,6 @@ static void scope_abandon(madc_task *t, madc_scope *s)
 {
 	scope_cancel_walk(s);
 	scope_join_and_unlink(s);
-	if (s->block_entry) {
-		// A keyword-block scope abandoned outside its own unwind
-		// handler (the task-death path) must not leave a cleanup
-		// entry pointing at freed memory. During the handler itself
-		// the entry is already unlinked, so this walk is a no-op.
-		__madc_cleanup_remove(s->block_entry);
-		s->block_entry = NULL;
-	}
 	if (s->err_set)
 		fprintf(stderr, "madc tasks: abandoned scope error: %s\n",
 			s->err);
@@ -617,9 +607,10 @@ static void task_run_body(madc_task *t)
 {
 	int caught = 0;
 	if (t->scope) {
-		unsigned char tryctx[MADC_TASK_TRYCTX_BYTES];
+		// 16-aligned: Win64's jmp_buf holds the xmm registers.
+		_Alignas(16) unsigned char tryctx[MADC_TASK_TRYCTX_BYTES];
 		void *jb = __madc_try_push((struct MadcTryContext *)tryctx);
-		if (setjmp(*(jmp_buf *)jb) == 0) {
+		if (MADC_TRY_SETJMP(*(jmp_buf *)jb) == 0) {
 			t->fn(t->arg);
 			__madc_try_pop();
 		} else {
@@ -1038,58 +1029,46 @@ void __madc_scope_end(void *scope)
 
 // ---------------------------------------------------------------------------
 // MT-5 `scope { ... }` keyword block — the direct-C consumer of the seams
-// above (the CIR builder emits this pair; no int64 handle, no C++ layer).
-// enter = scope_begin + an unwind registration on the exception runtime's
-// cleanup stack: a throw ESCAPING the block must not leave the scope on the
-// task's chain (a later `go` would attach to a dead block; an outer
-// scope_end would refuse "not innermost"), so the handler quietly abandons
-// it mid-unwind — cancel members, JOIN (parking here is safe: the in-flight
-// exception is per-context state, switched with the task), pop cur, free.
-// The in-flight error wins; a captured member error prints (nowhere left to
-// land). A throw CAUGHT INSIDE the block never reaches the entry (the try
-// mark discipline). exit = remove the registration, then the ordinary
-// scope_end above (join + rethrow first member error / cancelled text).
+// above (the CIR builder emits these; no int64 handle, no C++ layer).
+// enter = scope_begin; the block keeps the scope in a slot whose cleanup is
+// __madc_scope_block_leave, a region of the block's frame: a throw ESCAPING
+// the block must not leave the scope on the task's chain (a later `go` would
+// attach to a dead block; an outer scope_end would refuse "not innermost"),
+// so the leave quietly abandons it mid-unwind — cancel members, JOIN (parking
+// here is safe: the in-flight exception is per-context state, switched with
+// the task), pop cur, free. The in-flight error wins; a captured member error
+// prints (nowhere left to land). A throw CAUGHT INSIDE the block never leaves
+// it. exit, at the block's end, empties the slot (the leave then does
+// nothing), then the ordinary scope_end above (join + rethrow first member
+// error / cancelled text).
 // ---------------------------------------------------------------------------
 
-static void scope_block_unwind(void *scope)
+void *__madc_scope_block_enter(void)
 {
-	madc_scope *s = (madc_scope *)scope;
+	return __madc_scope_begin();
+}
+
+void __madc_scope_block_leave(void *slot)
+{
+	madc_scope *s = slot ? *(madc_scope **)slot : NULL;
 	madc_task *t = g_current;
-	if (!t)
+	if (!s || !t)
 		return;
-	// Unended PUBLIC scopes opened inside the block (no cleanup entry
-	// of their own) abandon first — cur walks down to the block's scope.
+	*(madc_scope **)slot = NULL;
+	// Unended PUBLIC scopes opened inside the block (no slot of their
+	// own) abandon first — cur walks down to the block's scope.
 	while (t->cur && t->cur != s)
 		scope_abandon(t, t->cur);
 	if (t->cur == s)
 		scope_abandon(t, s);
 }
 
-void *__madc_scope_block_enter(void)
+void __madc_scope_block_exit(void *slot)
 {
-	void *before = __madc_cleanup_top();
-	madc_scope *s = (madc_scope *)__madc_scope_begin();
-	__madc_cleanup_push_dtor((void *)scope_block_unwind, s);
-	s->block_entry = __madc_cleanup_top();
-	if (s->block_entry == before) {
-		// push_dtor's allocation failed silently — an unregistered
-		// block would leak its children on unwind. Refuse loud.
-		fprintf(stderr, "madc tasks: scope block registration"
-			" failed\n");
-		abort();
-	}
-	return s;
-}
-
-void __madc_scope_block_exit(void *scope)
-{
-	madc_scope *s = (madc_scope *)scope;
+	madc_scope *s = slot ? *(madc_scope **)slot : NULL;
 	if (!s)
 		return;
-	if (s->block_entry) {
-		__madc_cleanup_remove(s->block_entry);
-		s->block_entry = NULL;
-	}
+	*(madc_scope **)slot = NULL;
 	// end_check failures here are engine bugs (enter/exit are emitted
 	// as a matched pair in one task) — still checked, loud.
 	int rc = __madc_scope_end_check(s);

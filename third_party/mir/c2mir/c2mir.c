@@ -3769,8 +3769,98 @@ static macro_call_t try_param_macro_call (c2m_ctx_t c2m_ctx, macro_t m, token_t 
 #define JCALL "__builtin_jcall"
 #define JRET "__builtin_jret"
 #define PROP_SET "__builtin_prop_set"
+#define CLEANUP_ARM "__builtin_cleanup_arm"
+#define FRAME_ADDRESS "__builtin_frame_address"
+#define RETURN_ADDRESS "__builtin_return_address"
 #define PROP_EQ "__builtin_prop_eq"
 #define PROP_NE "__builtin_prop_ne"
+#define BUILTIN_ALLOCA "__builtin_alloca"
+#define ALLOCA "alloca"
+#define BUILTIN_VA_START "__builtin_va_start"
+#define BUILTIN_VA_ARG "__builtin_va_arg"
+
+/* The call names c2mir lowers in place (no symbol is called): ONE table, read
+   by every site that asks about a builtin name -- __has_builtin, the checker's
+   call and definition checks, the generator (by the kind the checker stored),
+   and an embedding front end (c2mir_builtin_call_name_p).  The flags keep each
+   site's own answer as data. */
+enum builtin_kind {
+  BI_NONE = 0,
+  BI_ALLOCA,
+  BI_VA_START,
+  BI_VA_ARG,
+  BI_ADD_OVERFLOW,
+  BI_SUB_OVERFLOW,
+  BI_MUL_OVERFLOW,
+  BI_EXPECT,
+  BI_ABORT,
+  BI_MEMCMP,
+  BI_COPYSIGNF,
+  BI_NAN,
+  BI_CONVERT_VECTOR,
+  BI_SHUFFLE,
+  BI_SHUFFLE_VECTOR,
+  BI_VECTOR_ELEMENTS,
+  BI_JCALL,
+  BI_JRET,
+  BI_PROP_SET,
+  BI_PROP_EQ,
+  BI_PROP_NE,
+  BI_CLEANUP_ARM,
+  BI_FRAME_ADDRESS,
+  BI_RETURN_ADDRESS,
+  BI_NUM
+};
+/* struct expr keeps a call's kind in a 5-bit field */
+typedef char builtin_kind_fits_expr_field[BI_NUM <= 32 ? 1 : -1];
+#define BIF_HAS_BUILTIN 1u /* __has_builtin (name) answers 1 */
+#define BIF_RESERVED 2u    /* a function definition of the name is an error */
+static const struct builtin_name {
+  const char *name;
+  unsigned char kind, flags;
+} builtin_names[] = {
+  {ALLOCA, BI_ALLOCA, BIF_RESERVED},
+  {BUILTIN_ALLOCA, BI_ALLOCA, BIF_RESERVED},
+  {BUILTIN_VA_START, BI_VA_START, BIF_RESERVED},
+  {BUILTIN_VA_ARG, BI_VA_ARG, BIF_RESERVED},
+  {ADD_OVERFLOW, BI_ADD_OVERFLOW, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {SUB_OVERFLOW, BI_SUB_OVERFLOW, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {MUL_OVERFLOW, BI_MUL_OVERFLOW, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {EXPECT, BI_EXPECT, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {BUILTIN_ABORT, BI_ABORT, BIF_RESERVED},
+  {BUILTIN_MEMCMP, BI_MEMCMP, BIF_RESERVED},
+  {BUILTIN_COPYSIGNF, BI_COPYSIGNF, BIF_RESERVED},
+  {BUILTIN_NAN, BI_NAN, BIF_RESERVED},
+  {CONVERT_VECTOR, BI_CONVERT_VECTOR, BIF_HAS_BUILTIN},
+  {SHUFFLE, BI_SHUFFLE, BIF_HAS_BUILTIN},
+  {SHUFFLE_VECTOR, BI_SHUFFLE_VECTOR, BIF_HAS_BUILTIN},
+  {VECTOR_ELEMENTS, BI_VECTOR_ELEMENTS, 0},
+  {JCALL, BI_JCALL, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {JRET, BI_JRET, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {PROP_SET, BI_PROP_SET, BIF_HAS_BUILTIN},
+  {PROP_EQ, BI_PROP_EQ, BIF_HAS_BUILTIN},
+  {PROP_NE, BI_PROP_NE, BIF_HAS_BUILTIN},
+  {CLEANUP_ARM, BI_CLEANUP_ARM, BIF_HAS_BUILTIN},
+  {FRAME_ADDRESS, BI_FRAME_ADDRESS, BIF_HAS_BUILTIN | BIF_RESERVED},
+  {RETURN_ADDRESS, BI_RETURN_ADDRESS, BIF_HAS_BUILTIN | BIF_RESERVED},
+};
+
+/* NAME's builtin kind (BI_NONE: an ordinary function) and, through FLAGS when
+   non-NULL, its BIF_* answers.  Every name but alloca starts "__builtin_", so
+   an ordinary call is rejected on its prefix. */
+static enum builtin_kind builtin_kind (const char *name, unsigned *flags) {
+  if (strncmp (name, "__builtin_", 10) != 0 && strcmp (name, ALLOCA) != 0) return BI_NONE;
+  for (size_t i = 0; i < sizeof (builtin_names) / sizeof (builtin_names[0]); i++)
+    if (strcmp (name, builtin_names[i].name) == 0) {
+      if (flags != NULL) *flags = builtin_names[i].flags;
+      return (enum builtin_kind) builtin_names[i].kind;
+    }
+  return BI_NONE;
+}
+
+int c2mir_builtin_call_name_p (const char *name) {
+  return name != NULL && builtin_kind (name, NULL) != BI_NONE;
+}
 
 static void processing (c2m_ctx_t c2m_ctx, int ignore_directive_p) {
   MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
@@ -3908,14 +3998,10 @@ static void processing (c2m_ctx_t c2m_ctx, int ignore_directive_p) {
               if (i < len && VARR_GET (token_t, arg, i)->code == ' ') i++;
               if (i != len)
                 error (c2m_ctx, t->pos, "garbage after identifier in __has_builtin");
-              else
-                res = (strcmp (t->repr, ADD_OVERFLOW) == 0 || strcmp (t->repr, SUB_OVERFLOW) == 0
-                       || strcmp (t->repr, MUL_OVERFLOW) == 0 || strcmp (t->repr, EXPECT) == 0
-                       || strcmp (t->repr, CONVERT_VECTOR) == 0 || strcmp (t->repr, SHUFFLE) == 0
-                       || strcmp (t->repr, SHUFFLE_VECTOR) == 0
-                       || strcmp (t->repr, JCALL) == 0 || strcmp (t->repr, JRET) == 0
-                       || strcmp (t->repr, PROP_SET) == 0 || strcmp (t->repr, PROP_EQ) == 0
-                       || strcmp (t->repr, PROP_NE) == 0);
+              else {
+                unsigned flags = 0;
+                res = builtin_kind (t->repr, &flags) != BI_NONE && (flags & BIF_HAS_BUILTIN) != 0;
+              }
             }
           }
           m->ignore_p = TRUE;
@@ -4369,7 +4455,8 @@ DA (post_expr_part) {
       r = NULL;
       code = N_CALL;
       list = new_node (c2m_ctx, N_LIST);
-      if (op->code == N_ID && strcmp (op->u.s.s, CONVERT_VECTOR) == 0) {
+      enum builtin_kind bk = op->code == N_ID ? builtin_kind (op->u.s.s, NULL) : BI_NONE;
+      if (bk == BI_CONVERT_VECTOR) {
         if (!C (')')) {
           P (assign_expr);
           op_append (c2m_ctx, list, r);
@@ -4377,7 +4464,7 @@ DA (post_expr_part) {
           P (type_name);
           op_append (c2m_ctx, list, r);
         }
-      } else if (op->code == N_ID && strcmp (op->u.s.s, VECTOR_ELEMENTS) == 0) {
+      } else if (bk == BI_VECTOR_ELEMENTS) {
         if (!C (')')) {
           if ((r = TRY (type_name)) == err_node) P (assign_expr);
           op_append (c2m_ctx, list, r);
@@ -6462,6 +6549,7 @@ static struct type arithmetic_conversion (const struct type *type1, const struct
 
 struct expr {
   unsigned int const_p : 1, const_addr_p : 1, builtin_call_p : 1;
+  unsigned int builtin_kind : 5; /* enum builtin_kind of a builtin call, else BI_NONE */
   union {
     node_t lvalue_node;       /* for id, str, field, deref field, ind, deref, compound literal */
     node_t label_addr_target; /* for label address */
@@ -6494,6 +6582,7 @@ struct decl_spec {
      copy, inlineable); both capture as STB_WEAK so identical per-TU copies
      merge instead of duplicate-strong colliding */
   unsigned int weak_p : 1, linkonce_p : 1;
+  unsigned int noinline_p : 1; /* __attribute__((noinline)): the MIR func is never inlined */
   int align;                                  // negative value means undefined
   node_t align_node;                          //  strictest valid N_ALIGNAS node
   node_code_t linkage;  // N_IGNORE - none, N_STATIC - internal, N_EXTERN - external
@@ -6515,6 +6604,9 @@ struct node_scope {
   unsigned char stack_var_p; /* necessity for frame */
   unsigned func_scope_num;
   mir_size_t size, offset, call_arg_area_size;
+  /* madc fork: in a function block, the largest alignment an object in its
+     frame needs (gen realigns the frame when it exceeds MAX_ALIGNMENT) */
+  mir_size_t frame_align;
   node_t scope;
   /* Decls in this scope carrying __attribute__((cleanup(fn))), in declaration
      order; NULL if none. Populated in check, consumed by process_cleanups. */
@@ -6543,6 +6635,11 @@ struct decl {
   node_t containing_unnamed_anon_struct_union_member;
   /* Resolved N_ID of __attribute__((cleanup(fn))) on this decl, else NULL. */
   node_t cleanup_fn;
+  /* Its unwind region (c2mir_options.unwind_regions_p), 0 until it is live, and
+     the region it nests in.  cleanup_arm_p: a __builtin_cleanup_arm (&var)
+     makes it live, not the end of the declaration. */
+  uint32_t unwind_region, unwind_parent;
+  unsigned cleanup_arm_p : 1;
   union {
     const char *asm_str; /* register name for global reg used and defined only if asm_p */
     MIR_item_t item;     /* MIR_item for some declarations */
@@ -7868,6 +7965,7 @@ static void create_node_scope (c2m_ctx_t c2m_ctx, node_t node) {
   ns->func_scope_num = curr_func_scope_num++;
   ns->stack_var_p = FALSE;
   ns->offset = ns->size = ns->call_arg_area_size = 0;
+  ns->frame_align = 0;
   ns->cleanup_decls = NULL;
   node->attr = ns;
   ns->scope = curr_scope;
@@ -8045,20 +8143,49 @@ static node_t build_cleanup_stmt (c2m_ctx_t c2m_ctx, node_t decl_node, node_t co
   call = new_pos_node2 (c2m_ctx, N_CALL, POS (var_id), fn_ref, args);
   stmt = new_pos_node2 (c2m_ctx, N_EXPR, POS (var_id), new_node (c2m_ctx, N_LIST), call);
   check (c2m_ctx, stmt, context);
+  /* Mark it as DECL_NODE's cleanup (an expression statement has no other
+     attribute): gen runs it in the region the variable nests in. */
+  stmt->attr = decl_node;
   return stmt;
 }
 
-/* Fall-through scope exit: append each scope-local cleanup call (reverse decl
-   order) to the end of the block. */
-static void emit_scope_cleanups (c2m_ctx_t c2m_ctx, node_t block) {
-  struct node_scope *ns = block->attr;
+/* The variable a checked __builtin_cleanup_arm argument (`&var`) names, or
+   NULL when the argument is not a variable's address. */
+static decl_t cleanup_arm_operand (node_t arg) {
+  node_t id;
+  struct expr *e;
+
+  if (arg == NULL || arg->code != N_ADDR || (id = NL_HEAD (arg->u.ops)) == NULL
+      || id->code != N_ID || (e = id->attr) == NULL || e->u.lvalue_node == NULL)
+    return NULL;
+  return e->u.lvalue_node->attr;
+}
+
+/* The automatic cleanup variable a checked __builtin_cleanup_arm argument
+   names, or NULL when it names none: the arm of a variable with no cleanup
+   (static storage, or none declared) does nothing. */
+static decl_t cleanup_arm_decl (c2m_ctx_t c2m_ctx, node_t arg) {
+  check_ctx_t check_ctx = c2m_ctx->check_ctx;
+  decl_t decl = cleanup_arm_operand (arg);
+
+  if (decl == NULL || decl->cleanup_fn == NULL || decl->scope == top_scope
+      || decl->decl_spec.static_p || decl->decl_spec.thread_local_p)
+    return NULL;
+  return decl;
+}
+
+/* A scope's exit without a jump: append each cleanup call of SCOPE's decls
+   (reverse decl order) to LIST -- a block's statements (its fall-through), or a
+   for statement's own ops past its body (its condition turning false). */
+static void emit_scope_cleanups (c2m_ctx_t c2m_ctx, node_t scope, node_t list) {
+  struct node_scope *ns = scope->attr;
   size_t i, n;
 
   if (ns == NULL || ns->cleanup_decls == NULL) return;
   n = VARR_LENGTH (node_t, ns->cleanup_decls);
   for (i = n; i > 0; i--)
-    op_append (c2m_ctx, NL_EL (block->u.ops, 1),
-               build_cleanup_stmt (c2m_ctx, VARR_GET (node_t, ns->cleanup_decls, i - 1), block));
+    op_append (c2m_ctx, list,
+               build_cleanup_stmt (c2m_ctx, VARR_GET (node_t, ns->cleanup_decls, i - 1), scope));
 }
 
 /* Shared exit-path helper. Record fn(&var) cleanup statements as extra ops on
@@ -8164,7 +8291,7 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
   res->typedef_p = res->extern_p = res->static_p = FALSE;
   res->auto_p = res->register_p = res->thread_local_p = FALSE;
   res->inline_p = res->no_return_p = FALSE;
-  res->weak_p = res->linkonce_p = FALSE;
+  res->weak_p = res->linkonce_p = res->noinline_p = FALSE;
   res->align = -1;
   res->align_node = NULL;
   res->linkage = N_IGNORE;
@@ -8497,13 +8624,15 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
     }
     case N_ATTR: {
       /* vector_size/ext_vector_type are applied after the loop
-         (apply_vector_attr_list); weak/linkonce are consumed here */
+         (apply_vector_attr_list); weak/linkonce/noinline are consumed here */
       node_t aname = NL_HEAD (n->u.ops);
       if (aname != NULL && aname->code == N_ID) {
         if (attr_name_eq_p (aname->u.s.s, "weak"))
           res->weak_p = TRUE;
         else if (attr_name_eq_p (aname->u.s.s, "linkonce"))
           res->linkonce_p = TRUE;
+        else if (attr_name_eq_p (aname->u.s.s, "noinline"))
+          res->noinline_p = TRUE;
         else if (attr_name_eq_p (aname->u.s.s, "ret_addr"))
           ret_addr_p = TRUE;
       }
@@ -9598,6 +9727,16 @@ static void check_decl_align (c2m_ctx_t c2m_ctx, struct decl_spec *decl_spec) {
            "requested alignment is less than minimum alignment for the type");
 }
 
+/* madc fork: the alignment an object's storage needs -- its type's, raised by
+   an alignment specifier on the object itself (C11 6.7.5) */
+static mir_size_t decl_storage_align (c2m_ctx_t c2m_ctx, struct decl *decl) {
+  mir_size_t align = var_align (c2m_ctx, decl->decl_spec.type);
+
+  if (decl->decl_spec.align > 0 && (mir_size_t) decl->decl_spec.align > align)
+    align = decl->decl_spec.align;
+  return align;
+}
+
 static int attr_name_eq_p (const char *attr_name, const char *canonical_name) {
   size_t attr_len = strlen (attr_name), canonical_len = strlen (canonical_name);
 
@@ -9775,6 +9914,8 @@ static void init_decl (c2m_ctx_t c2m_ctx, decl_t decl) {
   decl->scope = curr_scope;
   decl->containing_unnamed_anon_struct_union_member = curr_unnamed_anon_struct_union_member;
   decl->cleanup_fn = NULL;
+  decl->unwind_region = decl->unwind_parent = 0;
+  decl->cleanup_arm_p = FALSE;
   decl->u.item = NULL;
   decl->c2m_ctx = c2m_ctx;
 }
@@ -9931,6 +10072,7 @@ static struct expr *create_expr (c2m_ctx_t c2m_ctx, node_t r) {
   e->type->pos_node = r;
   e->u.lvalue_node = NULL;
   e->const_p = e->const_addr_p = e->builtin_call_p = FALSE;
+  e->builtin_kind = BI_NONE;
   e->c_u_hi_val = 0;
   e->call_proto_item = NULL;
   e->c_im_val = 0.0L;
@@ -10307,6 +10449,19 @@ static int case_eq (case_t el1, case_t el2, void *arg MIR_UNUSED) {
   return expr1->c.u_val == expr2->c.u_val;
 }
 
+/* madc fork: the expression a statement expression's value statement yields,
+   or NULL when it yields none and the construct is void (GNU): a statement
+   other than an expression statement, or an empty one -- `({ ...; ; })`,
+   what `assert (1)` leaves once glibc's `if (1) ; else __assert_fail (...)`
+   loses its dead branch. */
+static node_t stmtexpr_value_expr (node_t last_stmt) {
+  node_t expr;
+
+  if (last_stmt == NULL || last_stmt->code != N_EXPR) return NULL;
+  expr = NL_EL (last_stmt->u.ops, 1);
+  return expr->code == N_IGNORE ? NULL : expr;
+}
+
 static void update_call_arg_area_offset (c2m_ctx_t c2m_ctx, struct type *type, int update_scope_p) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
   node_t block = NL_EL (curr_func_def->u.ops, 3);
@@ -10431,8 +10586,10 @@ static int decl_cmp (const void *v1, const void *v2) {
   return 0;
 }
 
-static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
+/* Returns the largest alignment an object placed in the frame needs. */
+static mir_size_t process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
+  mir_size_t frame_align = 0;
   size_t i, j;
   decl_t decl;
   struct type *type;
@@ -10445,13 +10602,15 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
      setjmp and longjmp keeps its last value only in memory (C11 7.13.2.1p3) -- a register
      is restored to its setjmp-time contents.  Nor is an object whose alignment specifier
      raises its type's (`_Alignas (16) char c;`): only a frame slot is placed on that
-     boundary, the generator's slot for a register's address is not. */
+     boundary, the generator's slot for a register's address is not.  Nor is a cleanup
+     variable that is an unwind region: a stack walk finds it at its frame offset. */
   for (i = j = 0; i < VARR_LENGTH (decl_t, func_decls_for_allocation); i++) {
     decl = VARR_GET (decl_t, func_decls_for_allocation, i);
     type = decl->decl_spec.type;
     ns = decl->scope->attr;
     if (scalar_type_p (type) && !int128_type_p (type) && !type->type_qual.volatile_p
-        && decl->decl_spec.align <= (int) var_align (c2m_ctx, type)) {
+        && decl->decl_spec.align <= (int) var_align (c2m_ctx, type)
+        && (decl->cleanup_fn == NULL || !c2m_options->unwind_regions_p)) {
       decl->reg_p = TRUE;
       continue;
     }
@@ -10487,13 +10646,11 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
     }
     {
       /* An alignment specifier on the object (C11 6.7.5: `_Alignas (16) char c;`)
-         places it on that boundary, not only on its type's.  The frame itself is
-         rounded to MAX_ALIGNMENT, the largest alignment the target admits
-         (invalid_alignment). */
-      mir_size_t align = var_align (c2m_ctx, type);
+         places it on that boundary, not only on its type's.  Offsets are from
+         the frame base, which gen aligns to the largest of them (frame_align). */
+      mir_size_t align = decl_storage_align (c2m_ctx, decl);
 
-      if (decl->decl_spec.align > 0 && (mir_size_t) decl->decl_spec.align > align)
-        align = decl->decl_spec.align;
+      if (align > frame_align) frame_align = align;
       ns->offset = round_size (ns->offset, align);
     }
     decl->offset = ns->offset;
@@ -10512,6 +10669,7 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
       if (ns->stack_var_p) curr_ns->stack_var_p = TRUE;
     }
   }
+  return frame_align;
 }
 
 static const char *check_attrs (c2m_ctx_t c2m_ctx, node_t r, decl_t decl, node_t attrs,
@@ -10569,19 +10727,6 @@ static int specs_no_strict_aliasing_p (node_t specs) {
               || strcmp (arg->u.s.s, "no-strict-aliasing") == 0))
         return TRUE;
   }
-  return FALSE;
-}
-
-#define BUILTIN_VA_START \
-  (const char *[]) { "__builtin_va_start", NULL }
-#define BUILTIN_VA_ARG \
-  (const char *[]) { "__builtin_va_arg", NULL }
-#define ALLOCA \
-  (const char *[]) { "alloca", "__builtin_alloca", NULL }
-
-static int str_eq_p (const char *str, const char *v[]) {
-  for (int i = 0; v[i] != NULL; i++)
-    if (strcmp (v[i], str) == 0) return TRUE;
   return FALSE;
 }
 
@@ -11452,33 +11597,40 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     int abort_p = FALSE, memcmp_p = FALSE, copysignf_p = FALSE, nan_p = FALSE;
     int convertvector_p = FALSE, shuffle_p = FALSE, shufflevector_p = FALSE;
     int jcall_p = FALSE, jret_p = FALSE, prop_set_p = FALSE, prop_eq_p = FALSE, prop_ne_p = FALSE;
-    int vectorelements_p = FALSE;
+    int vectorelements_p = FALSE, cleanup_arm_p = FALSE;
+    int frame_address_p = FALSE, return_address_p = FALSE;
     mir_size_t vectorelements_count = 0;
+    enum builtin_kind bk = BI_NONE;
 
     op1 = NL_HEAD (r->u.ops);
     if (op1->code == N_ID) {
-      alloca_p = str_eq_p (op1->u.s.s, ALLOCA);
-      add_overflow_p = strcmp (op1->u.s.s, ADD_OVERFLOW) == 0;
-      sub_overflow_p = strcmp (op1->u.s.s, SUB_OVERFLOW) == 0;
-      mul_overflow_p = strcmp (op1->u.s.s, MUL_OVERFLOW) == 0;
-      expect_p = strcmp (op1->u.s.s, EXPECT) == 0;
-      abort_p = strcmp (op1->u.s.s, BUILTIN_ABORT) == 0;
-      memcmp_p = strcmp (op1->u.s.s, BUILTIN_MEMCMP) == 0;
-      copysignf_p = strcmp (op1->u.s.s, BUILTIN_COPYSIGNF) == 0;
-      nan_p = strcmp (op1->u.s.s, BUILTIN_NAN) == 0;
-      convertvector_p = strcmp (op1->u.s.s, CONVERT_VECTOR) == 0;
-      shuffle_p = strcmp (op1->u.s.s, SHUFFLE) == 0;
-      shufflevector_p = strcmp (op1->u.s.s, SHUFFLE_VECTOR) == 0;
-      vectorelements_p = strcmp (op1->u.s.s, VECTOR_ELEMENTS) == 0;
-      jcall_p = strcmp (op1->u.s.s, JCALL) == 0;
-      jret_p = strcmp (op1->u.s.s, JRET) == 0;
-      prop_set_p = strcmp (op1->u.s.s, PROP_SET) == 0;
-      prop_eq_p = strcmp (op1->u.s.s, PROP_EQ) == 0;
-      prop_ne_p = strcmp (op1->u.s.s, PROP_NE) == 0;
+      bk = builtin_kind (op1->u.s.s, NULL);
+      alloca_p = bk == BI_ALLOCA;
+      add_overflow_p = bk == BI_ADD_OVERFLOW;
+      sub_overflow_p = bk == BI_SUB_OVERFLOW;
+      mul_overflow_p = bk == BI_MUL_OVERFLOW;
+      expect_p = bk == BI_EXPECT;
+      abort_p = bk == BI_ABORT;
+      memcmp_p = bk == BI_MEMCMP;
+      copysignf_p = bk == BI_COPYSIGNF;
+      nan_p = bk == BI_NAN;
+      convertvector_p = bk == BI_CONVERT_VECTOR;
+      shuffle_p = bk == BI_SHUFFLE;
+      shufflevector_p = bk == BI_SHUFFLE_VECTOR;
+      vectorelements_p = bk == BI_VECTOR_ELEMENTS;
+      jcall_p = bk == BI_JCALL;
+      jret_p = bk == BI_JRET;
+      prop_set_p = bk == BI_PROP_SET;
+      prop_eq_p = bk == BI_PROP_EQ;
+      prop_ne_p = bk == BI_PROP_NE;
+      cleanup_arm_p = bk == BI_CLEANUP_ARM;
+      frame_address_p = bk == BI_FRAME_ADDRESS;
+      return_address_p = bk == BI_RETURN_ADDRESS;
     }
+    /* va_start and va_arg are builtins only while undeclared */
     if (op1->code == N_ID && find_def (c2m_ctx, S_REGULAR, op1, curr_scope, NULL) == NULL) {
-      va_arg_p = str_eq_p (op1->u.s.s, BUILTIN_VA_ARG);
-      va_start_p = str_eq_p (op1->u.s.s, BUILTIN_VA_START);
+      va_arg_p = bk == BI_VA_ARG;
+      va_start_p = bk == BI_VA_START;
       if (!va_arg_p && !va_start_p && !alloca_p && !memcmp_p && !copysignf_p && !nan_p
           && !convertvector_p && !shuffle_p && !shufflevector_p && !vectorelements_p) {
         /* N_SPEC_DECL (N_SHARE (N_LIST (N_INT)), N_DECL (N_ID, N_FUNC (N_LIST)), N_IGNORE,
@@ -11504,7 +11656,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     builtin_call_p = alloca_p || va_arg_p || va_start_p || add_overflow_p || sub_overflow_p
                      || mul_overflow_p || expect_p || abort_p || memcmp_p || copysignf_p || nan_p
                      || convertvector_p || shuffle_p || shufflevector_p || vectorelements_p
-                     || jcall_p || jret_p || prop_set_p || prop_eq_p || prop_ne_p;
+                     || jcall_p || jret_p || prop_set_p || prop_eq_p || prop_ne_p
+                     || cleanup_arm_p || frame_address_p || return_address_p;
     if (!builtin_call_p || jcall_p) VARR_PUSH (node_t, call_nodes, r);
     arg_list = NL_NEXT (op1);
     if (builtin_call_p) {
@@ -11513,7 +11666,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       for (arg = NL_HEAD (arg_list->u.ops); arg != NULL; arg = NL_NEXT (arg))
         check (c2m_ctx, arg, r);
       init_type (&res_type);
-      if (alloca_p) {
+      if (alloca_p || frame_address_p || return_address_p) {
         res_type.mode = TM_PTR;
         res_type.u.ptr_type = &VOID_TYPE;
       } else {
@@ -11546,7 +11699,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
               || (jret_p && NL_LENGTH (arg_list->u.ops) != 1)
               || (va_arg_p && NL_LENGTH (arg_list->u.ops) != 2)
               || (prop_set_p && NL_LENGTH (arg_list->u.ops) != 2)
-              || ((prop_eq_p || prop_ne_p) && NL_LENGTH (arg_list->u.ops) != 2))) {
+              || ((prop_eq_p || prop_ne_p) && NL_LENGTH (arg_list->u.ops) != 2)
+              || (cleanup_arm_p && NL_LENGTH (arg_list->u.ops) != 1)
+              || ((frame_address_p || return_address_p) && NL_LENGTH (arg_list->u.ops) != 1))) {
         error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", op1->u.s.s);
       } else {
         /* first argument type ??? */
@@ -11747,6 +11902,21 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
             error (c2m_ctx, POS (arg),
                    "property value in 2nd arg of %s call should be an integer constant",
                    op1->u.s.s);
+        } else if (frame_address_p || return_address_p) {
+          arg = NL_HEAD (arg_list->u.ops);
+          e2 = arg->attr;
+          /* the level: an unsigned integer constant (gcc: "invalid argument") */
+          if (!e2->const_p || !integer_type_p (e2->type)
+              || (signed_integer_type_p (e2->type) && e2->c.i_val < 0))
+            error (c2m_ctx, POS (arg), "invalid argument to %s", op1->u.s.s);
+        } else if (cleanup_arm_p) {
+          node_t operand = NL_HEAD (arg_list->u.ops);
+          decl_t armed = cleanup_arm_decl (c2m_ctx, operand);
+
+          if (cleanup_arm_operand (operand) == NULL)
+            error (c2m_ctx, POS (r), "%s needs the address of a variable", CLEANUP_ARM);
+          else if (armed != NULL)
+            armed->cleanup_arm_p = TRUE;
         }
       }
     } else {
@@ -11763,6 +11933,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e = create_expr (c2m_ctx, r);
     *e->type = *ret_type;
     e->builtin_call_p = builtin_call_p;
+    e->builtin_kind = builtin_call_p ? bk : BI_NONE;
     if (vectorelements_p && vectorelements_count != 0) {
       e->const_p = TRUE;
       e->c.i_val = (mir_llong) vectorelements_count;
@@ -12033,14 +12204,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     symbol_t sym;
     struct node_scope *ns;
 
-    if (str_eq_p (id->u.s.s, ALLOCA) || str_eq_p (id->u.s.s, BUILTIN_VA_START)
-        || str_eq_p (id->u.s.s, BUILTIN_VA_ARG) || strcmp (id->u.s.s, ADD_OVERFLOW) == 0
-        || strcmp (id->u.s.s, SUB_OVERFLOW) == 0 || strcmp (id->u.s.s, MUL_OVERFLOW) == 0
-        || strcmp (id->u.s.s, EXPECT) == 0 || strcmp (id->u.s.s, BUILTIN_ABORT) == 0
-        || strcmp (id->u.s.s, BUILTIN_MEMCMP) == 0
-        || strcmp (id->u.s.s, BUILTIN_COPYSIGNF) == 0
-        || strcmp (id->u.s.s, BUILTIN_NAN) == 0 || strcmp (id->u.s.s, JCALL) == 0
-        || strcmp (id->u.s.s, JRET) == 0) {
+    unsigned builtin_flags = 0;
+    if (builtin_kind (id->u.s.s, &builtin_flags) != BI_NONE
+        && (builtin_flags & BIF_RESERVED) != 0) {
       error (c2m_ctx, POS (id), "%s is a builtin function", id->u.s.s);
       break;
     }
@@ -12144,7 +12310,12 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     process_goto_cleanups (c2m_ctx);
     assert (curr_scope == top_scope); /* set up in the block */
     func_block_scope = top_scope;
-    process_func_decls_for_allocation (c2m_ctx);
+    {
+      mir_size_t frame_align = process_func_decls_for_allocation (c2m_ctx);
+
+      ns = block->attr;
+      if (frame_align > ns->frame_align) ns->frame_align = frame_align;
+    }
     /* Add call arg area */
     ns = block->attr;
     ns->size = round_size (ns->size, MAX_ALIGNMENT);
@@ -12194,8 +12365,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
        statement expression) for the gen arm, which must not re-derive it
        from the post-cleanup tail. */
     node_t last_stmt = NL_TAIL (NL_EL (block->u.ops, 1)->u.ops);
+    node_t expr = stmtexpr_value_expr (last_stmt);
     check (c2m_ctx, block, r);
-    if (!last_stmt || last_stmt->code != N_EXPR) {
+    if (expr == NULL) {
       /* GNU: when the last thing in the braces is not an expression, the
          construct has type void and no value -- glibc's GNU-C assert is
          `((void) sizeof ((expr) ? 1 : 0), __extension__ ({ if (expr) ; else
@@ -12205,7 +12377,6 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       e->def_node = last_stmt;
       break;
     }
-    node_t expr = NL_EL (last_stmt->u.ops, 1);
     e1 = expr->attr;
     t1 = e1->type;
     e = create_expr (c2m_ctx, r);
@@ -12218,6 +12389,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       mir_size_t size = type_size (c2m_ctx, t1);
       mir_size_t align = var_align (c2m_ctx, t1);
 
+      if (align > fns->frame_align) fns->frame_align = align;
       fns->size = round_size (fns->size, align);
       e->c.u_val = fns->size;
       fns->size += size;
@@ -12230,7 +12402,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     if (curr_scope != r)
       create_node_scope (c2m_ctx, r); /* it happens if it is the top func block */
     check (c2m_ctx, NL_EL (r->u.ops, 1), r);
-    emit_scope_cleanups (c2m_ctx, r); /* __attribute__((cleanup)): fall-through exit */
+    /* __attribute__((cleanup)): fall-through exit */
+    emit_scope_cleanups (c2m_ctx, r, NL_EL (r->u.ops, 1));
     finish_scope (c2m_ctx);
     break;
   case N_MODULE:
@@ -12437,6 +12610,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     }
     check (c2m_ctx, iter, r);
     check (c2m_ctx, stmt, r);
+    /* __attribute__((cleanup)): the for-init objects live for the whole
+       statement; their cleanups run when its condition ends it -- ops past the
+       body (gen runs them at the condition's false exit). A break runs its own
+       (record_cleanups_until) and jumps past them. */
+    if (cond->code != N_IGNORE) emit_scope_cleanups (c2m_ctx, r, r);
     finish_scope (c2m_ctx);
     curr_loop_switch = saved_loop_switch;
     curr_loop = saved_loop;
@@ -12679,6 +12857,20 @@ DEF_VARR (MIR_op_t);
 DEF_VARR (case_t);
 DEF_HTAB (MIR_item_t);
 
+/* get_type_alias's memo (gcc caches a type's alias set the same way,
+   TYPE_ALIAS_SET): a pointer's alias name is a function of its pointee object
+   alone, a union's or an enum's of its tag node, so each class is computed
+   once per (mode, pointee or tag) instead of once per memory access -- an
+   access through a pointer to a large struct walks every member, nested
+   structs included.  Types are immutable during generation and outlive
+   gen_ctx, which owns the table. */
+typedef struct {
+  enum type_mode mode;
+  const void *key;
+  MIR_alias_t alias;
+} type_alias_memo_t;
+DEF_HTAB (type_alias_memo_t);
+
 struct gen_ctx {
   op_t zero_op, one_op, minus_one_op;
   MIR_item_t curr_func;
@@ -12724,7 +12916,16 @@ struct gen_ctx {
   HTAB (MIR_item_t) * proto_tab;
   VARR (node_t) * node_stack;
   VARR (MIR_alias_t) * union_alias_done; /* union classes whose member conflicts are registered */
+  HTAB (type_alias_memo_t) * type_alias_memo;
   int curr_no_strict_aliasing_p; /* current func has optimize("-fno-strict-aliasing") */
+  /* Unwind regions (c2mir_options.unwind_regions_p): the region live at the
+     code being generated -- lexical, like the scopes the cleanup variables
+     live in -- and the current function's frame base register. */
+  uint32_t curr_unwind_region;
+  MIR_reg_t unwind_base_reg;    /* 0 = the function has no frame block */
+  uint32_t unwind_base_align;   /* the frame block's realignment, 0 = none */
+  int unwind_base_declared_p;   /* MIR_set_func_unwind_base done for this function */
+  MIR_item_t unwind_personality_item; /* the import of c2mir_options.unwind_personality */
 };
 
 #define zero_op gen_ctx->zero_op
@@ -12774,6 +12975,7 @@ struct gen_ctx {
 #define proto_tab gen_ctx->proto_tab
 #define node_stack gen_ctx->node_stack
 #define union_alias_done gen_ctx->union_alias_done
+#define type_alias_memo gen_ctx->type_alias_memo
 #define curr_no_strict_aliasing_p gen_ctx->curr_no_strict_aliasing_p
 
 static op_t new_op (decl_t decl, MIR_op_t mir_op) {
@@ -13125,12 +13327,40 @@ static struct type *enclosing_anon_union_type (decl_t decl) {
   return res;
 }
 
+static htab_hash_t type_alias_memo_hash (type_alias_memo_t m, void *arg MIR_UNUSED) {
+  return (htab_hash_t) (mir_hash_finish (
+    mir_hash_step (mir_hash_step (mir_hash_init (0x42), (uint64_t) m.mode),
+                   (uint64_t) (uintptr_t) m.key)));
+}
+
+static int type_alias_memo_eq (type_alias_memo_t m1, type_alias_memo_t m2,
+                               void *arg MIR_UNUSED) {
+  return m1.mode == m2.mode && m1.key == m2.key;
+}
+
+/* The object a type's alias name is a function of, or NULL for a type whose
+   name is a character or two (basic types) -- not worth a probe. */
+static const void *type_alias_memo_key (struct type *type) {
+  switch (type->mode) {
+  case TM_PTR: return type->u.ptr_type;
+  case TM_UNION:
+  case TM_ENUM: return type->u.tag_type;
+  default: return NULL;
+  }
+}
+
 static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type) {
   MIR_context_t ctx = c2m_ctx->ctx;
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_alias_t alias;
+  type_alias_memo_t memo, found;
 
   if (curr_no_strict_aliasing_p) return 0; /* every access may alias in this function */
+  memo.mode = type->mode;
+  memo.key = type_alias_memo_key (type);
+  memo.alias = 0;
+  if (memo.key != NULL && HTAB_DO (type_alias_memo_t, type_alias_memo, memo, HTAB_FIND, found))
+    return found.alias;
   switch (type->mode) {
   case TM_BASIC:
     if (type->u.basic_type != TP_CHAR && type->u.basic_type != TP_SCHAR
@@ -13164,6 +13394,10 @@ static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type) {
           add_union_member_conflicts (c2m_ctx, decl->decl_spec.type, alias);
         }
     }
+  }
+  if (memo.key != NULL) {
+    memo.alias = alias;
+    HTAB_DO (type_alias_memo_t, type_alias_memo, memo, HTAB_INSERT, found);
   }
   return alias;
 }
@@ -17688,6 +17922,40 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
   }
 }
 
+/* madc fork: a static object aligned beyond MAX_ALIGNMENT (gcc's aligned(N),
+   C11 _Alignas(N)) carries the alignment on the MIR item heading its storage;
+   the JIT's section allocation and the object writers honor it. */
+static void set_static_item_align (c2m_ctx_t c2m_ctx, struct decl *decl) {
+  MIR_item_t item = decl->u.item;
+  mir_size_t align;
+
+  if (item == NULL
+      || (item->item_type != MIR_data_item && item->item_type != MIR_ref_data_item
+          && item->item_type != MIR_lref_data_item && item->item_type != MIR_expr_data_item
+          && item->item_type != MIR_bss_item))
+    return;
+  if ((align = decl_storage_align (c2m_ctx, decl)) > MAX_ALIGNMENT)
+    MIR_item_set_align (c2m_ctx->ctx, item, align);
+}
+
+/* madc fork: an undefined reference to NAME is weak when any declaration of
+   it is (gcc): its import binds MIR_ITEM_BIND_WEAK, a null address if nothing
+   defines the name. */
+static int weak_reference_p (c2m_ctx_t c2m_ctx, decl_t decl, node_t id) {
+  symbol_t sym;
+  decl_t d;
+
+  if (decl->decl_spec.weak_p) return TRUE;
+  if (!symbol_find (c2m_ctx, S_REGULAR, id,
+                    decl->decl_spec.linkage == N_EXTERN ? top_scope : decl->scope, &sym))
+    return FALSE;
+  if (sym.def_node != NULL && (d = sym.def_node->attr) != NULL && d->decl_spec.weak_p)
+    return TRUE;
+  for (size_t i = 0; i < VARR_LENGTH (node_t, sym.defs); i++)
+    if ((d = VARR_GET (node_t, sym.defs, i)->attr) != NULL && d->decl_spec.weak_p) return TRUE;
+  return FALSE;
+}
+
 static MIR_item_t get_ref_item (c2m_ctx_t c2m_ctx, node_t def, const char *name) {
   MIR_context_t ctx = c2m_ctx->ctx;
   struct decl *decl = def->attr;
@@ -18220,6 +18488,8 @@ static void c2m_dbg_collect_locals (c2m_ctx_t c2m_ctx, node_t n) {
 
 /* Called from gen() after a function is finished: snapshot its params and
    locals for later DWARF emission. */
+static MIR_reg_t c2m_dbg_find_reg (MIR_func_t func, const char *name);
+
 static void c2m_dbg_snapshot_func (c2m_ctx_t c2m_ctx, node_t func_def, struct type *func_type,
                                    node_t body) {
   decl_t func_decl = func_def->attr;
@@ -18243,6 +18513,20 @@ static void c2m_dbg_snapshot_func (c2m_ctx_t c2m_ctx, node_t func_def, struct ty
       }
   }
   c2m_dbg_collect_locals (c2m_ctx, body);
+  /* Spill-all homes what the debugger describes -- each value-holding
+     variable's reg, and the frame block's base reg its memory variables are
+     read through -- never a temporary (MIR_func_debug_homes_only). */
+  if (func_decl->u.item != NULL && func_decl->u.item->item_type == MIR_func_item) {
+    MIR_func_t mf = func_decl->u.item->u.func;
+
+    MIR_func_debug_homes_only (c2m_ctx->ctx, mf);
+    for (size_t v = first; v < c2m_dbg_nvars; v++) {
+      MIR_reg_t r = c2m_dbg_find_reg (mf, c2m_dbg_vars[v].reg_name != NULL
+                                            ? c2m_dbg_vars[v].reg_name
+                                            : FP_NAME);
+      if (r != 0) MIR_set_reg_debug_home (c2m_ctx->ctx, r, mf);
+    }
+  }
   if (c2m_dbg_nfuncrecs == c2m_dbg_cfuncrecs) {
     c2m_dbg_cfuncrecs = c2m_dbg_cfuncrecs ? c2m_dbg_cfuncrecs * 2 : 32;
     c2m_dbg_funcrecs = realloc (c2m_dbg_funcrecs, c2m_dbg_cfuncrecs * sizeof (c2m_dbgfunc_t));
@@ -18288,7 +18572,7 @@ static int c2m_dbg_populate (MIR_object_t obj) {
       addr = (void *) (uintptr_t) off;
     }
     MIR_debug_add_func (c2m_dbg, func->name, addr, func->code_len, func->line_map,
-                        func->line_map_len);
+                        func->line_map_len, func->cfi, func->cfi_len);
     for (size_t v = c2m_dbg_funcrecs[i].first_var;
          v < c2m_dbg_funcrecs[i].first_var + c2m_dbg_funcrecs[i].n_vars; v++) {
       c2m_dbgvar_t *dv = &c2m_dbg_vars[v];
@@ -18336,6 +18620,55 @@ int c2mir_get_native_object (MIR_context_t ctx, void **buf, size_t *size) {
   /* The c2mir-API surface of the MIR-gen object mode: all capture state lives
      in the gen context, so this is a thin delegation (see c2mir.h). */
   return MIR_gen_object_emit (ctx, buf, size);
+}
+
+/* Unwind regions (c2mir_options.unwind_regions_p): the region live at the
+   insns generated from here on -- lexical, as the cleanup variables' scopes. */
+static void set_unwind_region (c2m_ctx_t c2m_ctx, uint32_t region) {
+  c2m_ctx->gen_ctx->curr_unwind_region = region;
+  MIR_set_unwind_region (c2m_ctx->ctx, region);
+}
+
+/* The MIR item of DECL's cleanup function, or NULL. */
+static MIR_item_t cleanup_fn_item (c2m_ctx_t c2m_ctx, decl_t decl) {
+  node_t def = find_def (c2m_ctx, S_REGULAR, decl->cleanup_fn, decl->scope, NULL);
+  decl_t fn_decl;
+
+  if (def == NULL || (fn_decl = def->attr) == NULL) return NULL;
+  return fn_decl->u.item;
+}
+
+/* DECL's cleanup becomes live here (the end of its declaration, or its
+   __builtin_cleanup_arm): a region nested in the current one, so a stack walk
+   runs the cleanup when an exception passes through this frame from here
+   until the variable's scope ends -- gcc's -fexceptions cleanup. */
+static void start_cleanup_region (c2m_ctx_t c2m_ctx, decl_t decl) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  check_ctx_t check_ctx = c2m_ctx->check_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_item_t cleanup;
+
+  if (!c2m_options->unwind_regions_p || decl == NULL || decl->cleanup_fn == NULL
+      || decl->unwind_region != 0 || decl->reg_p || decl->scope == top_scope
+      || decl->decl_spec.static_p || decl->decl_spec.thread_local_p
+      || gen_ctx->unwind_base_reg == 0 || (cleanup = cleanup_fn_item (c2m_ctx, decl)) == NULL)
+    return;
+  if (!gen_ctx->unwind_base_declared_p) {
+    MIR_set_func_unwind_base (ctx, curr_func, gen_ctx->unwind_base_reg,
+                              gen_ctx->unwind_base_align);
+    if (c2m_options->unwind_personality != NULL) {
+      if (gen_ctx->unwind_personality_item == NULL) {
+        gen_ctx->unwind_personality_item = MIR_new_import (ctx, c2m_options->unwind_personality);
+        move_item_to_module_start (curr_func->module, gen_ctx->unwind_personality_item);
+      }
+      MIR_set_func_unwind_personality (ctx, curr_func, gen_ctx->unwind_personality_item);
+    }
+    gen_ctx->unwind_base_declared_p = TRUE;
+  }
+  decl->unwind_parent = gen_ctx->curr_unwind_region;
+  decl->unwind_region = MIR_new_unwind_region (ctx, curr_func, decl->unwind_parent,
+                                               (int64_t) decl->offset, cleanup);
+  set_unwind_region (c2m_ctx, decl->unwind_region);
 }
 
 static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_t false_label,
@@ -19504,26 +19837,32 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     MIR_item_t proto_item;
     MIR_insn_t call_insn, label;
     mir_size_t saved_call_arg_area_offset_before_args, arg_area_offset;
-    int va_arg_p = call_expr->builtin_call_p && str_eq_p (func->u.s.s, BUILTIN_VA_ARG);
-    int va_start_p = call_expr->builtin_call_p && str_eq_p (func->u.s.s, BUILTIN_VA_START);
-    int alloca_p = call_expr->builtin_call_p && str_eq_p (func->u.s.s, ALLOCA);
-    int add_overflow_p = call_expr->builtin_call_p && strcmp (func->u.s.s, ADD_OVERFLOW) == 0;
-    int sub_overflow_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SUB_OVERFLOW) == 0;
-    int mul_overflow_p = call_expr->builtin_call_p && strcmp (func->u.s.s, MUL_OVERFLOW) == 0;
-    int expect_p = call_expr->builtin_call_p && strcmp (func->u.s.s, EXPECT) == 0;
-    int abort_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_ABORT) == 0;
-    int memcmp_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_MEMCMP) == 0;
-    int copysignf_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_COPYSIGNF) == 0;
-    int nan_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_NAN) == 0;
-    int convertvector_p = call_expr->builtin_call_p && strcmp (func->u.s.s, CONVERT_VECTOR) == 0;
-    int shuffle_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SHUFFLE) == 0;
-    int shufflevector_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SHUFFLE_VECTOR) == 0;
-    int vectorelements_p = call_expr->builtin_call_p && strcmp (func->u.s.s, VECTOR_ELEMENTS) == 0;
-    int jcall_p = call_expr->builtin_call_p && strcmp (func->u.s.s, JCALL) == 0;
-    int jret_p = call_expr->builtin_call_p && strcmp (func->u.s.s, JRET) == 0;
-    int prop_set_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_SET) == 0;
-    int prop_eq_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_EQ) == 0;
-    int prop_ne_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_NE) == 0;
+    /* the kind the checker stored (builtin_kind): no name is compared again here */
+    enum builtin_kind bk
+      = call_expr->builtin_call_p ? (enum builtin_kind) call_expr->builtin_kind : BI_NONE;
+    int va_arg_p = bk == BI_VA_ARG;
+    int va_start_p = bk == BI_VA_START;
+    int alloca_p = bk == BI_ALLOCA;
+    int add_overflow_p = bk == BI_ADD_OVERFLOW;
+    int sub_overflow_p = bk == BI_SUB_OVERFLOW;
+    int mul_overflow_p = bk == BI_MUL_OVERFLOW;
+    int expect_p = bk == BI_EXPECT;
+    int abort_p = bk == BI_ABORT;
+    int memcmp_p = bk == BI_MEMCMP;
+    int copysignf_p = bk == BI_COPYSIGNF;
+    int nan_p = bk == BI_NAN;
+    int convertvector_p = bk == BI_CONVERT_VECTOR;
+    int shuffle_p = bk == BI_SHUFFLE;
+    int shufflevector_p = bk == BI_SHUFFLE_VECTOR;
+    int vectorelements_p = bk == BI_VECTOR_ELEMENTS;
+    int jcall_p = bk == BI_JCALL;
+    int jret_p = bk == BI_JRET;
+    int prop_set_p = bk == BI_PROP_SET;
+    int prop_eq_p = bk == BI_PROP_EQ;
+    int prop_ne_p = bk == BI_PROP_NE;
+    int cleanup_arm_p = bk == BI_CLEANUP_ARM;
+    int frame_address_p = bk == BI_FRAME_ADDRESS;
+    int return_address_p = bk == BI_RETURN_ADDRESS;
     int builtin_call_p = alloca_p || va_arg_p || va_start_p, inline_p = FALSE;
     node_t block = NL_EL (curr_func_def->u.ops, 3);
     struct node_scope *ns = block->attr;
@@ -19553,6 +19892,17 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     }
     if (nan_p) {
       res = gen_builtin_nan (c2m_ctx, args);
+      break;
+    }
+    if (frame_address_p || return_address_p) {
+      /* level 0: this function's own (MIR_FRAME_ADDR / MIR_RET_ADDR); a nonzero
+         level: the null pointer -- the GCC manual's unspecified value, aarch64
+         gcc's answer for every nonzero return-address level */
+      res = get_new_temp (c2m_ctx, MIR_T_I64);
+      if (((struct expr *) NL_HEAD (args->u.ops)->attr)->c.u_val == 0)
+        emit1 (c2m_ctx, frame_address_p ? MIR_FRAME_ADDR : MIR_RET_ADDR, res.mir_op);
+      else
+        emit2 (c2m_ctx, MIR_MOV, res.mir_op, MIR_new_int_op (ctx, 0));
       break;
     }
     if (convertvector_p) {
@@ -19769,6 +20119,12 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       op1 = gen (c2m_ctx, NL_HEAD (args->u.ops), NULL, NULL, FALSE, NULL, NULL);
       op2 = val_gen (c2m_ctx, NL_EL (args->u.ops, 1));
       emit2 (c2m_ctx, MIR_PRSET, op1.mir_op, op2.mir_op);
+      true_label = false_label = NULL;
+      val_p = FALSE;
+      break;
+    }
+    if (cleanup_arm_p) { /* no code: the variable's cleanup region starts here */
+      start_cleanup_region (c2m_ctx, cleanup_arm_decl (c2m_ctx, NL_HEAD (args->u.ops)));
       true_label = false_label = NULL;
       val_p = FALSE;
       break;
@@ -20118,6 +20474,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
               break;
         }
         if (decl->u.item == NULL) decl->u.item = MIR_new_import (ctx, name);
+        if (decl->u.item->item_type == MIR_import_item && weak_reference_p (c2m_ctx, decl, id))
+          MIR_item_set_binding (ctx, decl->u.item, MIR_ITEM_BIND_WEAK);
         if (decl->scope != top_scope) move_item_forward (c2m_ctx, decl->u.item);
       }
       if (declarator->code == N_DECL && decl->decl_spec.type->mode != TM_FUNC
@@ -20202,6 +20560,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                            local_p);
           VARR_TRUNC (init_el_t, init_els, init_start);
         }
+        /* an automatic cleanup variable is live from the end of its declaration,
+           or from its __builtin_cleanup_arm when a later statement constructs it */
+        if (!decl->cleanup_arm_p) start_cleanup_region (c2m_ctx, decl);
+        if (decl->scope == top_scope || decl->decl_spec.static_p)
+          set_static_item_align (c2m_ctx, decl);
         if (decl->u.item != NULL && decl->scope == top_scope && !decl->decl_spec.static_p) {
           MIR_new_export (ctx, name);
           if (decl->decl_spec.weak_p)
@@ -20255,14 +20618,37 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       MIR_item_set_binding (ctx, curr_func, MIR_ITEM_BIND_WEAK);
     else if (func_decl->decl_spec.linkonce_p)
       MIR_item_set_binding (ctx, curr_func, MIR_ITEM_BIND_LINKONCE);
+    if (func_decl->decl_spec.noinline_p) MIR_set_func_noinline (ctx, curr_func);
     curr_no_strict_aliasing_p = func_decl->no_strict_aliasing_p;
     DLIST_INIT (MIR_insn_t, slow_code_part);
+    set_unwind_region (c2m_ctx, 0);
+    gen_ctx->unwind_base_reg = 0;
+    gen_ctx->unwind_base_align = 0;
+    gen_ctx->unwind_base_declared_p = FALSE;
     if (ns->stack_var_p /* we can have empty struct only with size 0 and still need a frame: */
         || ns->size > 0) {
+      /* madc fork: a frame holding an object aligned beyond MAX_ALIGNMENT is
+         over-allocated and its base rounded up to that alignment, as gcc
+         realigns the stack */
+      mir_size_t over = ns->frame_align > MAX_ALIGNMENT ? ns->frame_align - 1 : 0;
+
       fp_reg = MIR_new_func_reg (ctx, curr_func->u.func, MIR_T_I64, FP_NAME);
+      /* the frame block is the base of the function's unwind regions */
+      gen_ctx->unwind_base_reg = fp_reg;
+      gen_ctx->unwind_base_align = over != 0 ? (uint32_t) ns->frame_align : 0;
       MIR_append_insn (ctx, curr_func,
                        MIR_new_insn (ctx, MIR_ALLOCA, MIR_new_reg_op (ctx, fp_reg),
-                                     MIR_new_int_op (ctx, ns->size)));
+                                     MIR_new_int_op (ctx, ns->size + over)));
+      if (over != 0) {
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_ADD, MIR_new_reg_op (ctx, fp_reg),
+                                       MIR_new_reg_op (ctx, fp_reg),
+                                       MIR_new_int_op (ctx, (int64_t) over)));
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_AND, MIR_new_reg_op (ctx, fp_reg),
+                                       MIR_new_reg_op (ctx, fp_reg),
+                                       MIR_new_int_op (ctx, -(int64_t) ns->frame_align)));
+      }
     }
     for (size_t i = 0; i < VARR_LENGTH (MIR_var_t, proto_info.arg_vars); i++)
       get_reg_var (c2m_ctx, MIR_T_UNDEF, VARR_GET (MIR_var_t, proto_info.arg_vars, i).name, NULL);
@@ -20345,6 +20731,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       DLIST_REMOVE (MIR_insn_t, slow_code_part, insn);
       DLIST_APPEND (MIR_insn_t, curr_func->u.func->insns, insn);
     }
+    set_unwind_region (c2m_ctx, 0);
     MIR_finish_func (ctx);
     if (c2m_options->debug_info_p) c2m_dbg_snapshot_func (c2m_ctx, r, decl_type, stmt);
     if (func_decl->decl_spec.linkage == N_EXTERN)
@@ -20369,8 +20756,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
        captured into stmtexpr_last_val at that moment, because statements gen'd
        AFTER it (the scope's cleanup calls) overwrite top_gen_last_op.
        Save/restore both for nested statement expressions. */
+    /* A void statement expression (its value statement a void call, say) has
+       no value to capture: that statement gens as a statement. */
     stmtexpr_last_expr
-      = (last_stmt != NULL && last_stmt->code == N_EXPR) ? NL_EL (last_stmt->u.ops, 1) : NULL;
+      = void_type_p (stmtexpr_type) ? NULL : stmtexpr_value_expr (last_stmt);
     gen (c2m_ctx, block, NULL, NULL, FALSE, NULL, NULL);
     res = stmtexpr_last_expr != NULL ? stmtexpr_last_val : top_gen_last_op;
     stmtexpr_last_expr = saved_last_expr;
@@ -20390,10 +20779,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     }
     break;
   }
-  case N_BLOCK:
+  case N_BLOCK: {
+    /* the cleanup regions its declarations open end with the block */
+    uint32_t saved_region = gen_ctx->curr_unwind_region;
+
     emit_label (c2m_ctx, r);
     gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, FALSE, NULL, NULL);
+    if (gen_ctx->curr_unwind_region != saved_region) set_unwind_region (c2m_ctx, saved_region);
     break;
+  }
   case N_MODULE: gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL); break;  // ???
   case N_IF: {
     node_t expr = NL_EL (r->u.ops, 1);
@@ -20639,16 +21033,21 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     node_t cond = NL_NEXT (init);
     node_t iter = NL_NEXT (cond);
     node_t stmt = NL_NEXT (iter);
-    MIR_label_t stmt_label = MIR_new_label (ctx);
+    /* the for-init objects' cleanups when the condition ends the loop (check) */
+    node_t exit_cleanups = NL_NEXT (stmt);
+    MIR_label_t stmt_label = MIR_new_label (ctx), exit_label;
     MIR_label_t saved_continue_label = continue_label, saved_break_label = break_label;
+    /* the cleanup regions the for-init declarations open end with the for */
+    uint32_t saved_region = gen_ctx->curr_unwind_region;
 
     assert (false_label == NULL && true_label == NULL);
     continue_label = MIR_new_label (ctx);
     break_label = MIR_new_label (ctx);
+    exit_label = exit_cleanups == NULL ? break_label : MIR_new_label (ctx);
     emit_label (c2m_ctx, r);
     top_gen (c2m_ctx, init, NULL, NULL, NULL);
     if (cond->code != N_IGNORE) /* non-empty condition: */
-      top_gen (c2m_ctx, cond, stmt_label, break_label, NULL);
+      top_gen (c2m_ctx, cond, stmt_label, exit_label, NULL);
     emit_label_insn_opt (c2m_ctx, stmt_label);
     gen (c2m_ctx, stmt, NULL, NULL, FALSE, NULL, NULL);
     emit_label_insn_opt (c2m_ctx, continue_label);
@@ -20656,8 +21055,14 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     if (cond->code == N_IGNORE) { /* empty condition: */
       emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, stmt_label));
     } else {
-      top_gen (c2m_ctx, cond, stmt_label, break_label, NULL);
+      top_gen (c2m_ctx, cond, stmt_label, exit_label, NULL);
     }
+    if (exit_cleanups != NULL) { /* a break runs its own and jumps past these */
+      emit_label_insn_opt (c2m_ctx, exit_label);
+      for (node_t cl = exit_cleanups; cl != NULL; cl = NL_NEXT (cl))
+        gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
+    }
+    if (gen_ctx->curr_unwind_region != saved_region) set_unwind_region (c2m_ctx, saved_region);
     emit_label_insn_opt (c2m_ctx, break_label);
     continue_label = saved_continue_label;
     break_label = saved_break_label;
@@ -20776,21 +21181,41 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         val = promote (c2m_ctx, val, t, FALSE);
       }
     }
-    /* __attribute__((cleanup)): run cleanups AFTER the value is computed (it
-       stays live in a register across the calls) and BEFORE the ret insn. */
-    for (node_t cl = NL_EL (r->u.ops, 2); cl != NULL; cl = NL_NEXT (cl))
-      gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
+    /* __attribute__((cleanup)): run cleanups AFTER the returned value is
+       read and BEFORE the ret insn. The ret operands are built first, and a
+       memory operand among them (`return p->i;` passes `i32:(p):i` through)
+       is loaded into a register: a cleanup that frees or overwrites the
+       object would otherwise change what the ret reads. */
     VARR_TRUNC (MIR_op_t, ret_ops, 0);
     target_add_ret_ops (c2m_ctx, func_type->u.func_type->ret_type, val);
+    if (NL_EL (r->u.ops, 2) != NULL) {
+      for (size_t i = 0; i < VARR_LENGTH (MIR_op_t, ret_ops); i++) {
+        MIR_op_t op = VARR_GET (MIR_op_t, ret_ops, i);
+        op_t temp;
+
+        if (op.mode != MIR_OP_MEM) continue;
+        temp = get_new_temp (c2m_ctx, promote_mir_int_type (op.u.mem.type));
+        emit2 (c2m_ctx, tp_mov (op.u.mem.type), temp.mir_op, op);
+        VARR_SET (MIR_op_t, ret_ops, i, temp.mir_op);
+      }
+      for (node_t cl = NL_EL (r->u.ops, 2); cl != NULL; cl = NL_NEXT (cl))
+        gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
+    }
     emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_RET, VARR_LENGTH (MIR_op_t, ret_ops),
                                           VARR_ADDR (MIR_op_t, ret_ops)));
     break;
   }
   case N_EXPR: {
     node_t e = NL_EL (r->u.ops, 1);
+    /* a variable's cleanup call (build_cleanup_stmt) runs in the region the
+       variable nests in: an exception out of it does not run it again */
+    decl_t cleanup_decl = r->attr == NULL ? NULL : ((node_t) r->attr)->attr;
+    uint32_t saved_region = gen_ctx->curr_unwind_region;
 
     assert (false_label == NULL && true_label == NULL);
     emit_label (c2m_ctx, r);
+    if (cleanup_decl != NULL && cleanup_decl->unwind_region != 0)
+      set_unwind_region (c2m_ctx, cleanup_decl->unwind_parent);
     if (e == stmtexpr_last_expr)
       /* Value-producing last expression of a statement expression: evaluate in
          value context so post ++/-- materialize their result, and capture the
@@ -20799,6 +21224,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       top_gen_last_op = stmtexpr_last_val = gen (c2m_ctx, e, NULL, NULL, TRUE, NULL, NULL);
     else
       top_gen (c2m_ctx, e, NULL, NULL, NULL);
+    if (gen_ctx->curr_unwind_region != saved_region && cleanup_decl != NULL)
+      set_unwind_region (c2m_ctx, saved_region);
     break;
   }
   case N_ASM_STMT: {
@@ -20931,7 +21358,7 @@ static void gen_mir_protos (c2m_ctx_t c2m_ctx) {
     assert (call->code == N_CALL);
     op1 = NL_HEAD (call->u.ops);
     arg_list = NL_NEXT (op1);
-    if (op1->code == N_ID && strcmp (op1->u.s.s, JCALL) == 0) {
+    if (op1->code == N_ID && builtin_kind (op1->u.s.s, NULL) == BI_JCALL) {
       func = NL_HEAD (arg_list->u.ops);
       first_arg = NL_EL (arg_list->u.ops, 1);
     } else {
@@ -20977,6 +21404,7 @@ static void gen_finish (c2m_ctx_t c2m_ctx) {
   if (init_els != NULL) VARR_DESTROY (init_el_t, init_els);
   if (node_stack != NULL) VARR_DESTROY (node_t, node_stack);
   if (union_alias_done != NULL) VARR_DESTROY (MIR_alias_t, union_alias_done);
+  if (type_alias_memo != NULL) HTAB_DESTROY (type_alias_memo_t, type_alias_memo);
   MIR_free (c2m_alloc (c2m_ctx), c2m_ctx->gen_ctx);
 }
 
@@ -21001,9 +21429,12 @@ static void gen_mir (c2m_ctx_t c2m_ctx, node_t r) {
   init_els_start = init_els_num = 0;
   VARR_CREATE (node_t, node_stack, alloc, 8);
   VARR_CREATE (MIR_alias_t, union_alias_done, alloc, 8);
+  HTAB_CREATE (type_alias_memo_t, type_alias_memo, alloc, 256, type_alias_memo_hash,
+               type_alias_memo_eq, NULL);
   abort_proto = abort_item = memcmp_proto = memcmp_item = copysignf_proto = copysignf_item
     = nan_proto = nan_item = memset_proto = memset_item = memcpy_proto = memcpy_item = NULL;
   int128_divmod_proto = divti3_item = udivti3_item = modti3_item = umodti3_item = NULL;
+  gen_ctx->unwind_personality_item = NULL;
   top_gen (c2m_ctx, r, NULL, NULL, NULL);
   gen_finish (c2m_ctx);
 }
@@ -21704,6 +22135,12 @@ void c2mir_finish_compile (c2m_ctx_t c2m_ctx) {
   if (c2m_ctx != NULL) compile_finish (c2m_ctx);
 }
 
+void c2mir_set_unwind (c2m_ctx_t c2m_ctx, int unwind_regions_p, const char *personality) {
+  if (c2m_ctx == NULL) return;
+  c2m_options->unwind_regions_p = unwind_regions_p;
+  c2m_options->unwind_personality = unwind_regions_p ? personality : NULL;
+}
+
 /* ---- Node creation ---- */
 
 node_t c2mir_new_node (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc) {
@@ -21814,6 +22251,11 @@ const char *c2mir_uniq_str (c2m_ctx_t c2m_ctx, const char *s, size_t len) {
   str_t str = uniq_str (c2m_ctx, s, len);
   return str.s;
 }
+
+/* ---- Target type layout ---- */
+
+int c2mir_ldouble_size (void) { return basic_type_size (TP_LDOUBLE); }
+int c2mir_ldouble_align (void) { return basic_type_align (TP_LDOUBLE); }
 
 /* Public node-code -> name, for external AST walkers/dumpers. */
 const char *c2mir_node_code_name (c2mir_node_code_t code) {

@@ -93,7 +93,7 @@ if [ -z "$(comm -23 "$work/gcc.syms" "$work/ctrl.syms")" ]; then
 fi
 
 # --- the measurement ---------------------------------------------------------
-if ! "$BIN_ABS" --std=c17 -c -o "$work/madc.o" "$work/alias.c" 2>"$work/madc.err"; then
+if ! "$BIN_ABS" --std=gnu17 -c -o "$work/madc.o" "$work/alias.c" 2>"$work/madc.err"; then
 	echo "check-alias-symbol-emission: $BIN failed to compile the reducer:" >&2
 	sed 's/^/  /' "$work/madc.err" >&2
 	exit 1
@@ -120,7 +120,7 @@ fi
 # func_alias become real definitions in the control source (a bare `extern`
 # declaration defines nothing), so the name that must vanish is the asm label:
 # it exists ONLY because the alias declaration created it.
-if ! "$BIN_ABS" --std=c17 -c -o "$work/noalias.o" "$work/noalias.c" 2>"$work/noalias.err"; then
+if ! "$BIN_ABS" --std=gnu17 -c -o "$work/noalias.o" "$work/noalias.c" 2>"$work/noalias.err"; then
 	echo "check-alias-symbol-emission: the control source failed to compile:" >&2
 	sed 's/^/  /' "$work/noalias.err" >&2
 	exit 2

@@ -57,7 +57,7 @@ TEST_CASE("every key parses, with comments, a section header and quotes") {
 		"forest = /abs/groves.msnap\n"
 		"include = /abs/one\n"
 		"include = /abs/two\n"
-		"modules = madcgit\n"
+		"modules = git\n"
 		"modules = m\n"
 		"cpu-limit = 90\n"
 		"mem-limit = \"8192\"\n");
@@ -78,7 +78,7 @@ TEST_CASE("every key parses, with comments, a section header and quotes") {
 	// modules (split arc 1A.4): names as -l takes them, in the file's order —
 	// text, never resolved against the config file's directory.
 	REQUIRE(cfg.modules.size() == 2);
-	CHECK(cfg.modules[0] == "madcgit");
+	CHECK(cfg.modules[0] == "git");
 	CHECK(cfg.modules[1] == "m");
 	CHECK(cfg.has_cpu_limit);
 	CHECK(cfg.cpu_limit == "90");
@@ -254,6 +254,18 @@ TEST_CASE("the search chain is project, then user, then system") {
 	paths = madc::config_search_paths();
 	REQUIRE(paths.size() >= 2);
 	CHECK(paths[1] == "/home/tester/.config/madc/madc.ini");
+}
+
+// The user config directory is ONE rule over its inputs, so every platform's
+// arm is checked on any host: XDG wins everywhere when set; Windows then takes
+// %APPDATA% before ~/.config; "" when nothing is known.
+TEST_CASE("the user config directory: XDG, then APPDATA on Windows, then ~/.config") {
+	using madc::cfg::user_config_dir_of;
+	CHECK(user_config_dir_of("madc", "/x", "/a", "/h", true) == "/x/madc");
+	CHECK(user_config_dir_of("madc", "", "/a", "/h", true) == "/a/madc");
+	CHECK(user_config_dir_of("madc", NULL, "/a", "/h", false) == "/h/.config/madc");
+	CHECK(user_config_dir_of("madc", NULL, NULL, "/h", true) == "/h/.config/madc");
+	CHECK(user_config_dir_of("madc", NULL, NULL, NULL, false).empty());
 }
 
 // --config=<file> is the whole search and MUST load: a named file that gets

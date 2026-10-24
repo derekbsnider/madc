@@ -17,9 +17,8 @@ stkalign.c	inline-asm + stack-alignment probing
 990413-2.c	inline-asm (x87 fpatan/fsqrt compute the checked value; the historical pass was accidental — the asm statement is skipped and the uninitialized result happened to be ±0.0 on the devbox host)
 
 # gcc stack/apply builtins (builtin setjmp/longjmp 5-word contract,
-# frame-address probing, __builtin_apply*, __builtin_va_arg_pack)
+# __builtin_apply*, __builtin_va_arg_pack)
 built-in-setjmp.c	gcc-internal builtins
-frame-address.c	gcc-internal builtins (asmjit also fails)
 pr64242.c	gcc-internal builtins (deliberately corrupted jmp_buf)
 pr60003.c	gcc-internal builtins
 pr47237.c	gcc-internal builtins (asmjit also fails)

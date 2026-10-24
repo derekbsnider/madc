@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "rt_except.h"	/* host-callable throw prototypes, CHECKED here */
+#include "rt_unwind.h"	/* the unwinder's ABI, shared with rt_personality.c */
 
 // Storage class of the per-thread exception state. Real TLS in the host
 // build; the ledger build defines it EMPTY (-DMADC_RT_TLS=) because MIR has
@@ -29,30 +30,17 @@
 #endif
 
 // Exception type tags live in rt_except.h (the one authoritative home).
-// MADC_EXCEPT_CLASS: a thrown CLASS OBJECT with no string form. The payload
-// is the object's address; no catch clause matches it by tag (the parser
-// assigns class clauses this same value precisely so they stay unmatchable —
-// real per-type class dispatch needs RTTI, a separate track), so it reaches
-// catch(...) or the unhandled path. Deliberately NOT matchable by
-// catch(SomeClass&): one tag cannot tell two class types apart, and a wrong
-// match is worse than none.
-
-// Per-object cleanup entry — linked list, pushed at construction time
-struct MadcCleanupEntry {
-    void **fn_indirect;          // pointer to function pointer (double deref for JIT dtors)
-    void *obj_ptr;               // object (this) pointer
-    uint8_t *guard;              // guard byte on JIT stack (NULL if unguarded)
-    uint8_t is_chain_tail;       // 1 = last in dtor chain for this object, clear guard
-    void *dtor_direct;           // direct dtor fn pointer (used when fn_indirect == NULL)
-    uint8_t heap_alloc;          // 1 = malloc'd by __madc_cleanup_push_dtor, free on remove
-    struct MadcCleanupEntry *prev;  // toward older entries
-};
+// MADC_EXCEPT_CLASS: a thrown class object, or a thrown pointer that is not
+// text. The payload (obj_val) is a MadcClassException: the object the throw
+// constructed in __madc_exception_alloc storage, which the exception OWNS
+// until its last handler ends ([except.throw]/4), and its match table. A
+// class handler matches by type NAME through __madc_exception_match; the tag
+// alone never selects one.
 
 // Per-try-block context — linked list, one per active try
 struct MadcTryContext {
     jmp_buf jbuf;
     struct MadcTryContext *prev;           // outer try block
-    struct MadcCleanupEntry *cleanup_mark; // cleanup stack depth at try entry
 };
 
 // Current exception value
@@ -61,24 +49,60 @@ struct MadcException {
     int64_t int_val;        // for throw int
     double double_val;      // for throw double
     const char *str_val;    // for throw "string"
-    const void *obj_val;    // for throw <class object> (MADC_EXCEPT_CLASS)
+    const void *obj_val;    // MADC_EXCEPT_CLASS: its MadcClassException
+};
+
+// A class (or pointer) exception: the object the throw constructed, its
+// complete-object destructor (NULL when trivial), and its match table — the
+// Itanium type-name string of the object's type and of every unambiguous
+// public base, each with that subobject's offset ([except.handle]/3). A
+// pointer throw's object is the pointer VALUE; its offsets adjust the value.
+// The table is the throw site's static data; the object is owned.
+struct MadcClassException {
+    void *obj;
+    void (*dtor)(void *);
+    uint64_t count;
+    const char *const *names;
+    const int64_t *offsets;
+    int is_pointer;
+};
+
+// A handled exception (Itanium __cxa_begin_catch / __cxa_end_catch): one per
+// active handler, innermost on top — what `throw;` rethrows.
+struct MadcCaught {
+    struct MadcException ex;
+    struct MadcCaught *prev;
+    int rethrown;
 };
 
 // Thread-local exception state
 static MADC_RT_TLS struct MadcTryContext *madc_try_stack = NULL;
 static MADC_RT_TLS struct MadcException madc_current_exception = {0};
-static MADC_RT_TLS struct MadcCleanupEntry *madc_cleanup_stack = NULL;
+static MADC_RT_TLS struct MadcCaught *madc_caught_stack = NULL;
+#ifdef _WIN32
+// The madc unwind in flight on Windows (rt_unwind.h).
+static MADC_RT_TLS struct MadcSehUnwind madc_seh_unwind = {0};
+
+struct MadcSehUnwind *__madc_seh_unwind_state(void)
+{
+    return &madc_seh_unwind;
+}
+#endif
 
 // --- Per-execution-context state switch (rt_except.h documents the design
-// decision). The three statics above are per-CONTEXT, not merely per-thread:
-// the cooperative task runtime saves/restores them at every switch so a try
-// held across a yield() keeps its own chain. A zero-filled buffer restores
-// as the empty state (fresh task). Plain memcpy — ledger-safe C11.
+// decision). The statics above are per-CONTEXT, not merely per-thread: the
+// cooperative task runtime saves/restores them at every switch so a try held
+// across a yield() keeps its own chain, and an unwind whose cleanup parks its
+// task (a scope block's join) keeps its own target. A zero-filled buffer
+// restores as the empty state (fresh task). Plain memcpy — ledger-safe C11.
 
 struct MadcExceptState {
     struct MadcTryContext *try_stack;
     struct MadcException exception;
-    struct MadcCleanupEntry *cleanup_stack;
+    struct MadcCaught *caught_stack;
+#ifdef _WIN32
+    struct MadcSehUnwind seh_unwind;
+#endif
 };
 
 unsigned long __madc_except_state_size(void)
@@ -91,7 +115,10 @@ void __madc_except_state_save(void *buf)
     struct MadcExceptState *s = (struct MadcExceptState *)buf;
     s->try_stack = madc_try_stack;
     s->exception = madc_current_exception;
-    s->cleanup_stack = madc_cleanup_stack;
+    s->caught_stack = madc_caught_stack;
+#ifdef _WIN32
+    s->seh_unwind = madc_seh_unwind;
+#endif
 }
 
 void __madc_except_state_restore(const void *buf)
@@ -99,7 +126,10 @@ void __madc_except_state_restore(const void *buf)
     const struct MadcExceptState *s = (const struct MadcExceptState *)buf;
     madc_try_stack = s->try_stack;
     madc_current_exception = s->exception;
-    madc_cleanup_stack = s->cleanup_stack;
+    madc_caught_stack = s->caught_stack;
+#ifdef _WIN32
+    madc_seh_unwind = s->seh_unwind;
+#endif
 }
 
 // --- Runtime functions called from JIT code ---
@@ -116,7 +146,6 @@ unsigned long __madc_try_context_size(void)
 void *__madc_try_push(struct MadcTryContext *ctx)
 {
     ctx->prev = madc_try_stack;
-    ctx->cleanup_mark = madc_cleanup_stack;
     madc_try_stack = ctx;
     return (void *)ctx->jbuf;
 }
@@ -128,124 +157,110 @@ void __madc_try_pop(void)
 	madc_try_stack = madc_try_stack->prev;
 }
 
-// Unwind cleanup entries down to mark, calling destructors
-void __madc_cleanup_unwind_to(void *mark)
+// A try block's exit — the end of its body, a return, break, continue or goto
+// out of it, or an unwind passing it (a boundary's): the cleanup attribute on
+// the try's frame guard (a local holding the MadcTryContext's address) calls
+// this with the guard's address, and ends that frame. A throw INTO the try
+// never runs it: the raise popped the frame, and the walk stops at its guard.
+void __madc_try_leave(void *guard)
 {
-    while ( madc_cleanup_stack != (struct MadcCleanupEntry *)mark )
-    {
-	struct MadcCleanupEntry *e = madc_cleanup_stack;
-	madc_cleanup_stack = e->prev;
-	if ( !e->guard || *e->guard )
-	{
-	    void (*fn)(void *) = e->fn_indirect
-		? (void (*)(void *))*e->fn_indirect
-		: (void (*)(void *))e->dtor_direct;
-	    if ( fn )
-		fn(e->obj_ptr);
-	    if ( e->guard && e->is_chain_tail )
-		*e->guard = 0;
-	}
-	if ( e->heap_alloc )
-	    free(e);
-    }
-}
-
-// Discard cleanup entries down to mark WITHOUT calling destructors (freeing any
-// heap-allocated entries — the dtors already ran via the cleanup attribute on
-// the normal scope-exit path).
-void __madc_cleanup_discard_to(void *mark)
-{
-    while ( madc_cleanup_stack != (struct MadcCleanupEntry *)mark )
-    {
-	struct MadcCleanupEntry *e = madc_cleanup_stack;
-	madc_cleanup_stack = e->prev;
-	if ( e->heap_alloc )
-	    free(e);
-    }
-}
-
-// Current cleanup-stack top — a mark the try lowering captures before the body
-// so it can discard exactly the try-body entries on the NORMAL exit path (the
-// cleanup attribute already ran their dtors at C-block scope exit). On the
-// exception path __madc_throw_* unwinds to the same mark instead. P1.1c.
-void *__madc_cleanup_top(void)
-{
-    return (void *)madc_cleanup_stack;
-}
-
-// Push a HEAP-ALLOCATED cleanup entry naming a destructor by VALUE (not via a
-// double-indirect fn slot). The lowering passes `(void*)Cls___dtor` and
-// `(void*)&obj` directly — no caller-provided entry storage and no per-object
-// stack locals in the try body. This matters for the JIT path: adding stack
-// arrays/locals inside a try body perturbs the MIR frame allocation and can make
-// the try-context overlap an object (observed 2026-05-31, P1.1c) — passing only
-// immediate call arguments avoids that. The entry is freed by unwind/discard/pop.
-// `dtor` has the shape `void (*)(void *this)` — the same single-`this` shape the
-// cleanup attribute and the class dtor symbol use. P1.1c.
-void __madc_cleanup_push_dtor(void *dtor, void *obj)
-{
-    struct MadcCleanupEntry *entry
-	= (struct MadcCleanupEntry *)malloc(sizeof(struct MadcCleanupEntry));
-    if ( !entry )
+    struct MadcTryContext *ctx = guard ? *(struct MadcTryContext **)guard : NULL;
+    if ( !ctx )
 	return;
-    entry->fn_indirect = NULL;
-    entry->obj_ptr = obj;
-    entry->guard = NULL;
-    entry->is_chain_tail = 0;
-    entry->dtor_direct = dtor;   // direct function pointer (fn_indirect == NULL)
-    entry->heap_alloc = 1;
-    entry->prev = madc_cleanup_stack;
-    madc_cleanup_stack = entry;
+    madc_try_stack = ctx->prev;
 }
 
-// Push a cleanup entry onto the cleanup stack
-void __madc_cleanup_push(struct MadcCleanupEntry *entry, void **fn_indirect,
-			 void *obj, uint8_t *guard, uint8_t is_chain_tail)
+// A disarmable deferred call: SLOT holds {fn, arg}, and the cleanup attribute
+// on it calls fn(arg) unless the owner cleared fn first -- the work an
+// exception leaving the scope must do and a normal exit must not (a
+// block-scope static's __cxa_guard_abort: g++ calls it from the landing pad of
+// the guarded initialization only).
+void __madc_cleanup_call(void *slot)
 {
-    entry->dtor_direct = NULL;
-    entry->heap_alloc = 0;
-    entry->fn_indirect = fn_indirect;
-    entry->obj_ptr = obj;
-    entry->guard = guard;
-    entry->is_chain_tail = is_chain_tail;
-    entry->prev = madc_cleanup_stack;
-    madc_cleanup_stack = entry;
+    void **s = (void **)slot;
+    if ( s && s[0] )
+	((void (*)(void *))s[0])(s[1]);
 }
 
-// Pop the top cleanup entry (no destructor call)
-void __madc_cleanup_pop(void)
+// --- The platform unwinder (docs/plans/2026-10-19-table-driven-unwinding.md).
+// A throw reaches its try through the unwinder's FORCED unwind (libgcc_s;
+// libunwind on macOS), glibc's thread-cancellation shape: the unwinder calls
+// each frame's personality in its cleanup phase -- a generated frame's
+// __madc_personality runs the cleanups its region table lists, a g++ frame's
+// own personality its destructors -- and madc_unwind_stop longjmps into the
+// try once the walk has passed the try's frame. A frame the unwinder cannot
+// describe ends the walk, and the stop function lands there. The ABI's
+// declarations are rt_unwind.h's; the personality, and Windows x64's
+// language-specific handler (an unwinding longjmp there), are
+// rt_personality.c's.
+#ifdef MADC_RT_UNWIND
+// The header's exception_cleanup: a host `catch (...)` consumed the unwind.
+static void madc_unwind_delete(int reason, struct MadcUnwindHeader *header)
 {
-    if ( madc_cleanup_stack )
+    (void)reason;
+    free(header);
+}
+
+// The forced unwind's stop function: called for every frame before its
+// personality, it lands the unwind once the walk has passed the frame holding
+// its limit -- the context's CFA is the SP of the frame it describes, above
+// every local of the frames below, the limit among them -- or when the walk
+// ends (glibc's unwind_stop, with the limit's own address in place of the
+// jmp_buf's saved SP). The limit's frame is the one whose personality ran
+// last: a try's runs the try body's regions; a boundary's frame has none.
+static int madc_unwind_stop(int version, int actions, uint64_t exception_class,
+			    struct MadcUnwindHeader *header, struct MadcUnwindContext *uc,
+			    void *param)
+{
+    struct MadcUnwind *unwind = (struct MadcUnwind *)param;
+    (void)version;
+    (void)exception_class;
+    if ( (actions & MADC_UA_END_OF_STACK) || _Unwind_GetCFA(uc) > unwind->limit )
     {
-	struct MadcCleanupEntry *e = madc_cleanup_stack;
-	madc_cleanup_stack = e->prev;
-	if ( e->heap_alloc )
-	    free(e);
+	void *jbuf = unwind->jbuf;
+	free(header);
+	longjmp(*(jmp_buf *)jbuf, 1);
     }
+    return MADC_URC_NO_REASON;
+}
+#endif
+
+// Unwind to the jump buffer JBUF in the frame holding LIMIT and land there:
+// every frame between runs its cleanups -- through the platform unwinder's
+// forced unwind (madc_unwind_stop lands it), or on Windows the unwinding
+// longjmp itself (RtlUnwindEx calls each frame's handler) -- stopping in
+// TARGET's frame at its guard (NULL: every region of every frame passed). A
+// plain longjmp where there is no unwinder, it returned, or the unwind's
+// header could not be allocated.
+static void madc_unwind_to(struct MadcTryContext *target, void *limit, void *jbuf)
+{
+#ifdef MADC_RT_UNWIND
+    struct MadcUnwind *unwind = (struct MadcUnwind *)calloc(1, sizeof(*unwind));
+    if ( unwind )
+    {
+	unwind->header.exception_class = MADC_UNWIND_CLASS;
+	unwind->header.exception_cleanup = madc_unwind_delete;
+	unwind->target = target;
+	unwind->limit = (uintptr_t)limit;
+	unwind->jbuf = jbuf;
+	_Unwind_ForcedUnwind(&unwind->header, madc_unwind_stop, unwind);
+	free(unwind);
+    }
+#else
+    (void)limit;
+#endif
+#ifdef _WIN32
+    madc_seh_unwind.jbuf = jbuf;
+    madc_seh_unwind.target = target;
+#else
+    (void)target;
+#endif
+    longjmp(*(jmp_buf *)jbuf, 1);
 }
 
-// Remove ONE entry wherever it sits in the stack, no destructor call
-// (rt_except.h documents the widening). Top-pop is not enough for a host
-// frame whose registration outlives entries pushed BELOW it and is exited
-// while entries pushed ABOVE it are still live — the MT-5 scope block's
-// normal exit is exactly that shape (an enclosing lexical try's body
-// locals register above the scope's entry and stay until the try ends).
-// O(depth) walk; the stack is short-lived and shallow by construction.
-void __madc_cleanup_remove(void *entry)
+void __madc_unwind_jump(void *limit, void *jbuf)
 {
-    struct MadcCleanupEntry *e = (struct MadcCleanupEntry *)entry;
-    struct MadcCleanupEntry **link = &madc_cleanup_stack;
-    while ( *link )
-    {
-	if ( *link == e )
-	{
-	    *link = e->prev;
-	    if ( e->heap_alloc )
-		free(e);
-	    return;
-	}
-	link = &(*link)->prev;
-    }
+    madc_unwind_to(NULL, limit, jbuf);
 }
 
 // Print the unhandled-exception line. The ONE formatting owner is
@@ -259,77 +274,180 @@ static void madc_print_unhandled(void)
     fprintf(stderr, "Unhandled exception: %s\n", buf);
 }
 
-// Throw an integer exception
-void __madc_throw_int(int64_t val)
+// THE raise tail every throw shares: land in the innermost try, every frame
+// between running its cleanups (madc_unwind_to) -- or, with no try active,
+// print the exception (`unhandled` names the case) and abort without
+// unwinding, as g++'s search phase finds no handler and terminates.
+static void madc_raise(const char *unhandled)
 {
     struct MadcTryContext *ctx;
-    madc_current_exception.type = MADC_EXCEPT_INT;
-    madc_current_exception.int_val = val;
     if ( !madc_try_stack )
     {
-	__madc_cleanup_unwind_to(NULL);
-	madc_print_unhandled();
+	if ( unhandled )
+	    fprintf(stderr, "%s\n", unhandled);
+	else
+	    madc_print_unhandled();
 	abort();
     }
     ctx = madc_try_stack;
     madc_try_stack = ctx->prev;
-    __madc_cleanup_unwind_to(ctx->cleanup_mark);
-    longjmp(ctx->jbuf, 1);
+    madc_unwind_to(ctx, ctx, ctx->jbuf);
+}
+
+// Release what an exception owns: a class exception's object (destroyed,
+// then freed) and its record. Scalar and text payloads own nothing.
+static void madc_release(struct MadcException *ex)
+{
+    struct MadcClassException *r;
+    if ( ex->type == MADC_EXCEPT_CLASS && ex->obj_val )
+    {
+	r = (struct MadcClassException *)ex->obj_val;
+	if ( !r->is_pointer && r->dtor )
+	    r->dtor(r->obj);
+	free(r->obj);
+	free(r);
+    }
+    memset(ex, 0, sizeof(*ex));
+}
+
+// Throw an integer exception
+void __madc_throw_int(int64_t val)
+{
+    madc_current_exception.type = MADC_EXCEPT_INT;
+    madc_current_exception.int_val = val;
+    madc_raise(NULL);
 }
 
 // Throw a double exception
 void __madc_throw_double(double val)
 {
-    struct MadcTryContext *ctx;
     madc_current_exception.type = MADC_EXCEPT_DOUBLE;
     madc_current_exception.double_val = val;
-    if ( !madc_try_stack )
-    {
-	__madc_cleanup_unwind_to(NULL);
-	madc_print_unhandled();
-	abort();
-    }
-    ctx = madc_try_stack;
-    madc_try_stack = ctx->prev;
-    __madc_cleanup_unwind_to(ctx->cleanup_mark);
-    longjmp(ctx->jbuf, 1);
+    madc_raise(NULL);
 }
 
 // Throw a string exception
 void __madc_throw_cstr(const char *val)
 {
-    struct MadcTryContext *ctx;
     madc_current_exception.type = MADC_EXCEPT_CSTR;
     madc_current_exception.str_val = val;
-    if ( !madc_try_stack )
-    {
-	__madc_cleanup_unwind_to(NULL);
-	madc_print_unhandled();
-	abort();
-    }
-    ctx = madc_try_stack;
-    madc_try_stack = ctx->prev;
-    __madc_cleanup_unwind_to(ctx->cleanup_mark);
-    longjmp(ctx->jbuf, 1);
+    madc_raise(NULL);
 }
 
-// Throw a class object with no string form: the payload is the object's
-// address. Unwinds like any other throw; the tag never matches a typed clause.
-void __madc_throw_object(const void *obj)
+// Storage for a class exception's object: the throw lowering constructs the
+// operand into it, then hands it to __madc_throw_class, which owns it from
+// there ([except.throw]/4: the exception object is in unspecified storage).
+void *__madc_exception_alloc(uint64_t size)
 {
-    struct MadcTryContext *ctx;
-    madc_current_exception.type = MADC_EXCEPT_CLASS;
-    madc_current_exception.obj_val = obj;
-    if ( !madc_try_stack )
+    void *p = calloc(1, size ? size : 1);
+    if ( !p )
     {
-	__madc_cleanup_unwind_to(NULL);
-	madc_print_unhandled();
+	fprintf(stderr, "out of memory allocating an exception object\n");
 	abort();
     }
-    ctx = madc_try_stack;
-    madc_try_stack = ctx->prev;
-    __madc_cleanup_unwind_to(ctx->cleanup_mark);
-    longjmp(ctx->jbuf, 1);
+    return p;
+}
+
+// Throw a class object (or a pointer that is not text): `obj` is the
+// __madc_exception_alloc storage holding it, `dtor` its complete-object
+// destructor (NULL when trivial), and names[i] / offsets[i] its match table
+// (struct MadcClassException) — the throw site's static data.
+void __madc_throw_class(void *obj, void *dtor, uint64_t count,
+			const char *const *names, const int64_t *offsets,
+			int is_pointer)
+{
+    struct MadcClassException *r =
+	(struct MadcClassException *)malloc(sizeof(struct MadcClassException));
+    if ( !r )
+    {
+	fprintf(stderr, "out of memory throwing an exception\n");
+	abort();
+    }
+    r->obj = obj;
+    r->dtor = (void (*)(void *))dtor;
+    r->count = count;
+    r->names = names;
+    r->offsets = offsets;
+    r->is_pointer = is_pointer;
+    madc_current_exception.type = MADC_EXCEPT_CLASS;
+    madc_current_exception.obj_val = r;
+    madc_raise(NULL);
+}
+
+// Does the in-flight exception match a handler for the type whose Itanium
+// type-name string is `name`? On a match, *out (when out is non-NULL) is the
+// matched subobject's address — or, for a pointer, the pointer value adjusted
+// to the matched type (a null pointer stays null).
+int __madc_exception_match(const char *name, void **out)
+{
+    const struct MadcClassException *r;
+    uint64_t i;
+    if ( madc_current_exception.type != MADC_EXCEPT_CLASS
+      || !madc_current_exception.obj_val || !name )
+	return 0;
+    r = (const struct MadcClassException *)madc_current_exception.obj_val;
+    for ( i = 0; i < r->count; i++ )
+    {
+	if ( !r->names[i] || strcmp(r->names[i], name) != 0 )
+	    continue;
+	if ( out )
+	{
+	    if ( r->is_pointer )
+	    {
+		char *pv = *(char **)r->obj;
+		*out = pv ? pv + r->offsets[i] : NULL;
+	    }
+	    else
+		*out = (char *)r->obj + r->offsets[i];
+	}
+	return 1;
+    }
+    return 0;
+}
+
+// End a catch: pop it from the caught stack and release its exception —
+// unless `throw;` rethrew it, in which case the in-flight record owns it.
+static void madc_end_catch(struct MadcCaught *c)
+{
+    struct MadcCaught **link = &madc_caught_stack;
+    while ( *link && *link != c )
+	link = &(*link)->prev;
+    if ( *link )
+	*link = c->prev;
+    if ( !c->rethrown )
+	madc_release(&c->ex);
+    free(c);
+}
+
+// A handler starts: the in-flight exception becomes the handled one (pushed
+// on the caught stack). The returned handle is the catch's guard; its cleanup,
+// __madc_exception_end_catch, ends the catch on every exit of the handler --
+// a throw leaving it included (the guard is a region of its frame).
+void *__madc_exception_begin_catch(void)
+{
+    struct MadcCaught *c = (struct MadcCaught *)malloc(sizeof(struct MadcCaught));
+    if ( !c )
+    {
+	fprintf(stderr, "out of memory catching an exception\n");
+	abort();
+    }
+    c->ex = madc_current_exception;
+    c->rethrown = 0;
+    c->prev = madc_caught_stack;
+    madc_caught_stack = c;
+    memset(&madc_current_exception, 0, sizeof(madc_current_exception));
+    return c;
+}
+
+// A handler's exit — the end of its block, a return, break, continue or goto,
+// or a throw leaving it: the cleanup attribute on its guard calls this with
+// the guard's address, and the catch ends.
+void __madc_exception_end_catch(void *guard)
+{
+    struct MadcCaught *c = guard ? *(struct MadcCaught **)guard : NULL;
+    if ( !c )
+	return;
+    madc_end_catch(c);
 }
 
 // Render the in-flight exception as one line of text (MT-3: the scope
@@ -355,9 +473,14 @@ unsigned long __madc_exception_text(char *buf, unsigned long cap)
 					 : "(null)");
 	break;
     case MADC_EXCEPT_CLASS:
-	n = snprintf(buf, cap, "class object at %p",
-		     madc_current_exception.obj_val);
+    {
+	const struct MadcClassException *r =
+	    (const struct MadcClassException *)madc_current_exception.obj_val;
+	n = snprintf(buf, cap, "class object of type %s at %p",
+		     r && r->count && r->names[0] ? r->names[0] : "?",
+		     r ? r->obj : NULL);
 	break;
+    }
     default:
 	buf[0] = '\0';
 	return 0;
@@ -393,33 +516,37 @@ const char *__madc_exception_cstr(void)
     return madc_current_exception.str_val;
 }
 
-// Clear the current exception (after catch completes)
+// Discard the in-flight exception, releasing what it owns (a host frame that
+// captured it — MT-3's scope error capture).
 void __madc_exception_clear(void)
 {
-    madc_current_exception.type = MADC_EXCEPT_NONE;
-    madc_current_exception.int_val = 0;
-    madc_current_exception.double_val = 0;
-    madc_current_exception.str_val = NULL;
+    madc_release(&madc_current_exception);
 }
 
-// Rethrow the current exception (throw; with no expression)
+// `throw;` ([expr.throw]/3): rethrow the exception the innermost active
+// handler is handling. Its catch is marked rethrown, so the unwind that ends
+// it hands the object over instead of destroying it.
 void __madc_rethrow(void)
 {
-    struct MadcTryContext *ctx;
-    if ( madc_current_exception.type == MADC_EXCEPT_NONE )
+    struct MadcCaught *c = madc_caught_stack;
+    if ( !c )
     {
 	fprintf(stderr, "rethrow with no active exception\n");
 	abort();
     }
-    if ( !madc_try_stack )
+    c->rethrown = 1;
+    madc_current_exception = c->ex;
+    madc_raise("Unhandled rethrown exception");
+}
+
+// No handler of a try matched: the in-flight exception continues to the next
+// enclosing try, unchanged (it was never caught).
+void __madc_exception_resume(void)
+{
+    if ( madc_current_exception.type == MADC_EXCEPT_NONE )
     {
-	__madc_cleanup_unwind_to(NULL);
-	fprintf(stderr, "Unhandled rethrown exception\n");
+	fprintf(stderr, "resume with no exception in flight\n");
 	abort();
     }
-    // Don't modify the exception state — just longjmp to the next try
-    ctx = madc_try_stack;
-    madc_try_stack = ctx->prev;
-    __madc_cleanup_unwind_to(ctx->cleanup_mark);
-    longjmp(ctx->jbuf, 1);
+    madc_raise(NULL);
 }

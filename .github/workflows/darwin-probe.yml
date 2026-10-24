@@ -93,10 +93,10 @@ jobs:
           # darwin-host defaults read too.
           echo "DARWIN_OPEN_HEADERS_HOME=$HOME/darwin-open-headers" >> "$GITHUB_ENV"
           echo "LIBCXX_HEADERS_HOME=$HOME/libcxx-headers" >> "$GITHUB_ENV"
-          # madcgit's build-time dep: the minimal static libgit2 (#2), staged
+          # the git module's build-time dep: the minimal static libgit2 (#2), staged
           # under a runner-writable dir — the container's /workspace/libgit2
-          # default is unwritable here. Staged in its own step below; madcmark's
-          # cmark-gfm likewise (src/madcmark.mk's CMARK_GFM_DIR).
+          # default is unwritable here. Staged in its own step below; markdown's
+          # cmark-gfm likewise (src/markdown.mk's CMARK_GFM_DIR).
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
           echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
           echo "PCRE2_DIR=$HOME/pcre2" >> "$GITHUB_ENV"	# libmadc's PCRE2 stage (src/Makefile's PCRE2_DIR)
@@ -122,21 +122,21 @@ jobs:
           make -C src -pn MODE=hosted-${{ matrix.arch }}-macos ../bin/madc-hosted-${{ matrix.arch }}-macos 2>/dev/null \
             | grep -E '^(HOST_OS|HOST_ARCH|HOST_DARWIN_ARCH|DARWIN_HOST|DARWIN_SELF_FREEZE|DARWIN_FREEZER|DARWIN_LLVM_PREFIX|DARWIN_CLANG|DARWIN_CLANGXX|DARWIN_AR|DARWIN_STRIP|DARWIN_OTOOL|DARWIN_LD_FLAGS|DARWIN_ZSTD_PREFIX|DARWIN_ZSTD_INC|DARWIN_ZSTD_LIB|MACOS_SDK|LLVM_LIBCXX_INC|DARWIN_PRELUDE_SYSROOT|RELEASE_MACOS_ARCHES) ' \
             | sort
-      - name: stage the minimal static libgit2 (the madcgit module's build-time dep)
+      - name: stage the minimal static libgit2 (the git module's build-time dep)
         run: |
-          # #2 (madcgit on the cross targets) made release-%-macos build the
+          # #2 (the git module on the cross targets) made release-%-macos build the
           # git:: module, which STATICALLY links a minimal read-only libgit2
-          # into libmadcgit.dylib (nothing named libgit2 ships). The container
+          # into git.dylib (nothing named libgit2 ships). The container
           # stages it in provision_container.sh; the GitHub runner is
           # provisioned here, before release-macos consumes it. stage_libgit2.sh
           # reads THIS host's SDK from the MODE (print-MACOS_SDK), so the recipe
           # serves the native build with no path hardcoded to the container.
           bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
           ls -la "$(bash scripts/stage_libgit2.sh --path ${{ matrix.arch }}-macos)"
-      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+      - name: stage the static cmark-gfm (the markdown module's build-time dep)
         run: |
           # release-%-macos builds the markdown:: module too, cmark-gfm
-          # linked into libmadcmark.dylib; staged like libgit2 above.
+          # linked into markdown.dylib; staged like libgit2 above.
           bash scripts/stage_cmark_gfm.sh ${{ matrix.arch }}-macos
           ls -la "$(bash scripts/stage_cmark_gfm.sh --path ${{ matrix.arch }}-macos)"
       - name: stage the static PCRE2 (libmadc's regex engine, linked in)

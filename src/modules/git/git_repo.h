@@ -1,0 +1,188 @@
+#ifndef __MODULES_GIT_GIT_REPO_H
+#define __MODULES_GIT_GIT_REPO_H 1
+
+// modules/git/git_repo.h — the ONE owner of every libgit2 call in madc (design
+// docs/plans/2026-09-13-nexus-L4-design.md §4.2; plan
+// 2026-09-13-nexus-L4a-git-substrate-plan.md; gate
+// scripts/check-one-git-owner.sh). READ-ONLY by construction: no write API is
+// wrapped (a commit, a checkout, a fetch stay git's). Records are plain
+// structs; the value shapers below turn them into the ONE row shape both the
+// source adapter and the module's face (git.cpp) answer with.
+//
+// libgit2 is a dependency linked into the git module (src/git.mk; the floor is
+// libgit2_floor.h); <git2.h> is included by git.cpp only, through
+// libgit2_floor.h, never by this header (pimpl).
+//
+// THREAD-SAFETY CONTRACT (.claude/rules/thread-safety.md): a GitRepo is
+// CONFINED to the thread that opened it — libgit2's own objects are not
+// shareable, and GIT_THREADS is on only for libgit2's internal correctness.
+// git_libgit2_init/shutdown run once per process behind a static guard (the
+// first open pays for it; the guard's destructor balances it at exit).
+
+#include "libmadc/error.h"
+#include "libmadc/value.h"
+#include "madcdis/source_adapter.h"
+#include "git_enums"		// git::file_state — a status row's one enum text
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace madc {
+
+struct GitRef
+{
+    std::string sha;
+    std::string branch;		// shorthand ("master"); "" when detached
+    bool detached;
+    GitRef() : detached(false) {}
+};
+
+struct GitRefRow
+{
+    std::string name;		// the full name: refs/heads/x, refs/tags/y
+    std::string sha;		// the resolved target
+};
+
+struct GitCommit
+{
+    std::string sha;
+    std::string author;
+    std::string email;
+    int64_t when;		// author time, unix seconds
+    std::string summary;	// the first line of the message
+    GitCommit() : when(0) {}
+};
+
+struct GitBlameRow
+{
+    int64_t line;		// 1-based first line of the hunk in the CURRENT file
+    int64_t count;		// lines in the hunk
+    std::string sha;		// the commit that last touched them
+    std::string author;
+    int64_t when;
+    std::string summary;
+    GitBlameRow() : line(0), count(0), when(0) {}
+};
+
+// A file's row of `git status` (plan §7e): its path (a rename's new path,
+// `from` its old one), and its state on each side.
+struct GitStatusRow
+{
+    std::string path;
+    std::string from;		// a rename's source; "" otherwise
+    git::file_state index;	// the index against HEAD
+    git::file_state worktree;	// the working tree against the index
+    GitStatusRow()
+	: index(git::file_state::unmodified), worktree(git::file_state::unmodified) {}
+};
+
+// One hunk of a diff: the lines it spans on each side (1-based starts, as
+// its `@@ -a,b +c,d @@` header says; a side with no lines starts at the
+// line before) and that header.
+struct GitHunk
+{
+    int64_t old_start;
+    int64_t old_lines;
+    int64_t new_start;
+    int64_t new_lines;
+    std::string header;
+    GitHunk() : old_start(0), old_lines(0), new_start(0), new_lines(0) {}
+};
+
+class GitRepo
+{
+public:
+    GitRepo();
+    ~GitRepo();
+
+    // Discover the repository upward from `path` (a working-tree path or a
+    // .git directory). False + err prose when there is none.
+    bool open(const std::string &path, error *err = (error *)0);
+    bool is_open() const;
+    const std::string &workdir() const;		// "" for a bare repository
+
+    bool head(GitRef &out, error *err = (error *)0) const;
+    bool refs(std::vector<GitRefRow> &out, error *err = (error *)0) const;
+    bool revparse(const std::string &spec, std::string &sha,
+		  error *err = (error *)0) const;
+    // `git log [-- path]`, newest first, at most `limit` rows. With a path,
+    // a commit is kept iff the blob at that path differs from EVERY parent's
+    // (a root commit that has the path counts) — exact, no heuristics.
+    bool log(std::vector<GitCommit> &out, const std::string &path, size_t limit,
+	     error *err = (error *)0) const;
+    // The commit `rev` (any rev-parse spec) names: its row as log's.
+    bool commit(const std::string &rev, GitCommit &out, error *err = (error *)0) const;
+    // The blob's bytes at `rev` (any rev-parse spec) for `path`.
+    bool show(const std::string &rev, const std::string &path, std::string &text,
+	      error *err = (error *)0) const;
+    // Blame `count` lines from 1-based `line0` (count 0 = to the end).
+    bool blame(std::vector<GitBlameRow> &out, const std::string &path,
+	       size_t line0, size_t count, error *err = (error *)0) const;
+    // Blame a MODIFIED buffer (the live editor text) against `path`'s committed
+    // history: lines the buffer changed blame to a zero oid — row.sha "" (the
+    // caller's own event log covers them). Same line convention as blame.
+    bool blame_buffer(std::vector<GitBlameRow> &out, const std::string &path,
+		      const std::string &text, size_t line0, size_t count,
+		      error *err = (error *)0) const;
+    // `path` (any spelling: relative to the working directory, or absolute)
+    // as git names it — relative to the working tree, forward slashes on
+    // every platform — both sides canonicalised by THE path canonicalizer.
+    // False + err when it is not inside the working tree.
+    bool relpath(const std::string &path, std::string &rel,
+		 error *err = (error *)0) const;
+    // True when `path`'s working-tree state differs from HEAD/index.
+    bool dirty(const std::string &path, bool &out, error *err = (error *)0) const;
+    // `git status`: every file whose index or working tree differs, untracked
+    // ones included (an untracked directory is one row, `dir/`, as git's
+    // default shows it), ignored ones not; renames in the index are found.
+    bool status(std::vector<GitStatusRow> &out, error *err = (error *)0) const;
+    // `path` at `rev` (any rev-parse spec; a path absent there is an empty
+    // file, so a new file's every line is added) against `text` (a buffer's
+    // live text, or the file's bytes): the unified patch git prints and its
+    // hunks. Equal sides answer an empty patch and no hunks.
+    bool diff(const std::string &rev, const std::string &path,
+	      const std::string &text, std::string &patch,
+	      std::vector<GitHunk> &hunks, error *err = (error *)0) const;
+
+private:
+    GitRepo(const GitRepo &);
+    GitRepo &operator=(const GitRepo &);
+    struct impl;
+    impl *_;
+};
+
+// The ONE value shape per record, shared by the source adapter and the engine
+// face (src/madc_git.cpp) — never two spellings of a row.
+//   commit: {sha, author, email, when, summary}
+//   ref:    {name, sha}
+//   blame:  {line, count, sha, author, when, summary}
+//   status: {path, from, index, worktree} (the two states: git::file_state codes)
+//   hunk:   {old_start, old_lines, new_start, new_lines, header}
+value git_commit_value(const GitCommit &c);
+value git_ref_value(const GitRefRow &r);
+value git_blame_value(const GitBlameRow &b);
+value git_status_value(const GitStatusRow &s);
+value git_hunk_value(const GitHunk &h);
+
+// The madcdis face: `git://<repo path>[?path=<file>]` — a `git` scheme row in
+// DataSource (storage / file / path_like / local) with record families
+// "commit" (the log, path-filtered when ?path= is given), "ref" (every
+// branch and tag) and "blame" (over the whole file named by ?path=, required).
+// DataSource keeps the location; this adapter owns the one split of its query.
+class git_source_adapter : public SourceAdapter
+{
+public:
+    const char *name() const { return "git"; }
+    bool can_read(const DataSource &source) const;
+    bool discover_types(const DataSource &source,
+			std::vector<ExtractedRecordType> &out,
+			error *err = (error *)0) const;
+    bool extract(const DataSource &source, const std::string &type_name,
+		 std::vector<ExtractedRecord> &out,
+		 error *err = (error *)0) const;
+};
+
+} // namespace madc
+
+#endif // __MODULES_GIT_GIT_REPO_H

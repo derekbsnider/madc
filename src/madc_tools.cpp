@@ -325,7 +325,7 @@ int64_t revision_handle(const registry &r, const context &c, int64_t live,
 	return live;
     if ( !r.history() )
     {
-	result = refusal("no version history here (the madcgit module is not loaded)");
+	result = refusal("no version history here (the git module is not imported)");
 	return 0;
     }
     revisions::entry e;

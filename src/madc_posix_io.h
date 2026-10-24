@@ -43,6 +43,12 @@ std::string canonical_path_for_compare(const std::string &path);
 std::string host_path_dirname(const std::string &path);
 std::string host_path_basename(const std::string &path);
 
+// `path` in generic form: every separator of the splitters' set written '/'
+// (boost::filesystem's generic format). On Windows a '\' becomes '/'; on
+// POSIX '\' is an ordinary file-name byte and the path comes back as it is.
+// What a path-typed command-line value is stored as (cli_options.h).
+std::string host_path_generic(const std::string &path);
+
 // Does `path` name its own root, so that joining it onto a base directory
 // would be wrong? THE owner of "is this path absolute" for every resolver
 // that joins a relative path to a base (an include, a manifest's file or
@@ -64,6 +70,11 @@ std::string host_path_join(const std::string &dir, const std::string &path);
 // directory" for a path the caller is about to open, create or enter.
 enum class host_path_type : unsigned char { none, file, directory, other };
 host_path_type host_path_type_of(const std::string &path);
+
+// The last modification time of what `path` names (stat st_mtime) into `out`;
+// false, `out` untouched, when it cannot be stat'd. The Win32 arm rides
+// _stat64 (a 64-bit time on both arms).
+bool host_path_mtime(const std::string &path, time_t &out);
 
 // A path's extension and stem — THE one rule (gated by
 // check-one-path-stem.sh): the extension is what follows the last dot of the
@@ -101,6 +112,11 @@ bool host_path_within(const std::string &dir, const std::string &path,
 // which is exactly why call sites go through this owner. False on failure,
 // `out` untouched then.
 bool local_time(time_t t, struct tm &out);
+
+// Thread-safe UTC time (POSIX gmtime_r); the Win32 arm is the MS gmtime_s,
+// its arguments reversed like localtime_s's. False on failure, `out`
+// untouched then.
+bool utc_time(time_t t, struct tm &out);
 
 // This host's name (POSIX gethostname); empty string on failure. The
 // Win32 arm rides GetComputerNameEx, NOT winsock's gethostname — callers

@@ -1,0 +1,56 @@
+/* Stack areas larger than a page. Windows commits a thread's stack one
+ * guard page at a time: code that moves the stack pointer down by a page or
+ * more must touch every page in between, in order, before it uses the
+ * lowest one (mingw gcc and clang call ___chkstk_ms for a frame, an array
+ * or an alloca that large). madc's Windows code moved the stack pointer in
+ * one step, so the first store into the area faulted -- a native Windows
+ * process died with an access violation (wine commits the stack up front
+ * and never showed it).
+ * Oracle: gcc 13 and clang 18 (Linux, -std=c17) and mingw-w64 gcc 13 on
+ * Windows: the lines below. */
+#include <stdio.h>
+#include <string.h>
+
+static int sample(const char *p, int n)
+{
+	int i, sum = 0;
+
+	for (i = 0; i < n; i += 4096)
+		sum += p[i];
+	return sum;
+}
+
+static int fixed_array(void)
+{
+	char big[300000];
+
+	memset(big, 1, sizeof big);
+	return sample(big, (int) sizeof big);
+}
+
+static int variable_array(int n)
+{
+	char big[n];
+
+	memset(big, 2, (size_t) n);
+	return sample(big, n);
+}
+
+static int nested(int depth)
+{
+	char mid[70000];
+
+	memset(mid, 3, sizeof mid);
+	if (depth > 0)
+		return sample(mid, (int) sizeof mid) + nested(depth - 1);
+	return sample(mid, (int) sizeof mid);
+}
+
+int main(int argc, char **argv)
+{
+	(void) argv;
+	printf("fixed %d\n", fixed_array());
+	printf("variable %d\n", variable_array(299999 + argc));
+	printf("nested %d\n", nested(3));
+	return 0;
+}

@@ -1,0 +1,14 @@
+// The # operator reads its argument's pp-tokens: an encoding prefix (u8 u U
+// L) makes a string literal or character constant ONE token, so its `"` and
+// `\` are inside a literal and escaped, and a prefix-shaped identifier (uR,
+// Rx, u8x, a lone R / u8 / U / L) stays an identifier.
+// g++ 13.3 and clang++ 18.1 (-std=c++17) print the .expect lines.
+#include <cstdio>
+#define S(x) #x
+int main()
+{
+	puts(S(uR + Rx + u8x + R + u8 + U + L));
+	puts(S(u'a' U'b' L'\'' u8"d\n" "e\t"));
+	puts(S(u8"q\"r" L"s\\t" U"\"" u"x"));
+	return 0;
+}

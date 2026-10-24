@@ -1,0 +1,50 @@
+// -E (and -dM -E) stops after preprocessing: -o names the FILE that text
+// goes to, wherever -o stands on the line; without -o it is stdout. -dM -E
+// is the macro table, not the source. An unwritable -o path is an error.
+// Before: -o was dropped and the text went to stdout. ccache hashes
+// `cc -E -o tmp.i x.c`'s file, so every configure probe of one shape hashed
+// alike and replayed one cached result (SQLite's SIZEOF_OFF_T came out 4).
+// Oracle: gcc 13 / clang 18 -- `cc -E -o x.i main.c` and `cc -E main.c -o
+// x.i` write x.i and print nothing; `cc -dM -E` writes the #define lines;
+// `cc -E -o /nonexistent/x.i main.c` exits 1.
+int main()
+{
+	var dir = "tmp/testcli_preprocess_output";
+	php::mkdir(dir.c_str());
+	const char *cp = madc::compiler_path();
+	var src = format("{}/main.c", dir);
+	php::file_put_contents(src.c_str(),
+		"#define MARK 7\nint marker_value = MARK;\n");
+	var out = format("{}/out.txt", dir);
+
+	var before = format("{}/before.i", dir);
+	long rc = system(format("{} --no-config -E -o {} {} > {}", cp, before, src, out));
+	long has = system(format("grep -q 'marker_value = 7' {}", before));
+	long quiet = system(format("test ! -s {}", out));
+	println("-E -o first: rc={} text={} stdout_empty={}", rc, has == 0 ? 1 : 0,
+		quiet == 0 ? 1 : 0);
+
+	var after = format("{}/after.i", dir);
+	rc = system(format("{} --no-config -E {} -o {} > {}", cp, src, after, out));
+	has = system(format("grep -q 'marker_value = 7' {}", after));
+	quiet = system(format("test ! -s {}", out));
+	println("-E -o last: rc={} text={} stdout_empty={}", rc, has == 0 ? 1 : 0,
+		quiet == 0 ? 1 : 0);
+
+	var macros = format("{}/macros.txt", dir);
+	rc = system(format("{} --no-config -dM -E {} -o {}", cp, src, macros));
+	has = system(format("grep -q '#define MARK 7' {}", macros));
+	long body = system(format("grep -q marker_value {}", macros));
+	println("-dM -E -o: rc={} define={} source={}", rc, has == 0 ? 1 : 0,
+		body == 0 ? 1 : 0);
+
+	rc = system(format("{} --no-config -E {} > {}", cp, src, out));
+	has = system(format("grep -q 'marker_value = 7' {}", out));
+	println("-E stdout: rc={} text={}", rc, has == 0 ? 1 : 0);
+
+	rc = system(format("{} --no-config -E -o {}/no/such/x.i {} 2>/dev/null", cp, dir, src));
+	println("-E -o unwritable refused: {}", rc != 0 ? 1 : 0);
+
+	system(format("rm -rf {}", dir));
+	return 0;
+}

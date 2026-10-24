@@ -20,23 +20,25 @@
 #   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/release/libmadc.so (stripped pre-pack, forest inside)
 #   /usr/lib/<multiarch|lib64>/libmadc.so       -> libmadc.so.0
 #   /usr/lib/<multiarch|lib64>/libmadc_rt.a     emitted-C runtime (try/catch + VLA; a bare-box cc links it)
-#   /usr/lib/<multiarch|lib64>/libmadcwebview.so the platform webview library (WebKitGTK 6.0 / GTK4 +
-#                                               native chrome; GUI programs: import madcwebview) —
+#   /usr/lib/<multiarch|lib64>/madc/modules/ui_web.so  the ui_web module: the platform webview (WebKitGTK 6.0 /
+#                                               GTK4 + native chrome; GUI programs: import ui_web) —
 #                                               a WEAK dependency (Recommends): madc never loads it itself
-#   /usr/lib/<multiarch|lib64>/libmadcgit.so    the madcgit module: madc's read-only git view, the
-#                                               pinned libgit2 linked in statically (the nexus's PAST
-#                                               verbs; git:: programs) — no libgit2 package needed
-#   /usr/lib/<multiarch|lib64>/libmadcmark.so   the madcmark module: Markdown parsed by cmark-gfm,
-#                                               linked in statically (markdown:: programs; the IDE's
-#                                               help and previews) — no cmark-gfm package needed
+#   /usr/lib/<multiarch|lib64>/madc/modules/git.so  the git module: madc's read-only git view, the
+#                                               pinned libgit2 linked in statically (`import git;`;
+#                                               the nexus's PAST verbs) — no libgit2 package needed
+#   /usr/lib/<multiarch|lib64>/madc/modules/markdown.so  the markdown module: Markdown parsed by cmark-gfm,
+#                                               linked in statically (`import markdown;`; the IDE's
+#                                               help and previews) — no cmark-gfm package needed;
+#                                               madc's module directory: madc/modules
+#                                               beside libmadc (madc_module_dir)
 #   /usr/share/man/man1/madc.1.gz
 #   /etc/apparmor.d/madc                        the .deb on Ubuntu 24.04 and later only: a profile
 #                                               granting madc user namespaces (WebKit's sandbox, for
 #                                               a ui:: program's window; loaded by postinst)
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
-#   /usr/share/doc/madc/libgit2-copyright       libgit2's COPYING — linked into libmadcgit.so
-#   /usr/share/doc/madc/cmark-gfm-copyright     cmark-gfm's notices — linked into libmadcmark.so
+#   /usr/share/doc/madc/libgit2-copyright       libgit2's COPYING — linked into the git module
+#   /usr/share/doc/madc/cmark-gfm-copyright     cmark-gfm's notices — linked into the markdown module
 #   /usr/share/doc/madc/changelog.gz            CHANGELOG.md
 #   /usr/share/doc/madc/examples/madc.ini       documented example config
 #
@@ -137,15 +139,15 @@ trap restore_tree EXIT
 make -C src clean > /dev/null
 make -C src -j"$(bash scripts/build_jobs.sh)" > /dev/null
 make -C src -j"$(bash scripts/build_jobs.sh)" release > /dev/null
-# The platform webview library (GUI programs: import madcwebview) — built
+# The ui_web module (src/ui_web.mk; GUI programs: import ui_web) — built
 # against the build host's WebKitGTK 6.0 / GTK4 (scripts/provision_container.sh;
 # libwebkitgtk-6.0-dev in release.yml) and shipped as a WEAK dependency:
 # madc itself never loads it, only a program that imports it does.
-make -C src -j"$(bash scripts/build_jobs.sh)" libmadcwebview > /dev/null
-# The madcgit module (src/madcgit.mk): the read-only git view, statically
+make -C src -j"$(bash scripts/build_jobs.sh)" ui_web > /dev/null
+# The git module (src/git.mk): the read-only git view, statically
 # linking the pinned libgit2 scripts/stage_libgit2.sh staged for this host
 # (the floor: 1.8.7 / 1.9.7 or newer; Ubuntu's libgit2 is 1.7.2). The
-# packages depend on no libgit2, so the stage is required: madcgit.mk's
+# packages depend on no libgit2, so the stage is required: git.mk's
 # system-libgit2 arm (the Homebrew formula's) would leave a runtime
 # dependency no package declares.
 lg2=$(bash scripts/stage_libgit2.sh --path host)
@@ -153,8 +155,8 @@ if [ ! -f "$lg2" ]; then
     echo "package_release: $lg2 missing — bash scripts/stage_libgit2.sh host" >&2
     exit 1
 fi
-make -C src -j"$(bash scripts/build_jobs.sh)" libmadcgit > /dev/null
-# The madcmark module (src/madcmark.mk): Markdown, statically linking the
+make -C src -j"$(bash scripts/build_jobs.sh)" git > /dev/null
+# The markdown module (src/markdown.mk): Markdown, statically linking the
 # pinned cmark-gfm scripts/stage_cmark_gfm.sh staged for this host. Required
 # for the same reason as libgit2's stage: the system arm (the Homebrew
 # formula's) links a shared cmark-gfm no package declares.
@@ -163,7 +165,7 @@ if [ ! -f "$cm/libcmark-gfm.a" ]; then
     echo "package_release: $cm/libcmark-gfm.a missing — bash scripts/stage_cmark_gfm.sh host" >&2
     exit 1
 fi
-make -C src -j"$(bash scripts/build_jobs.sh)" libmadcmark > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" markdown > /dev/null
 
 if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
     echo "package_release: distribution binary still links storage libs" >&2
@@ -201,7 +203,7 @@ mkdir -p "$DEBROOT/DEBIAN"
 chmod 0755 "$DEBROOT/DEBIAN"
 # Depends: the libraries the shipped binaries link, at the versions this
 # host's packages carry (dpkg-shlibdeps over a minimal debian/control). The
-# webview module is left out: its WebKitGTK and GTK are the Recommends below
+# ui_web module is left out: its WebKitGTK and GTK are the Recommends below
 # (madc never loads it itself). The modules' references to libmadc's own
 # symbols (the host process supplies them) are warnings, kept in the log.
 SHLIB=tmp/pkgroot/shlibdeps
@@ -209,10 +211,12 @@ mkdir -p "$SHLIB/debian"
 printf 'Source: madc\n\nPackage: madc\nArchitecture: any\n' > "$SHLIB/debian/control"
 DEBLIB="$PWD/$DEBROOT/usr/lib/x86_64-linux-gnu"
 DEBBIN="$PWD/$DEBROOT/usr/bin"
+DEBMOD="$DEBLIB/madc/modules"	# beside libmadc (stage_install.sh)
 DEPENDS=$(cd "$SHLIB" && dpkg-shlibdeps -O --ignore-missing-info -l"$DEBLIB" \
               "$DEBBIN/madc" \
               "$DEBLIB/libmadc.so.0" \
-              "$DEBLIB/libmadcgit.so" "$DEBLIB/libmadcmark.so" 2> shlibdeps.log |
+              "$DEBMOD/git.so" \
+              "$DEBMOD/markdown.so" 2> shlibdeps.log |
           sed -n 's/^shlibs:Depends=//p')
 if [ -z "$DEPENDS" ]; then
     echo "package_release: dpkg-shlibdeps named no dependencies (see $SHLIB/shlibdeps.log)" >&2
@@ -295,10 +299,10 @@ AutoReqProv: yes
 Recommends: webkitgtk6.0
 Recommends: gtk4
 %define debug_package %{nil}
-# The webview library's own DT_NEEDED (webkitgtk, gtk4 and their world) must
+# The ui_web module's own DT_NEEDED (webkitgtk, gtk4 and their world) must
 # not become hard Requires of the whole package: the GUI is optional, the
 # weak dependencies above name it.
-%global __requires_exclude_from ^/usr/lib64/(libmadcwebview|libmadcgit|libmadcmark)\\.so\$
+%global __requires_exclude_from ^/usr/lib64/madc/modules/ui_web\\.so\$
 %define __strip /bin/true
 %define _build_id_links none
 
@@ -349,20 +353,20 @@ share/doc/madc/examples/madc.ini for a documented example configuration
 file. The IDE, madcide, is its own download
 (https://github.com/derekbsnider/madcide), carrying a madc of its own.
 
-GUI: lib/libmadcwebview.so is madc's binding of the platform webview
-(WebKitGTK 6.0 / GTK4) with the native menu bar and file dialogs. A
-program that says \`import madcwebview;\` (madc's ui "web" target) loads
-it from this lib/.
+GUI: the ui_web module (lib/madc/modules/ui_web.so) is madc's binding of
+the platform webview (WebKitGTK 6.0 / GTK4) with the native menu bar and
+file dialogs. A program that says \`import ui_web;\` gets madc's ui
+"web" target.
 
-Git: lib/libmadcgit.so is madc's read-only view of a git repository, with
-libgit2 linked into it (the \`git::\` namespace and the \`%git\`
-command; an IDE reads history, blame and revisions through it). It is
-loaded on first use and needs no libgit2 installed; libgit2's notice is
+Git: the git module (lib/madc/modules/git.so) is madc's read-only view of a
+git repository, with libgit2 linked into it (\`import git;\` and the
+\`%git\` command; an IDE reads history, blame and revisions through it).
+It needs no libgit2 installed; libgit2's notice is
 share/doc/madc/libgit2-copyright.
 
-Markdown: lib/libmadcmark.so parses Markdown with cmark-gfm linked into
-it (the \`markdown::\` namespace; the IDEs' help and previews read
-through it). It is loaded on first use and needs no cmark-gfm installed;
+Markdown: the markdown module (lib/madc/modules/markdown.so) parses
+Markdown with cmark-gfm linked into it (\`import markdown;\`; the IDEs'
+help and previews read through it). It needs no cmark-gfm installed;
 cmark-gfm's notice is share/doc/madc/cmark-gfm-copyright.
 
 It needs the WebKitGTK 6.0 and GTK 4 runtime libraries installed

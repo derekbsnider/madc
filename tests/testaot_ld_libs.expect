@@ -1,0 +1,7 @@
+setup: rc=0
+pthread=1 dlsym=1 zlib=1 twice=42
+run: rc=0
+link: rc=0
+its run: rc=0
+run -lfull refused: 1
+link -lfull refused: 1

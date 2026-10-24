@@ -1,0 +1,18 @@
+/* A function returning `const char *` gets a host-call shim whose result
+ * setter, madc_value_set_string, takes `const char *` text -- as
+ * include/madc_api.h declares it. The shim declared it `char *`, so every
+ * such function warned "discarding type qualifiers in passing argument"
+ * (with no source position: the shim is synthesized) -- nine times over
+ * SQLite's sqlite3_libversion, sqlite3_errstr, sqlite3_uri_parameter, ...
+ * Oracle: gcc and clang -O0 print "3.54.0 error mut"; the .expect_quiet
+ * fixture holds madc's stderr empty. */
+#include <stdio.h>
+static char buf[8] = "mut";
+char *mutable_name(void) { return buf; }
+const char *libversion(void) { return "3.54.0"; }
+const char *errstr(int rc) { return rc ? "error" : "ok"; }
+int main(void)
+{
+	printf("%s %s %s\n", libversion(), errstr(1), mutable_name());
+	return 0;
+}

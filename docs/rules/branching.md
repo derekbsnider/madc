@@ -136,3 +136,81 @@ Scope it to the diff. A per-commit audit of the whole subsystem would be the
 Tier 3 mistake again; what changes per commit is the concepts the diff touches.
 An older family found on the way is recorded, not folded into the commit.
 
+## Why every release must shrink an existing family
+
+Owner ruling, 2026-10-16: *"with each release we need to ensure that we are
+actively seeking to reduce code duplication, and not only preventing additional
+duplication."*
+
+The per-commit audit and the family gates only stop NEW copies. The families
+that already exist keep their copies, and each copy keeps drifting. The day of
+the ruling showed the cost: "is a bare function name a call or its address" is
+answered separately by the identifier arm's follower whitelist, the static
+member arm and the function-pointer arm, so in C `f ? a : b` decayed in one
+position and became a call in another, and `!f` called `f` — a silent wrong
+answer. The fix that day could only gate C; the family itself still has three
+owners.
+
+So the reduction is a planned piece of each release arc, not a side effect: a
+whole-subsystem `/dupaudit` sweep (recon, which `/dupaudit` already allows on
+request), then at least one existing family consolidated in its own commits
+with the usual Tier 1 + Tier 2, before the seam battery — so the battery runs
+over the consolidated code, as the merge-gate ruling above requires. The
+`Consolidated:` line in the release's CHANGELOG section is the evidence, and
+`scripts/check-release-consolidation.sh` makes a release without it fail.
+Releases cut before the ruling (up to v0.105.0) are exempt by its EPOCH, which
+moves forward only.
+
+
+## Why every release must move C23 or C++20 forward (owner law 2026-10-16)
+
+Owner ruling, 2026-10-16: *"we also need to have a release gate that each
+release must move the needle forwards towards C23 and/or C++20 compliance."*
+
+The north star is C23 / C++23 parity. A release that only adds tooling, IDE
+work or dialect features can be entirely worthwhile and still leave the
+standards where they were, and a run of such releases drifts away from the
+goal without anyone deciding it should. A rule stated without a gate decays,
+so the law has the same shape as the duplication law above: evidence in the
+release's CHANGELOG section, checked by a script `/release` runs.
+
+The evidence is measured, never typed. `docs/conformance-coverage.md` holds
+figures taken by hand on older content (its C23 rows on 0.103.0), and a
+hand-typed count is exactly the number that goes stale. So the counts live in
+a ledger that one script writes, `scripts/conformance_measure.sh`, over four
+corpora of gcc's own tests: the C23 tests compile-clean and run
+(`gcc.dg/c23-*`), the execute torture under `--std=c23`, and `g++.dg/cpp2a`
+under `--std=c++20`. The gate compares a release's row with the previous
+release's, corpus by corpus.
+
+Two rows compare only when they measured the same thing. The ledger carries
+each corpus's in-scope count, and the gate refuses a pair whose counts differ:
+a newer gcc testsuite on the build host, or a runner whose scope rules
+changed, makes a different corpus, and the fix is to re-measure the previous
+release on its archived binary (`tmp/release-bins/`, kept for exactly this
+kind of comparison), not to compare across. Both sides are release binaries —
+the archived one and the battery's madc-release — so the -O0 development
+build never stands in for what ships.
+
+The rule asks for one count up and none down. A gain in one corpus bought
+with a loss in another is a trade, not progress, and the gate names the fall.
+v0.105.0, the last release before the ruling, is the baseline: its EPOCH
+exempts it and every earlier release, and moves forward only.
+
+## Why a release without its callgrind map cannot reach master (owner 2026-10-16)
+
+Owner ruling, 2026-10-08: keep a callgrind map for every release. The map —
+each parse-cost workload's full profile on a symbolized build of the release
+commit, and the top functions by self and inclusive cost — is what turns a
+red `parse-cost` row into an answer: diffing two releases' maps names the
+functions that grew. Without the previous release's map, a regression found
+at the next seam has to be bisected by rebuilding old commits.
+
+The directive was a step to remember, and it was forgotten: v0.103.0 and
+v0.105.0 shipped without maps, and the first parse-cost regression after
+v0.105.0 (2026-10-16) had no v0.105.0 map to diff against. So the step is
+gated the way the release archive already is: `release_bins.sh check`, which
+the master push gate runs after its selftest, refuses an archived release
+since v0.102.1 (the first one mapped) that has no `callgrind/summary.tsv`,
+and the selftest proves an entry without a map fails. `/release` step 13
+makes the map beside the archive entry, while the release commit is fresh.

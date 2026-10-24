@@ -1,0 +1,1 @@
+includes <byteswap.h>, a glibc header — the regression is glibc's own static-inline __bswap_* definitions; macOS has no byteswap.h (clang on darwin rejects this source too)

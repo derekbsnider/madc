@@ -1,0 +1,96 @@
+// [class.copy.elision]/3 (P1825R0; gcc's g++.dg/cpp2a/implicit-move2.C and
+// implicit-move3.C): a throw operand naming a local declared in the innermost
+// try's compound-statement — or in a block inside it — is MOVED into the
+// exception object, from that try's nested handler too; one declared where its
+// scope holds the try is copied. From C++20 an rvalue reference local is
+// implicitly movable as well. M is move-only and C copy-only, so the wrong
+// choice is a deleted constructor. Oracle: g++ 13 and clang++ 18 -std=c++20
+// print the .expect lines.
+#include <stdio.h>
+
+static int copies, moves;
+
+struct M {
+	int i;
+	M() : i(42) {}
+	M(const M &) = delete;
+	M(M &&o) : i(o.i) { o.i = 0; ++moves; }
+};
+
+struct C {
+	int i;
+	C() : i(7) {}
+	C(const C &o) : i(o.i) { ++copies; }
+	C(C &&) = delete;
+};
+
+static bool b;
+static void h() { throw 1; }
+
+static int objects()
+{
+	C x;
+	try {
+		M y;
+		try { h(); }
+		catch (...) {
+			if (b)
+				throw x;	// x's scope holds the try: copied
+			throw y;		// the try's own local: moved
+		}
+	} catch (M &m) {
+		return m.i;
+	} catch (C &c) {
+		return -c.i;
+	}
+	return 0;
+}
+
+static int nested_block()
+{
+	try {
+		if (!b) {
+			M y;
+			try { h(); }
+			catch (...) { throw y; }	// a block inside the try body: moved
+		}
+	} catch (M &m) {
+		return m.i;
+	}
+	return 0;
+}
+
+static int references()
+{
+	C &&x = C();
+	try {
+		M &&y = M();
+		try { h(); }
+		catch (...) {
+			if (b)
+				throw x;
+			throw y;		// an rvalue reference (C++20): moved
+		}
+	} catch (M &m) {
+		return m.i;
+	} catch (C &c) {
+		return -c.i;
+	}
+	return 0;
+}
+
+int main()
+{
+	int r = objects();
+	printf("objects %d moves %d copies %d\n", r, moves, copies);
+	r = nested_block();
+	printf("nested %d moves %d copies %d\n", r, moves, copies);
+	r = references();
+	printf("references %d moves %d copies %d\n", r, moves, copies);
+	b = true;
+	r = objects();
+	printf("objects %d moves %d copies %d\n", r, moves, copies);
+	r = references();
+	printf("references %d moves %d copies %d\n", r, moves, copies);
+	return 0;
+}

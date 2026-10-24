@@ -171,6 +171,7 @@ typedef struct {
 #define PT_DYNAMIC 2
 #define PT_INTERP 3
 #define PT_PHDR 6
+#define PT_GNU_EH_FRAME 0x6474e550
 #define PT_GNU_STACK 0x6474e551
 #define PT_GNU_RELRO 0x6474e552
 #define PF_X (1 << 0)

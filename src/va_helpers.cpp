@@ -956,14 +956,6 @@ extern "C" void *__madc_builtin_memset_chk(void *dst, int c, size_t n, size_t si
     return __builtin___memset_chk(dst, c, n, size);
 }
 
-// __builtin_frame_address: return caller's frame pointer
-extern "C" void *__madc_builtin_frame_address(int level)
-{
-    // level must be a compile-time constant for the real builtin;
-    // we only support level 0 (current frame).
-    return __builtin_frame_address(0);
-}
-
 // __builtin_setjmp / __builtin_longjmp — map to standard setjmp/longjmp
 #include <setjmp.h>
 extern "C" int __madc_builtin_setjmp(void *buf)

@@ -4,56 +4,39 @@
 // C++-interop conveniences are declared only when <string> was included
 // BEFORE this header (the <ns_madc> guard convention; auto-include
 // orders <string> first, explicit includers write it above this line).
-extern "C" {
-    int64_t __js_parseInt(const char *, int64_t);
-    const char *__js_btoa_cstr(const char *);
-    const char *__js_atob_cstr(const char *);
-    const char *__js_encodeURIComponent_cstr(const char *);
-    const char *__js_decodeURIComponent_cstr(const char *);
-    const char *__js_stringify_cstr(array *);
-    const char *__js_stringify_indent_cstr(value *, int64_t);
-    int64_t __js_parse(value *, const char *);
-    int64_t __js_parse_vtext(value *, value *);
-}
+// Declarations only (cpp-first-api.md): libmadc defines every js:: public
+// (src/ns_js.cpp), resolved mangled-direct.
 
 namespace js {
-    int64_t parseInt(const char *text, int64_t radix) { return __js_parseInt(text, radix); }
+    int64_t parseInt(const char *text, int64_t radix);
     // Lean PRIMARIES (dialect-lean.md, JS parity): each returns a NEW
     // string — ring-lifetime returns (the c_str contract): pass onward
     // or capture immediately.
-    const char *btoa(const char *input) { return __js_btoa_cstr(input); }
-    const char *atob(const char *input) { return __js_atob_cstr(input); }
-    const char *encodeURIComponent(const char *input) { return __js_encodeURIComponent_cstr(input); }
-    const char *decodeURIComponent(const char *input) { return __js_decodeURIComponent_cstr(input); }
+    const char *btoa(const char *input);
+    const char *atob(const char *input);
+    const char *encodeURIComponent(const char *input);
+    const char *decodeURIComponent(const char *input);
     // JSON.stringify parity: the whole value kind set (object/array/
     // string/number/bool/null), recursive; the indent overload is the
     // `space` parameter (pretty-printed). Ring-lifetime returns. ONE
     // carrier overload per arity — array/value/var are one type under
     // --std=madc, so an array&/value& pair would collide.
-    const char *stringify(array &values) { return __js_stringify_cstr(&values); }
-    const char *stringify(value &v, int64_t indent) { return __js_stringify_indent_cstr(&v, indent); }
+    const char *stringify(array &values);
+    const char *stringify(value &v, int64_t indent);
     // JSON.parse parity: strict JSON, the whole text or nothing. False =
     // malformed (JS throws; the pre-L3 mapping is the bool + a null out).
-    bool parse(value &out, const char *text) { return __js_parse(&out, text) != 0; }
-    bool parse(value &out, value &text) { return __js_parse_vtext(&out, &text) != 0; }
+    bool parse(value &out, const char *text);
+    bool parse(value &out, value &text);
 }
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
 // std::string C++-INTEROP conveniences — present only because <string>
 // precedes this header.
-extern "C" {
-    std::string *__js_btoa(std::string *, const char *);
-    std::string *__js_atob(std::string *, const char *);
-    std::string *__js_encodeURIComponent(std::string *, const char *);
-    std::string *__js_decodeURIComponent(std::string *, const char *);
-    std::string *__js_stringify(std::string *, array *);
-}
-
 namespace js {
-    std::string &btoa(std::string &result, const char *input) { return *__js_btoa(&result, input); }
-    std::string &atob(std::string &result, const char *input) { return *__js_atob(&result, input); }
-    std::string &encodeURIComponent(std::string &result, const char *input) { return *__js_encodeURIComponent(&result, input); }
-    std::string &decodeURIComponent(std::string &result, const char *input) { return *__js_decodeURIComponent(&result, input); }
-    std::string &stringify(std::string &result, array &values) { return *__js_stringify(&result, &values); }
+    std::string &btoa(std::string &result, const char *input);
+    std::string &atob(std::string &result, const char *input);
+    std::string &encodeURIComponent(std::string &result, const char *input);
+    std::string &decodeURIComponent(std::string &result, const char *input);
+    std::string &stringify(std::string &result, array &values);
 }
 #endif

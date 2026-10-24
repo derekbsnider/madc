@@ -60,21 +60,24 @@ if [ -n "${MADC_WIN_STAGE:-}" ]; then
 	# that is set, MADC_SESSION_DIR (the discovery tests' — madc's
 	# discovery since split arc 1D; the box has no HOME/XDG_STATE_HOME, so
 	# without it session_dir is empty and nothing advertises) and
-	# MADC_HISTORY_FILE (the suite's REPL history, run_tests.sh's). WSLENV
-	# names them; each is set in the remote env with its verbatim value.
-	fwd_names=(MADC_BIN MADC_FOREST_ENV_CHECK)
+	# MADC_HISTORY_FILE (the suite's REPL history, run_tests.sh's), and the
+	# variables the test's .env sets (run_tests.sh names them in
+	# MADC_FIXTURE_ENV). WSLENV names them; each is set in the remote env
+	# with its verbatim value.
+	fwd_names=(MADC_BIN)
 	fwd_assigns=""
 	fwd_vars=$(compgen -v MADCIDE_ 2>/dev/null)
 	[ -n "${MADC_SESSION_DIR:-}" ] && fwd_vars="$fwd_vars MADC_SESSION_DIR"
 	[ -n "${MADC_HISTORY_FILE:-}" ] && fwd_vars="$fwd_vars MADC_HISTORY_FILE"
+	fwd_vars="$fwd_vars ${MADC_FIXTURE_ENV:-}"
 	for var in $fwd_vars; do
 		fwd_names+=("$var")
 		printf -v one ' %s=%q' "$var" "${!var}"
 		fwd_assigns+="$one"
 	done
 	wslenv=$(IFS=:; echo "${fwd_names[*]}")
-	printf -v remote_cmd 'env -C %q WSLENV=%q MADC_BIN=bin/madc.exe MADC_FOREST_ENV_CHECK=%q' \
-		"$MADC_WIN_STAGE" "$wslenv" "${MADC_FOREST_ENV_CHECK:-0}"
+	printf -v remote_cmd 'env -C %q WSLENV=%q MADC_BIN=bin/madc.exe' \
+		"$MADC_WIN_STAGE" "$wslenv"
 	remote_cmd+="$fwd_assigns"
 	for arg in "${stage_cmd[@]}"; do
 		printf -v quoted_arg ' %q' "$arg"

@@ -1,0 +1,28 @@
+// A handler that returns a member of the caught object: `return q.i;` reads
+// the exception object before the handler's end-catch (a cleanup of the
+// handler scope, B205) destroys it. madc returned whatever the freed exception
+// storage held. Oracle: g++ 13 and clang++ 18 (-std=c++17): the .expect lines.
+#include <stdio.h>
+
+struct P {
+	int i;
+	double d;
+	P() : i(5), d(1.5) {}
+	P(const P &o) : i(o.i), d(o.d) {}
+};
+
+static void thrower() { P p; throw p; }
+
+static int from_call() { try { thrower(); } catch (P &q) { return q.i; } return 0; }
+static int direct() { try { throw P(); } catch (P &q) { return q.i; } return 0; }
+static double real() { try { throw P(); } catch (const P &q) { return q.d; } return 0; }
+static int scalar() { try { throw 9; } catch (int &n) { return n; } return 0; }
+
+int main()
+{
+	printf("from_call %d\n", from_call());
+	printf("direct %d\n", direct());
+	printf("real %.1f\n", real());
+	printf("scalar %d\n", scalar());
+	return 0;
+}

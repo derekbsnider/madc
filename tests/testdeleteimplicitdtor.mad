@@ -1,0 +1,27 @@
+// `delete` runs the destructor of a class whose destructor is implicit but
+// non-trivial ([class.dtor]/8 — it destroys the members; [expr.delete]/6),
+// exactly as `delete[]` and an explicit `p->~M()` do, and not for a null
+// pointer ([expr.delete]/7). Each D carries its own
+// id so every line is distinct; g++ 13 and clang++ 18 print the .expect.
+#include <cstdio>
+int next_id;
+struct D {
+	int id;
+	D() : id(++next_id) {}
+	~D() { printf("~D%d\n", id); }
+};
+struct M { D d; };		// implicit, non-trivial destructor
+struct N : M { D e; };		// and through a base
+int main()
+{
+	M *m = new M;
+	delete m;
+	N *n = new N;
+	delete n;
+	M *ma = new M[2];
+	delete[] ma;
+	M *z = 0;
+	delete z;		// null: no destructor
+	printf("end\n");
+	return 0;
+}

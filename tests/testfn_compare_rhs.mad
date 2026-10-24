@@ -1,0 +1,32 @@
+/* A bare function name on the RIGHT of a comparison is its address
+ * (function-to-pointer decay), never a call: `p->xCmp == cmp` compares two
+ * pointers. Only a name FOLLOWED by such an operator decayed; one after it
+ * became a zero-argument call `cmp()`, refused by c2mir as "too few
+ * arguments" (SQLite's `p->xCmp==sqlite3BinaryCompare` and
+ * `db->xWalCallback==sqlite3WalDefaultHook ? ... : 0`).
+ * Oracle: gcc and clang -O0 print
+ *   local=1 swap=1 addr=1 dot=1 arrow=1 ne=0 or=1 null=1 tern=7 other=3 and=1 */
+#include <stdio.h>
+struct C { int (*xCmp)(int); };
+int cmp(int);
+static int other(int a) { return a + 1; }
+static int v_local(int (*f)(int)) { return f == cmp; }
+static int v_swap(struct C *p) { return cmp == p->xCmp; }
+static int v_addr(struct C *p) { return p->xCmp == &cmp; }
+static int v_dot(struct C c) { return c.xCmp == cmp; }
+static int v_arrow(struct C *p) { return p->xCmp == cmp; }
+static int v_ne(struct C *p) { return p->xCmp != cmp; }
+static int v_or(struct C *p) { return p == 0 || p->xCmp == cmp; }
+static int v_tern(struct C *p) { return p->xCmp == cmp ? 7 : 3; }
+static int v_and(struct C *p) { return p->xCmp != other && p->xCmp == cmp; }
+int cmp(int a) { return a; }
+int main(void)
+{
+	struct C c = { cmp };
+	struct C d = { other };
+	printf("local=%d swap=%d addr=%d dot=%d arrow=%d ne=%d or=%d null=%d"
+	       " tern=%d other=%d and=%d\n",
+	       v_local(cmp), v_swap(&c), v_addr(&c), v_dot(c), v_arrow(&c),
+	       v_ne(&c), v_or(&c), v_or(0), v_tern(&c), v_tern(&d), v_and(&c));
+	return 0;
+}

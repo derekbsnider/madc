@@ -20,11 +20,13 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
+#include <csetjmp>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <unistd.h>
 #include "madc_dl.h"
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <map>
@@ -360,7 +362,8 @@ TEST_CASE("B2: a thawed module tree is identical AND compiles + runs (the Phase-
 		CHECK(cir_trees_structurally_identical(tree, thawed->as_node()));
 
 		// Compile and run the THAWED tree through the production path.
-		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_mod");
+		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_mod",
+				     !prog->is_c_mode());
 		REQUIRE(ok == 1);
 		MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
 		MIR_load_module(mir_ctx, mod);
@@ -424,7 +427,8 @@ TEST_CASE("B3: a two-file program partitions into units, thaws identical, and ru
 		CHECK(cir_trees_structurally_identical(tree, thawed->as_node()));
 
 		// The thawed multi-unit tree compiles + runs (production path).
-		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_forest");
+		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_forest",
+				     !prog->is_c_mode());
 		REQUIRE(ok == 1);
 		MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
 		MIR_load_module(mir_ctx, mod);
@@ -445,6 +449,99 @@ TEST_CASE("B3: a two-file program partitions into units, thaws identical, and ru
 	cir_finish(c2m);
 	c2mir_finish(mir_ctx);
 	MIR_finish(mir_ctx);
+}
+
+static std::vector<uint8_t> *mir_blob_sink;
+static size_t mir_blob_pos;
+static int mir_blob_put(MIR_context_t, uint8_t b) { mir_blob_sink->push_back(b); return 1; }
+static int mir_blob_get(MIR_context_t)
+{
+	return mir_blob_pos < mir_blob_sink->size() ? (*mir_blob_sink)[mir_blob_pos++] : EOF;
+}
+static jmp_buf mir_blob_error_jmp;
+static void MIR_NO_RETURN mir_blob_error(MIR_error_type_t, const char *, ...)
+{
+	longjmp(mir_blob_error_jmp, 1);
+}
+
+// A forest whose MIR module cache fails to read part way — the reader having
+// begun the module (the writer's region defect once did it: "uregion should
+// have no labels") — falls back to node materialization: build_frozen thaws,
+// compiles and runs the program instead of dying on the unfinished module.
+// The failure part way: a module past one 256 KiB buffer of the compressed
+// stream, the stream's end (its zero tag and hash) cut — the first buffer
+// decodes, the reader begins the module, then the end is missing.
+TEST_CASE("mir cache: a blob whose read fails mid-module falls back to materialization") {
+	std::shared_ptr<Program> prog;
+	std::vector<uint8_t> image;
+	{
+		MIR_context_t mir_ctx = MIR_init();
+		c2mir_init(mir_ctx);
+		c2m_ctx_t c2m = cir_init(mir_ctx);
+		REQUIRE(c2m != nullptr);
+		std::string src;
+		for (int i = 0; i < 10000; i++)
+			src += "long f" + std::to_string(i) + "(long a) { return a * "
+			     + std::to_string(i) + " + 1; }\n";
+		src += "int main() { return (int)f7(14); }\n";
+		prog = std::make_shared<Program>();
+		TokenProgram *tp = prog->tokenize_buffer(src.c_str(), "<mir_cache_cut>");
+		REQUIRE(tp != nullptr);
+		REQUIRE(prog->parse(tp));
+		CirBuilder *builder = new CirBuilder(c2m);
+		node_t tree = builder->translate_module(prog.get());
+		REQUIRE(tree != nullptr);
+		cir_frozen_forest f;
+		REQUIRE(cir_freeze_forest(CIR_NODE(tree), "<mir_cache_cut>", f));
+
+		// The module blob as the producer stages it: the stamp, then the
+		// .bmir stream, its end cut.
+		REQUIRE(cir_compile(mir_ctx, c2m, tree, "frozen", !prog->is_c_mode()) == 1);
+		MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
+		REQUIRE(mod != nullptr);
+		std::vector<uint8_t> bmir;
+		mir_blob_sink = &bmir;
+		MIR_write_module_with_func(mir_ctx, mir_blob_put, mod);
+		REQUIRE(bmir.size() > 9u);
+		bmir.resize(bmir.size() - 9);
+		delete builder;
+		cir_finish(c2m);
+		c2mir_finish(mir_ctx);
+		MIR_finish(mir_ctx);
+
+		// The cut stream's read fails having begun the module.
+		MIR_context_t probe = MIR_init();
+		MIR_set_error_func(probe, mir_blob_error);
+		mir_blob_pos = 0;
+		volatile bool read_ok = false;
+		if (setjmp(mir_blob_error_jmp) == 0) {
+			MIR_read_with_func(probe, mir_blob_get);
+			read_ok = true;
+		}
+		mir_blob_sink = NULL;
+		REQUIRE_FALSE(read_ok);
+		REQUIRE(DLIST_TAIL(MIR_module_t, *MIR_get_module_list(probe)) != nullptr);
+		MIR_abandon_module(probe);
+		MIR_finish(probe);
+
+		cir_forest_mir_header mh;
+		mh.forest_version = CIR_FOREST_FORMAT_VERSION;
+		mh.mir_api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+		std::vector<uint8_t> mblob((const uint8_t *)&mh, (const uint8_t *)&mh + sizeof(mh));
+		mblob.insert(mblob.end(), bmir.begin(), bmir.end());
+		madc::dis::snapshot_writer w;
+		REQUIRE(cir_forest_write(f, w));
+		REQUIRE(w.add_segment(CIR_FOREST_SEG_MIR_MODULE, SNAP_KIND_CIR_MIR_MODULE,
+				      mblob.data(), mblob.size(), PchCompression::None));
+		REQUIRE(w.build(image));
+	}
+	CirJitSession session;
+	REQUIRE(session.build_frozen(image.data(), image.size(), "frozen"));
+	char arg0[] = "frozen";
+	char *argv[] = { arg0, NULL };
+	bool ok = false;
+	CHECK(session.run_main(1, argv, &ok) == 99);
+	CHECK(ok);
 }
 
 TEST_CASE("B3: units load on demand — touching one grove leaves the others cold") {
@@ -567,7 +664,8 @@ TEST_CASE("B3: cross-process closure — a FRESH live pool thaws correct strings
 		CHECK(pos_names_inc);
 
 		// And the thawed tree still compiles + runs with the fresh pool.
-		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_fresh");
+		int ok = cir_compile(mir_ctx, c2m, thawed->as_node(), "thawed_fresh",
+				     !prog->is_c_mode());
 		REQUIRE(ok == 1);
 		MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
 		MIR_load_module(mir_ctx, mod);
@@ -691,7 +789,7 @@ TEST_CASE("B3: the directory round-trips libs and the typeid->name closure") {
 // CirFrozenForest's v2 accessors.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edges, branch macros, canon order") {
+TEST_CASE("B4a: grove payload round-trips tokens, decl index, PP exports, edges, condition records, canon order") {
 	std::string inc_path = std::string("/tmp/madc_b4a_inc_")
 			     + std::to_string((long)getpid()) + ".h";
 	std::string main_path = std::string("/tmp/madc_b4a_main_")
@@ -758,13 +856,47 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 	CHECK(canon[0] == u_main);
 	CHECK(canon[1] == u_inc);
 
-	// Branch macros: the include guard (#ifndef) and the #if consult.
-	std::set<std::string> branch;
-	for (size_t i = 0; i < forest.branch_macros().size(); ++i)
-		if (const char *s = forest.pool_str(forest.branch_macros()[i]))
-			branch.insert(s);
-	CHECK(branch.count("B4A_T_H") == 1);
-	CHECK(branch.count("B4A_MISSING") == 1);
+	// Condition records (v68/v69): the include's guard #ifndef, and main's
+	// #if with its one consult. Slot layout: [n, edge places...], [n, records
+	// (CIR_COND_WORDS each)...], [n, inclusions...], [n words, consults...].
+	auto cond_records = [&](uint32_t u, std::vector<uint32_t> &w,
+				size_t &conds_at, size_t &nconds,
+				size_t &consults_at) {
+		REQUIRE(forest.unit_conditions(u, w));
+		size_t at = 0;
+		REQUIRE(at < w.size());
+		at += 1 + w[at];
+		REQUIRE(at < w.size());
+		nconds = w[at++];
+		conds_at = at;
+		at += nconds * CIR_COND_WORDS;
+		REQUIRE(at < w.size());
+		at += 1 + (size_t)w[at] * CIR_INCL_WORDS;
+		REQUIRE(at < w.size());
+		consults_at = at + 1;
+	};
+	auto pstr = [&](uint32_t id) {
+		const char *s = forest.pool_str(id);
+		return std::string(s ? s : "");
+	};
+	std::vector<uint32_t> wi, wm;
+	size_t ci = 0, ni = 0, ki = 0, cm = 0, nm = 0, km = 0;
+	cond_records(u_inc, wi, ci, ni, ki);
+	cond_records(u_main, wm, cm, nm, km);
+	REQUIRE(ni >= 1);
+	const uint32_t *guard = &wi[ci];
+	CHECK(guard[CIR_COND_KIND] == (uint32_t)Program::CondDirective::Ifndef);
+	CHECK(pstr(guard[CIR_COND_TEXT]) == "B4A_T_H");
+	CHECK((guard[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) != 0);
+	REQUIRE(nm >= 1);
+	const uint32_t *ifc = &wm[cm];
+	CHECK(ifc[CIR_COND_KIND] == (uint32_t)Program::CondDirective::If);
+	CHECK(pstr(ifc[CIR_COND_TEXT]).find("B4A_MISSING") != std::string::npos);
+	CHECK((ifc[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) == 0);
+	REQUIRE(ifc[CIR_COND_CONSULT_N] == 1u);
+	const size_t k = km + (size_t)ifc[CIR_COND_CONSULT_AT] * CIR_CONSULT_WORDS;
+	REQUIRE(k < wm.size());
+	CHECK(pstr(wm[k]) == "B4A_MISSING");
 
 	// Token slice: the include unit's stream deserializes to token_count
 	// tokens through the .madh reader.
@@ -873,7 +1005,7 @@ TEST_CASE("v56: the source arm packs listed headers as source-only units") {
 	const std::string nested = root + "/bits/stdio.h";
 	const std::string deeper = root + "/c++/tr1/stdio.h";
 	const std::string staged = root + "/staged_extra.h";
-	const std::string renamed = "/v56/sdk/usr/include/extra.h";
+	const std::string renamed = "/v56/sdk/usr/include/v56_extra.h";
 	REQUIRE(system(("mkdir -p " + root + "/bits " + root + "/c++/tr1").c_str()) == 0);
 	{ std::ofstream f(top.c_str()); f << "int v56_top;\n"; }
 	{ std::ofstream f(nested.c_str()); f << "int v56_nested;\n"; }
@@ -881,7 +1013,13 @@ TEST_CASE("v56: the source arm packs listed headers as source-only units") {
 	{ std::ofstream f(staged.c_str()); f << "int v56_extra;\n"; }
 	{
 		std::ofstream f(main_path.c_str());
-		f << "int v57_fn(int x) { return x; }\n"
+		// The staged arm is libmadc's to the TU being frozen too: a header
+		// only the arm carries answers __has_include as the pack's
+		// consumers will.
+		f << "#if !__has_include(<v56_extra.h>)\n"
+		     "#error the staged source arm is invisible to the frozen TU\n"
+		     "#endif\n"
+		     "int v57_fn(int x) { return x; }\n"
 		     "int v62_vfn(const char *fmt, ...);\n"
 		     "int main() { return v57_fn(0); }\n";
 	}
@@ -891,21 +1029,26 @@ TEST_CASE("v56: the source arm packs listed headers as source-only units") {
 		  << top << "\n" << renamed << "\t" << staged << "\n";
 	}
 
+	// An unreadable list refuses when staged; a listed file that cannot be
+	// read refuses when the arm is recorded.
+	{
+		std::shared_ptr<Program> bad_prog = std::make_shared<Program>();
+		bad_prog->pack_recording = true;
+		CHECK_FALSE(bad_prog->pack_stage_source_list(list_path + ".absent"));
+		const std::string bad = list_path + ".bad";
+		{ std::ofstream f(bad.c_str()); f << root << "/absent.h\n"; }
+		REQUIRE(bad_prog->pack_stage_source_list(bad));
+		CHECK_FALSE(bad_prog->pack_record_staged_sources());
+		std::remove(bad.c_str());
+	}
 	std::shared_ptr<Program> prog = std::make_shared<Program>();
 	prog->pack_recording = true;	// what --freeze sets before tokenize
 	prog->forest_arena_enabled = true;
+	REQUIRE(prog->pack_stage_source_list(list_path));	// before the parse, as madc.cpp
 	TokenProgram *tp = prog->tokenize(main_path.c_str());
 	REQUIRE(tp != nullptr);
 	REQUIRE(prog->parse(tp));
-	// An unreadable list, and a list naming an unreadable file, refuse.
-	CHECK_FALSE(prog->pack_record_source_list(list_path + ".absent"));
-	{
-		const std::string bad = list_path + ".bad";
-		{ std::ofstream f(bad.c_str()); f << root << "/absent.h\n"; }
-		CHECK_FALSE(prog->pack_record_source_list(bad));
-		std::remove(bad.c_str());
-	}
-	REQUIRE(prog->pack_record_source_list(list_path));
+	REQUIRE(prog->pack_record_staged_sources());
 	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
 				snap_path.c_str(), /*append=*/false) == 0);
 	REQUIRE(system(("rm -rf " + root).c_str()) == 0);
@@ -3003,13 +3146,13 @@ TEST_CASE("v23: method param DEFAULT ARGUMENTS freeze as token runs and restore 
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	std::shared_ptr<Program> progB = std::make_shared<Program>();
-	progB->bind_forest = &forest;	// the flush reads restored_param_defaults
+	progB->forest_system.forest = &forest;	// the flush reads restored_param_defaults
 	TokenProgram *tpB = progB->tokenize(cons_path.c_str());
 	REQUIRE(tpB != nullptr);
 	std::remove(cons_path.c_str());
 	progB->forest_restore_decls(forest);
 	progB->flush_forest_pending_globals();
-	progB->bind_forest = NULL;	// forest is stack-local; detach before dtors
+	progB->forest_system.forest = NULL;	// forest is stack-local; detach before dtors
 
 	REQUIRE(progB->funcdef_map.count("Adder__add") == 1);
 	FuncDef *rf = progB->funcdef_map["Adder__add"];
@@ -3544,4 +3687,444 @@ TEST_CASE("v63: SEEDS carries each class product's definers, read by equal range
 	// A truncated definer table is malformed, never a short read.
 	CHECK_FALSE(sd.bind(w, sizeof(w) / sizeof(w[0]) - 1));
 	CHECK_FALSE(sd.bind(w, 9));
+}
+
+// ---------------------------------------------------------------------------
+// Dialect per name, A3: DECL_NAMES is sorted by strcmp, so the names a prefix
+// starts are one run of the table — what completion reads for `php::strto`
+// (the flat ids `__ns_php_strto...`) and A4's lookups read for a name's
+// overloads (`__ns_php_count`, `__ns_php_count__o2`).
+// ---------------------------------------------------------------------------
+
+// The names of a prefix's run, in table order.
+static std::vector<std::string> a3_run(const ForestDeclNames &dn, const char *prefix,
+				       uint32_t *begin_out = NULL)
+{
+	uint32_t b = 99, e = 99;
+	dn.for_prefix(prefix, b, e);
+	if (begin_out)
+		*begin_out = b;
+	std::vector<std::string> out;
+	for (uint32_t i = b; i < e; ++i) {
+		const char *nm = dn.name_at(i);
+		out.push_back(nm ? nm : "<none>");
+	}
+	return out;
+}
+
+TEST_CASE("A3: for_prefix reads the one run of names a prefix starts") {
+	std::map<madc::dis::istring, std::vector<uint32_t> > in;
+	in[madc::dis::istring("__ns_php_count")] = {1};
+	in[madc::dis::istring("__ns_php_count__o2")] = {1};
+	in[madc::dis::istring("__ns_php_x_m")] = {2};
+	in[madc::dis::istring("alpha")] = {0, 3};
+	in[madc::dis::istring("php::print_r")] = {1};
+	in[madc::dis::istring("zeta")] = {4};
+	std::vector<uint8_t> bytes;
+	ForestDeclNames::build(in, bytes);
+	ForestDeclNames dn;
+	REQUIRE(dn.bind(bytes.data(), bytes.size()));
+	REQUIRE(dn.size() == 6u);
+	typedef std::vector<std::string> names;
+	// The empty prefix is every name, in strcmp order ('_' sorts before 'a').
+	CHECK(a3_run(dn, "") == names{"__ns_php_count", "__ns_php_count__o2", "__ns_php_x_m",
+				       "alpha", "php::print_r", "zeta"});
+	// At the first name; a prefix that is a whole name keeps the names it
+	// starts (an overload's flat id).
+	uint32_t b = 99;
+	CHECK(a3_run(dn, "__ns_php_", &b) == names{"__ns_php_count", "__ns_php_count__o2",
+						     "__ns_php_x_m"});
+	CHECK(b == 0u);
+	CHECK(a3_run(dn, "__ns_php_count") == names{"__ns_php_count", "__ns_php_count__o2"});
+	CHECK(a3_run(dn, "php::") == names{"php::print_r"});
+	// At the last name, by a prefix and by the whole name.
+	CHECK(a3_run(dn, "z", &b) == names{"zeta"});
+	CHECK(b == 5u);
+	CHECK(a3_run(dn, "zeta") == names{"zeta"});
+	// A prefix that starts no name: an empty run at its place — before the
+	// first name, between two, past the last.
+	CHECK(a3_run(dn, "A", &b).empty());
+	CHECK(b == 0u);
+	CHECK(a3_run(dn, "beta", &b).empty());
+	CHECK(b == 4u);
+	CHECK(a3_run(dn, "zz", &b).empty());
+	CHECK(b == 6u);
+	// A run's units, read in place; one past the table reads nothing.
+	uint32_t n = 99;
+	const uint32_t *u = dn.units_at(3, n);
+	REQUIRE(n == 2u);
+	REQUIRE(u != NULL);
+	CHECK(u[0] == 0u);
+	CHECK(u[1] == 3u);
+	CHECK((dn.name_at(6) == NULL));
+	CHECK((dn.units_at(6, n) == NULL));
+	CHECK(n == 0u);
+	// units_of reads the same table.
+	u = dn.units_of("alpha", n);
+	REQUIRE(n == 2u);
+	CHECK(u[1] == 3u);
+	CHECK((dn.units_of("alp", n) == NULL));
+	CHECK(n == 0u);
+	// An unbound view has no names.
+	ForestDeclNames none;
+	uint32_t e = 99;
+	none.for_prefix("", b, e);
+	CHECK(b == 0u);
+	CHECK(e == 0u);
+}
+
+// B2: the HASH index answers every lookup the binary search answers —
+// bare and qualified, hits and misses — and a malformed index is refused
+// (lookups keep the binary search).
+TEST_CASE("B2: the decl-name hash index agrees with the binary search") {
+	std::map<madc::dis::istring, std::vector<uint32_t> > in;
+	for (int i = 0; i < 40; ++i) {
+		char nm[32];
+		snprintf(nm, sizeof nm, "name%d", i);
+		in[madc::dis::istring(nm)] = {(uint32_t)i};
+		snprintf(nm, sizeof nm, "std::name%d", i);
+		in[madc::dis::istring(nm)] = {(uint32_t)i, 100u};
+	}
+	in[madc::dis::istring("std")] = {7};
+	in[madc::dis::istring("std::")] = {8};
+	std::vector<uint8_t> bytes;
+	ForestDeclNames::build(in, bytes);
+	ForestDeclNames sorted, hashed;
+	REQUIRE(sorted.bind(bytes.data(), bytes.size()));
+	REQUIRE(hashed.bind(bytes.data(), bytes.size()));
+	std::vector<uint32_t> h;
+	ForestDeclNames::build_hash(hashed, h);
+	REQUIRE(h.size() > 1u);
+	REQUIRE(hashed.bind_hash(h.data(), h.size()));
+	CHECK(hashed.hash_slots() == h[0]);
+	CHECK(hashed.hash_slots() > hashed.size());
+	CHECK(sorted.hash_slots() == 0u);
+	// Every name, bare: the same run from both readers.
+	for (uint32_t i = 0; i < sorted.size(); ++i) {
+		const char *nm = sorted.name_at(i);
+		REQUIRE(nm != NULL);
+		uint32_t n1 = 99, n2 = 99;
+		const uint32_t *u1 = sorted.units_of(nm, n1);
+		const uint32_t *u2 = hashed.units_of(nm, n2);
+		CHECK(n1 == n2);
+		CHECK(u1 == u2);
+	}
+	// Qualified: hashed in pieces, the same answer as the whole spelling.
+	uint32_t n = 99, nq = 99;
+	const uint32_t *u = hashed.units_of_qualified("std", "name3", nq);
+	REQUIRE(nq == 2u);
+	CHECK(u == sorted.units_of("std::name3", n));
+	CHECK(u[1] == 100u);
+	CHECK(sorted.units_of_qualified("std", "name3", n) == u);
+	// Misses: a prefix of a name, a name with a suffix, a namespace that is a
+	// prefix of the stored one, an empty name under "std" ("std::" itself).
+	CHECK((hashed.units_of("name", n) == NULL));
+	CHECK(n == 0u);
+	CHECK((hashed.units_of("name399", n) == NULL));
+	CHECK((hashed.units_of_qualified("st", "name3", n) == NULL));
+	CHECK((hashed.units_of_qualified("std", "nam", n) == NULL));
+	CHECK((hashed.units_of_qualified("std", "", n) != NULL));
+	CHECK(n == 1u);
+	CHECK((hashed.units_of_qualified("std", "", n) == sorted.units_of("std::", nq)));
+	CHECK((hashed.units_of(NULL, n) == NULL));
+	// Malformed: B not above N, not a power of two, the wrong size, unbound
+	// names — each refused, the view keeps the binary search.
+	std::vector<uint32_t> bad = h;
+	bad[0] = 16;	// 82 names: not above N
+	ForestDeclNames v;
+	REQUIRE(v.bind(bytes.data(), bytes.size()));
+	CHECK_FALSE(v.bind_hash(bad.data(), bad.size()));
+	bad[0] = h[0] + 1;
+	CHECK_FALSE(v.bind_hash(bad.data(), bad.size()));
+	CHECK_FALSE(v.bind_hash(h.data(), h.size() - 1));
+	CHECK(v.hash_slots() == 0u);
+	CHECK(v.units_of("name3", n) == sorted.units_of("name3", nq));
+	ForestDeclNames unbound;
+	CHECK_FALSE(unbound.bind_hash(h.data(), h.size()));
+}
+
+// B211: source_spelled_names' `content` — the names that stand where a macro
+// expands — against the directive-only spellings the walk's recorded
+// conditions answer.
+TEST_CASE("B211: spelled names split content from directive-only spellings") {
+	const std::string text =
+		"#ifndef GUARD_H\n"
+		"#define GUARD_H 1\n"
+		"# if defined COND_A && COND_B > 1 \\\n"
+		"      || COND_C\n"
+		"#  include <sys/hdr_piece.h>\n"
+		"#  include COMPUTED_HDR\n"
+		"# endif\n"
+		"#define OBJ obj_body + other\n"
+		"#define FN(p, q) p + fn_body(q)\n"
+		"#define EMPTY_FN() empty_body\n"
+		"#undef UNDEF_NAME\n"
+		"#error a stray_word here\n"
+		"struct text_tag { int text_member; }; /* comment_word */\n"
+		"int x = text_value; // line_comment_word\n"
+		"#endif\n";
+	std::set<madc::dis::istring> all, content;
+	source_spelled_names(text, all, &content);
+	typedef madc::dis::istring I;
+	for (const char *nm : {"text_tag", "text_member", "text_value", "obj_body", "other",
+			       "fn_body", "empty_body", "COMPUTED_HDR", "int", "struct", "x"}) {
+		CAPTURE(nm);
+		CHECK(content.count(I(nm)) == 1u);
+		CHECK(all.count(I(nm)) == 1u);
+	}
+	for (const char *nm : {"GUARD_H", "COND_A", "COND_B", "COND_C", "defined", "sys",
+			       "hdr_piece", "h", "OBJ", "FN", "p", "q", "EMPTY_FN", "UNDEF_NAME",
+			       "stray_word", "ifndef", "define", "include", "undef", "error"}) {
+		CAPTURE(nm);
+		CHECK(content.count(I(nm)) == 0u);
+		CHECK(all.count(I(nm)) == 1u);
+	}
+	CHECK(all.count(I("comment_word")) == 0u);
+	CHECK(all.count(I("line_comment_word")) == 0u);
+	// Without `content` the call reads every name, as before.
+	std::set<madc::dis::istring> only;
+	source_spelled_names(text, only);
+	CHECK(only == all);
+}
+
+// A container's ROLE (optional segment 28) — which consumer a profile
+// serves. The system profile writes none (absent = system); a code this
+// reader has no row for — a profile an older madc froze for another role
+// (1 was the retired dialect image's) — is carried through as a number, and
+// a discovery walk skips it.
+static const uint32_t foreign_role = 1;
+
+TEST_CASE("Role: the role table names the system role; another code has no row") {
+	const cir_forest_role_row *s = cir_forest_role_info(CIR_FOREST_ROLE_SYSTEM);
+	REQUIRE(s != nullptr);
+	CHECK(std::string(s->name) == "system");
+	CHECK(cir_forest_role_info(foreign_role) == nullptr);
+	CHECK(cir_forest_role_info(99) == nullptr);
+}
+
+// One forest image under a role, through the writer the freeze uses.
+static bool role_image(cir_frozen_forest &f, uint32_t role, std::vector<uint8_t> &image)
+{
+	f.role = role;
+	madc::dis::snapshot_writer w;
+	if (!cir_forest_write(f, w, PchCompression::Zstd))
+		return false;
+	return w.build(image);
+}
+
+TEST_CASE("Role: a foreign-role container carries its role below a system profile") {
+	MIR_context_t mir_ctx = MIR_init();
+	c2mir_init(mir_ctx);
+	c2m_ctx_t c2m = cir_init(mir_ctx);
+	REQUIRE(c2m != nullptr);
+	{
+		std::shared_ptr<Program> prog;
+		CirBuilder *builder = NULL;
+		std::string main_path;
+		node_t tree = build_two_file_module(prog, builder, c2m, main_path);
+		REQUIRE(tree != nullptr);
+		cir_frozen_forest f;
+		REQUIRE(cir_freeze_forest(CIR_NODE(tree), main_path.c_str(), f));
+
+		std::vector<uint8_t> foreign, system;
+		REQUIRE(role_image(f, foreign_role, foreign));
+		REQUIRE(role_image(f, CIR_FOREST_ROLE_SYSTEM, system));
+
+		// The foreign profile: the ROLE segment, its code read back.
+		{
+			madc::dis::snapshot_reader r;
+			REQUIRE(r.open(foreign.data(), foreign.size()));
+			REQUIRE(r.find(CIR_FOREST_SEG_ROLE) != nullptr);
+			uint32_t role = 99;
+			REQUIRE(cir_forest_read_role(r, role));
+			CHECK(role == foreign_role);
+			CirFrozenForest forest;
+			REQUIRE(forest.open_header(foreign.data(), foreign.size()));
+			CHECK(forest.role() == foreign_role);
+		}
+		// The system profile writes no ROLE segment (absent = system).
+		{
+			madc::dis::snapshot_reader r;
+			REQUIRE(r.open(system.data(), system.size()));
+			CHECK(r.find(CIR_FOREST_SEG_ROLE) == nullptr);
+			uint32_t role = 99;
+			REQUIRE(cir_forest_read_role(r, role));
+			CHECK(role == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+			CirFrozenForest forest;
+			REQUIRE(forest.open_header(system.data(), system.size()));
+			CHECK(forest.role() == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+		}
+		// A carrier stacking the foreign profile first and the system profile
+		// after it (an older writer's 16-byte padding between them;
+		// append_file's page pad is snapshot_reader's own unit case): the
+		// profiles read newest first, each with its role and its bytes.
+		std::vector<uint8_t> carrier(37, 0xab);	// a carrier's own bytes
+		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
+		const size_t foreign_at = carrier.size();
+		carrier.insert(carrier.end(), foreign.begin(), foreign.end());
+		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
+		carrier.insert(carrier.end(), system.begin(), system.end());
+		std::vector<cir_forest_profile> stack;
+		REQUIRE(cir_forest_profiles(carrier.data(), carrier.size(), stack));
+		REQUIRE(stack.size() == 2u);
+		CHECK(stack[0].role == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+		CHECK(stack[0].bytes == system.size());
+		CHECK(stack[0].compressed > 0u);
+		CHECK(stack[1].role == foreign_role);
+		CHECK(stack[1].bytes == foreign.size());
+		CHECK(stack[1].offset == foreign_at);
+		// The foreign profile alone is one profile.
+		REQUIRE(cir_forest_profiles(foreign.data(), foreign.size(), stack));
+		REQUIRE(stack.size() == 1u);
+		CHECK(stack[0].role == foreign_role);
+		// Not a container: no profile.
+		CHECK(!cir_forest_profiles(carrier.data(), 37, stack));
+		CHECK(stack.empty());
+
+		delete builder;
+	}
+	cir_finish(c2m);
+	c2mir_finish(mir_ctx);
+	MIR_finish(mir_ctx);
+}
+
+// The dialect's roots (the builtin-registry generator's) are what the
+// compiler's own auto-include would include for every dialect fragment head — the provider
+// table's fragments with their prerequisite closure, in the auto-include
+// order (queue_fragment_prerequisites + ordered_auto_include_headers) —
+// never the pack list's C portion. The closure is the fragments alone: what a
+// fragment names that the dialect hard-codes (println, and the stdio streams
+// its `println(stderr, ...)` writes to — Program::add_stdio_streams) pulls
+// no header (owner 2026-10-17).
+TEST_CASE("R1: the dialect roots are the fragments' auto-include closure") {
+	Program prog;
+	REQUIRE(prog.set_language_standard("madc"));
+	std::vector<madc::dis::istring> roots;
+	REQUIRE(prog.dialect_image_roots(roots));
+	std::vector<std::string> r(roots.begin(), roots.end());
+	auto at = [&](const char *h) {
+		return (long)(std::find(r.begin(), r.end(), std::string(h)) - r.begin());
+	};
+	const long n = (long)r.size();
+	// The fragment heads, each once.
+	CHECK(at("ns_php") < n);
+	CHECK(at("ns_madc") < n);
+	CHECK(at("ns_madc_host") < n);
+	std::set<std::string> uniq(r.begin(), r.end());
+	CHECK(uniq.size() == r.size());
+	// Every root is a dialect fragment: a fragment's `println(stderr, ...)`
+	// names the dialect's own stream and pulls no stdio.h.
+	for ( const std::string &root : r )
+	{
+		INFO("root: " << root);
+		CHECK(embedded_dialect_fragment_p(root));
+	}
+	CHECK(at("stdio.h") == n);
+	// The auto-include order: ns_php ahead of ns_madc.
+	CHECK(at("ns_php") < at("ns_madc"));
+	// Nothing else: never a C header, never a C++ system header.
+	CHECK(at("math.h") == n);
+	CHECK(at("cstddef") == n);
+	CHECK(at("string") == n);
+	CHECK(at("iostream") == n);
+	// A strict compile has no dialect surface.
+	Program strict;
+	REQUIRE(strict.set_language_standard("c++17"));
+	std::vector<madc::dis::istring> none;
+	CHECK(!strict.dialect_image_roots(none));
+	CHECK(none.empty());
+}
+
+// The discovery walk filters a carrier's profiles by role, through the
+// production walker (probe_forest_chain over an explicit carrier file): the
+// system walk skips a foreign-role profile without opening a reader on it,
+// and a walk of that role takes only it.
+TEST_CASE("Role: the discovery walk takes only its own role, never opening another's") {
+	MIR_context_t mir_ctx = MIR_init();
+	c2mir_init(mir_ctx);
+	c2m_ctx_t c2m = cir_init(mir_ctx);
+	REQUIRE(c2m != nullptr);
+	{
+		std::shared_ptr<Program> prog;
+		CirBuilder *builder = NULL;
+		std::string main_path;
+		node_t tree = build_two_file_module(prog, builder, c2m, main_path);
+		REQUIRE(tree != nullptr);
+		cir_frozen_forest f;
+		REQUIRE(cir_freeze_forest(CIR_NODE(tree), main_path.c_str(), f));
+		std::vector<uint8_t> foreign, system;
+		REQUIRE(role_image(f, foreign_role, foreign));
+		REQUIRE(role_image(f, CIR_FOREST_ROLE_SYSTEM, system));
+
+		// The carrier: the foreign profile first, the system profile after it.
+		std::vector<uint8_t> carrier(37, 0xab);
+		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
+		carrier.insert(carrier.end(), foreign.begin(), foreign.end());
+		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
+		carrier.insert(carrier.end(), system.begin(), system.end());
+
+		// The peek: a profile's role and the profile below it, from its
+		// footer and segment table.
+		uint32_t role = 99;
+		size_t below = 1;
+		REQUIRE(cir_forest_profile_role(carrier.data(), carrier.size(), role, &below));
+		CHECK(role == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+		REQUIRE(below > 0u);
+		REQUIRE(cir_forest_profile_role(carrier.data(), below, role, &below));
+		CHECK(role == foreign_role);
+		CHECK(below == 0u);
+		CHECK(!cir_forest_profile_role(carrier.data(), 37, role));
+
+		// One file per carrier: a carrier image is cached by its path.
+		static int carriers = 0;
+		const std::string stem = "/tmp/madc_role_walk_" + std::to_string((long)getpid())
+				       + "_" + std::to_string(++carriers);
+		const std::string both = stem + "_both.forest", image = stem + "_foreign.forest";
+		{
+			std::ofstream o(both.c_str(), std::ios::binary);
+			o.write((const char *)carrier.data(), (std::streamsize)carrier.size());
+		}
+		{
+			std::ofstream o(image.c_str(), std::ios::binary);
+			o.write((const char *)foreign.data(), (std::streamsize)foreign.size());
+		}
+
+		// Both profiles: each walk finds its own; the system walk opened one
+		// reader, on the system profile.
+		{
+			Program p;
+			p.forest_bind_path = both;
+			bool mismatch = false;
+			CirFrozenForest *sys = p.probe_forest_chain(Program::forestMatchAny, mismatch,
+								   true, CIR_FOREST_ROLE_SYSTEM);
+			REQUIRE(sys != nullptr);
+			CHECK(sys->role() == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+			CHECK(p._forest_readers.size() == 1u);
+			CirFrozenForest *other = p.probe_forest_chain(Program::forestMatchAny, mismatch,
+								     true, foreign_role);
+			REQUIRE(other != nullptr);
+			CHECK(other->role() == foreign_role);
+			CHECK(other != sys);
+		}
+		// The foreign profile alone: the system walk finds nothing and opens
+		// no reader on it.
+		{
+			Program p;
+			p.forest_bind_path = image;
+			bool mismatch = false;
+			CHECK(p.probe_forest_chain(Program::forestMatchAny, mismatch, true,
+						   CIR_FOREST_ROLE_SYSTEM) == nullptr);
+			CHECK(p._forest_readers.empty());
+			CirFrozenForest *other = p.probe_forest_chain(Program::forestMatchAny, mismatch,
+								     true, foreign_role);
+			REQUIRE(other != nullptr);
+			CHECK(other->role() == foreign_role);
+		}
+		std::remove(both.c_str());
+		std::remove(image.c_str());
+		delete builder;
+	}
+	cir_finish(c2m);
+	c2mir_finish(mir_ctx);
+	MIR_finish(mir_ctx);
 }

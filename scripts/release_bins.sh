@@ -21,7 +21,8 @@
 # never tagged). The archive starts at FIRST, the first archived release.
 #
 #   release_bins.sh list                  every release and its archive state
-#   release_bins.sh check                 every release has an entry (no exec;
+#   release_bins.sh check                 every release has an entry, every one
+#                                         since MAP_FIRST its callgrind map (no exec;
 #                                         the master push gate runs this,
 #                                         after its selftest)
 #   release_bins.sh selftest              the check's negative control: an
@@ -69,6 +70,10 @@ cd "$(dirname "$0")/.." || exit 9
 ROOT=$(pwd)
 ARCH="${MADC_RELEASE_BINS_DIR:-$ROOT/tmp/release-bins}"
 FIRST=v0.72.0
+# The first release with a callgrind map (owner 2026-10-08: keep a map for
+# every release). `check` refuses a release since then without one, so the
+# map is made when the release is archived (/release step 13), never later.
+MAP_FIRST=v0.102.1
 REMOTE="${MADC_RELEASE_BINS_REMOTE:-dev@localhost}"
 REMOTE_PORT="${MADC_RELEASE_BINS_PORT:-2299}"
 REMOTE_ROOT="${MADC_RELEASE_BINS_REMOTE_ROOT:-/workspace/madc}"
@@ -195,8 +200,14 @@ cmd_check() {
 			ok|skip) ;;
 			*) echo "release_bins: $v is $s — run: scripts/release_bins.sh backfill $v (build container), then sync" >&2; bad=$((bad+1));;
 		esac
+		# An archived release since MAP_FIRST carries its callgrind map.
+		if [ "$s" = ok ] && [ "$(printf '%s\n%s\n' "$MAP_FIRST" "$v" | sort -V | head -1)" = "$MAP_FIRST" ] \
+		   && [ ! -f "$ARCH/$v/callgrind/summary.tsv" ]; then
+			echo "release_bins: $v has no callgrind map — run: scripts/release_bins.sh map $v (build container), then sync" >&2
+			bad=$((bad+1))
+		fi
 	done < <(releases)
-	[ $bad -eq 0 ] && echo "release_bins: every release since $FIRST is archived"
+	[ $bad -eq 0 ] && echo "release_bins: every release since $FIRST is archived, every one since $MAP_FIRST mapped"
 	[ $bad -eq 0 ]
 }
 
@@ -218,11 +229,15 @@ cmd_selftest() {
 	fi
 	mkdir -p "$t/$v/bin"; printf '#!/bin/sh\n' > "$t/$v/bin/madc-release"; chmod +x "$t/$v/bin/madc-release"
 	printf 'version: %s\nlibmadc: static\n' "$v" > "$t/$v/PROVENANCE"
+	if MADC_RELEASE_BINS_DIR="$t" bash "$0" check > /dev/null 2>&1; then
+		rm -rf "$t"; echo "release_bins: SELFTEST FAILED — $v archived without its callgrind map passed" >&2; return 1
+	fi
+	mkdir -p "$t/$v/callgrind"; printf '# selftest map\n' > "$t/$v/callgrind/summary.tsv"
 	if ! MADC_RELEASE_BINS_DIR="$t" bash "$0" check > /dev/null 2>&1; then
 		rm -rf "$t"; echo "release_bins: SELFTEST FAILED — a complete archive failed" >&2; return 1
 	fi
 	rm -rf "$t"
-	echo "release_bins: selftest OK (a missing release blocks, a complete archive passes)"
+	echo "release_bins: selftest OK (a missing release or map blocks, a complete archive passes)"
 }
 
 cmd_archive() {
@@ -250,8 +265,8 @@ cmd_archive() {
 # (through v0.100.1 the release link resolved -lmadc in lib/, where only a dev
 # build leaves a libmadc.so: src/Makefile CLI_LINK). `symbols` keeps them: a
 # no-op strip shadows strip(1) and the system-header pack is skipped
-# (WITH_FOREST=none: from 0.105.0 only the dialect-only container rides), so
-# callgrind can name every function.
+# (WITH_FOREST=none: 0.105.0 still packed its dialect container; from 0.106.0
+# the dialect is builtin and nothing rides), so callgrind can name every function.
 build_release() {
 	local c="$1" b="$2" log="$3" sym="${4:-}" path="$PATH" extra=""
 	rm -rf "$b"; mkdir -p "$b" || return 1

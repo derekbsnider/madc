@@ -19,7 +19,7 @@
 #include "madc_memory.h"
 #include "madc_mcp.h"
 #include "madc_jsonrpc.h"	// int_field: a record's seq
-#include "madc_modules.h"	// madc_module_entry_point: a module's tools
+#include "madc_module.h"	// MadcModuleDescription: an imported module's tools
 #include "madc_module_tools.h"
 #include "madcdis/hub.h"
 
@@ -45,10 +45,9 @@ void add_served_tools(tools::registry &tools, memory::project &memory, Program *
     tools::add_graph_tools(tools);
     memory.add_tools(tools);
     if ( prog && prog->is_auto_library_loading_enabled() )
-	for ( const dis::istring &spelling : prog->loaded_modules() )
-	    if ( madc_module_tools_fn add = reinterpret_cast<madc_module_tools_fn>(
-		     madc_module_entry_point(spelling, madc_module_entry::tools)) )
-		add(tools);
+	for ( const Program::ImportedModule &m : prog->imported_modules )
+	    if ( m.desc->tools )
+		m.desc->tools(tools);
 }
 
 tools::tier tier_of(int64_t code)

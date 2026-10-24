@@ -1,0 +1,8 @@
+lt: yes
+le: no
+lt-and-gt: yes
+lt-member: yes
+decl-member: 2
+decl-ptr: 4
+decl-obj: 4
+decl-const: 9

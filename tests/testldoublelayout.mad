@@ -1,0 +1,20 @@
+// long double's size and alignment are the TARGET's: what the target
+// compiler's own __SIZEOF_LONG_DOUBLE__ says (16 on x86-64 and Linux aarch64,
+// 8 on Apple arm64), and c2mir's layout of it. The arm64-macos cross madc
+// (a Linux x86-64 host) folded the HOST's sizeof(long double), 16, and laid
+// long double members out 16-aligned for a target whose long double is
+// double. Alignment equals size on every target madc ships.
+// Oracle: gcc 13 / clang 18 on Linux x86-64 and clang -target
+// arm64-apple-macos12 print "size 1" / "align 1".
+#include <stddef.h>
+#include <stdio.h>
+
+struct ldbl_member { char c; long double x; };
+
+int main(void)
+{
+	printf("size %d\n", sizeof(long double) == __SIZEOF_LONG_DOUBLE__);
+	printf("align %d\n", offsetof(struct ldbl_member, x) == __SIZEOF_LONG_DOUBLE__
+		&& _Alignof(long double) == __SIZEOF_LONG_DOUBLE__);
+	return 0;
+}

@@ -11,14 +11,15 @@
 // menu loop does, takes every message including a WM_QUIT; a second timer,
 // dispatched INSIDE that modal loop, calls stop. Pins: the run returns 0, the
 // stop fired, and no WM_QUIT reached the modal loop. A watchdog ends the
-// process (exit 3) if the run does not return. madcwebview.dll and user32 are
-// loaded by name at run time (the DLL search finds madcwebview.dll beside the
-// madc that runs the test); run and stop take the view as a handle and never
+// process (exit 3) if the run does not return. The ui_web module and user32
+// are loaded at run time (ui_web.dll from madc's module directory, beside
+// libmadc: ..\lib\madc\modules); run and stop take the view as a handle and never
 // dereference it on Win32. Off Win32 the test only says so. The few Win32
 // types and kernel32 calls are declared here, by their documented x64
 // shapes, rather than through <windows.h> (B167: madc refuses objidl.h).
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #ifdef _WIN32
 typedef void *HWND;
 typedef void *HMODULE;
@@ -31,6 +32,8 @@ typedef struct { HWND hwnd; UINT message; uintptr_t wParam; intptr_t lParam;
 #define WM_QUIT 0x0012
 #define PM_REMOVE 0x0001
 HMODULE LoadLibraryA(const char *name);
+HMODULE GetModuleHandleA(const char *name);
+DWORD GetModuleFileNameA(HMODULE m, char *buf, DWORD size);
 void *GetProcAddress(HMODULE m, const char *name);
 BOOL FreeLibrary(HMODULE m);
 DWORD GetTickCount(void);
@@ -89,10 +92,19 @@ static void watchdog(HWND w, UINT m, UINT_PTR id, DWORD t)
 
 int main(void)
 {
-	HMODULE wv = LoadLibraryA("madcwebview.dll");
+	// madc's module directory, from libmadc's own file (the process's
+	// image when libmadc is linked into it): <dir>\..\lib\madc\modules,
+	// in a build tree and an install alike.
+	char path[1024];
+	DWORD n = GetModuleFileNameA(GetModuleHandleA("libmadc-0.dll"), path,
+				     (DWORD)sizeof path - 64);
+	while (n > 0 && path[n - 1] != '\\' && path[n - 1] != '/')
+		n--;
+	strcpy(path + n, "..\\lib\\madc\\modules\\ui_web.dll");
+	HMODULE wv = LoadLibraryA(path);
 	HMODULE u32 = LoadLibraryA("user32.dll");
 	if (!wv || !u32) {
-		printf("run-stop: cannot load madcwebview.dll or user32.dll\n");
+		printf("run-stop: cannot load ui_web.dll or user32.dll\n");
 		return 1;
 	}
 	run = (run_fn)GetProcAddress(wv, "madcwebview_run");

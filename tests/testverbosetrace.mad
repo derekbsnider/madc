@@ -1,0 +1,8 @@
+// `-v` turns on the front end's DBG traces: madc_set_verbose, the one writer
+// of madc_verbose, also sets madc_verbose_requested, the process-wide
+// pre-test every DBG reads first (include/datadef.h). A writer that skipped
+// the pre-test would leave every trace in libmadc silent.
+int main()
+{
+    return 0;
+}

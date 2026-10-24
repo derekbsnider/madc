@@ -54,6 +54,14 @@ extern const char *madc_default_stdlib_flavor;
 // freeze containers and consumer tables, where a build-host soname would be
 // wrong.
 extern const char *const madc_stdlib_probe_standin_libs[];
+// The toolchain's library search path (NULL-terminated, possibly empty): the
+// driver's -L list, then its linker's SEARCH_DIRs, as `cc -l<name>` walks
+// them — probed at build time, like the include paths. The -l search on an
+// ELF target (madc_module_link_images) reads it after the command line's -L.
+extern const char *const madc_toolchain_library_dirs[];
+// The toolchain's target triple (its `-dumpmachine`, probed at build time; ""
+// when it answered nothing) — gcc's `-dumpmachine` answer for this madc.
+extern const char *const madc_toolchain_target;
 
 // Table lookup by -stdlib= spelling; NULL when unknown/unbuilt (or empty name).
 // Defined beside the Program accessors in src/lexer.cpp.

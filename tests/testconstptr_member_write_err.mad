@@ -1,0 +1,18 @@
+/* The other half of testconstptr_member_write: a write to a member of a
+ * CONST object stays refused -- through a pointer to const (`p->a`), on a
+ * const object (`c.b`), and through a const pointer to const (`q->d`).
+ * Only the pointer's own const declaration stops reaching the pointee.
+ * Oracle: gcc 13 "assignment of member 'a' in read-only object" (each of
+ * a, b, d); clang 18 "cannot assign to variable ... with const-qualified
+ * type". madc keeps its read-only member wording. */
+struct S { int a; int b; int d; };
+static void via_pointee(struct S *s) { const struct S *p = s; p->a = 2; }
+static int via_object(void) { const struct S c = {1, 1, 1}; c.b = 3; return c.b; }
+static void via_both(struct S *s) { const struct S *const q = s; q->d = 5; }
+int main(void)
+{
+	struct S s = {0, 0, 0};
+	via_pointee(&s);
+	via_both(&s);
+	return via_object();
+}

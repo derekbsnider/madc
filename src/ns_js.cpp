@@ -19,7 +19,6 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -270,6 +269,31 @@ const char *js_stringify_indent_cstr(madc::value *v, int64_t indent)
 	std::string &slot = ns_common::ring_slot();
 	js_stringify_text(slot, v, indent);
 	return slot.c_str();
+}
+
+// The js:: publics (cpp-first-api.md): <ns_js> declares them, libmadc
+// defines them here, resolved mangled-direct. The extern "C" functions below
+// are C-linkage wrappers over the same cores, not the dialect's path.
+namespace js {
+
+int64_t parseInt(const char *text, int64_t radix) { return js_parseInt(text, radix); }
+const char *btoa(const char *input) { return js_btoa_cstr(input); }
+const char *atob(const char *input) { return js_atob_cstr(input); }
+const char *encodeURIComponent(const char *input) { return js_encodeURIComponent_cstr(input); }
+const char *decodeURIComponent(const char *input) { return js_decodeURIComponent_cstr(input); }
+const char *stringify(madc::value &values) { return js_stringify_cstr(&values); }
+const char *stringify(madc::value &v, int64_t indent) { return js_stringify_indent_cstr(&v, indent); }
+bool parse(madc::value &out, const char *text) { return js_parse(&out, text) != 0; }
+bool parse(madc::value &out, madc::value &text) { return js_parse_vtext(&out, &text) != 0; }
+
+std::string &btoa(std::string &result, const char *input) { return *js_btoa(&result, input); }
+std::string &atob(std::string &result, const char *input) { return *js_atob(&result, input); }
+std::string &encodeURIComponent(std::string &result, const char *input)
+	{ return *js_encodeURIComponent(&result, input); }
+std::string &decodeURIComponent(std::string &result, const char *input)
+	{ return *js_decodeURIComponent(&result, input); }
+std::string &stringify(std::string &result, madc::value &values) { return *js_stringify(&result, &values); }
+
 }
 
 extern "C" {

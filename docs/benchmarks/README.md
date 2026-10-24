@@ -38,42 +38,54 @@ milliseconds** — a ratio survives a change of host, absolute times do not.
 ## Execution — C
 
 MIR's own shootout suite (`third_party/mir/c-benchmarks`), `gcc -O2` vs
-`madc -O2`, native binaries both sides. Measured 2026-09-21 on `b3dc26b79`,
-20-core x86-64 container, gcc 13.3.0.
+`madc -O2`, native binaries both sides. Measured 2026-10-23 on `787813947`
+(the released madc 0.106.0), 20-core x86-64 container, gcc 13.3.0.
 
 | benchmark | gcc (ms) | madc (ms) | madc/gcc |
 |---|---:|---:|---:|
-| except | 3487 | 1775 | **0.51×** |
-| heapsort | 4791 | 4707 | 0.98× |
-| hash | 3658 | 3618 | 0.99× |
-| binary-trees | 1463 | 1467 | 1.00× |
-| funnkuch-reduce | 1809 | 1901 | 1.05× |
-| spectral-norm | 3490 | 4014 | 1.15× |
-| mandelbrot | 2233 | 2646 | 1.18× |
-| array | 2303 | 2737 | 1.19× |
-| method-call | 2517 | 3059 | 1.22× |
-| hash2 | 3040 | 3801 | 1.25× |
-| lists | 4563 | 5788 | 1.27× |
-| nbody | 1889 | 3648 | 1.89× |
-| matrix | 2119 | 3996 | 1.89× |
-| strcat | 2167 | 4332 | 2.00× |
-| sieve | 1456 | 2990 | 2.05× |
+| hash | 3968 | 3760 | **0.95×** |
+| except | 3563 | 3458 | **0.97×** |
+| funnkuch-reduce | 1960 | 1950 | **0.99×** |
+| heapsort | 5302 | 5273 | **0.99×** |
+| binary-trees | 1565 | 1558 | **1.00×** |
+| array | 2991 | 3145 | 1.05× |
+| hash2 | 3315 | 3742 | 1.13× |
+| lists | 4770 | 5423 | 1.14× |
+| method-call | 2653 | 3029 | 1.14× |
+| spectral-norm | 3616 | 4161 | 1.15× |
+| mandelbrot | 2323 | 2728 | 1.17× |
+| matrix | 2169 | 3982 | 1.84× |
+| nbody | 1961 | 3773 | 1.92× |
+| sieve | 1511 | 2928 | 1.94× |
+| strcat | 2345 | 4606 | 1.96× |
 
-**Geometric mean: 1.24× — madc runs at ~81% of gcc's speed.**
+**Geometric mean: 1.24× — madc runs at ~81% of gcc's speed** (1.29× on the
+0.106.0 candidate `ded0cb01c`, 2026-10-22). `oggenc` is not in the mean:
+madc refuses it (B224, a one-element row of a multi-dimensional array member;
+0.105.0 refuses it the same way).
+
+`except` was 0.51× on 2026-09-21 (`b3dc26b79`) and is 0.97× here; every
+release from 0.101.0 through 0.106.0 measures ~3400 ms (B228). That one row
+moves the mean from 1.19× to 1.24×.
+
+Against the previous release, the same binaries interleaved (2026-10-23,
+0.106.0 / 0.105.0): geometric mean **0.978×** over 19 C, C++ and fp
+benchmarks — method-call 0.89×, hash2 and sieve 0.90×, matrix 0.95×; hash
+1.04× with byte-identical instructions (code placement only).
 
 ### Read the distribution, not one benchmark
 
-madc ties or beats gcc on a third of the suite and is *twice as fast* on
-`except`. The outliers are known and documented by MIR's own author in
-`third_party/mir/c-benchmarks/README.md`: *"matrix, nbody, and spectral-norm
-can be improved by loop-invariant motion"* — and matrix and nbody are two of
-our three worst. He also notes *"except was considerably improved by
-inlining"* — our best result. Call-intensive benchmarks are slow because every
-MIR call goes through a thunk that permits hot-swapping function code, which
-is a deliberate MIR design property, not a defect.
+madc ties or beats gcc on five of the fifteen. The outliers are known and
+documented by MIR's own author in `third_party/mir/c-benchmarks/README.md`:
+*"matrix, nbody, and spectral-norm can be improved by loop-invariant motion"*
+— and matrix and nbody are two of our four worst. He also notes *"except was
+considerably improved by inlining"* — the September result B228 tracks.
+Call-intensive benchmarks are slow because every MIR call goes through a thunk
+that permits hot-swapping function code, which is a deliberate MIR design
+property, not a defect.
 
-**Quoting `sieve` alone overstates the gap by 65%.** It is the tail of the
-distribution (2.05×), and its gap is not the missing vectorizer either:
+**Quoting `sieve` alone overstates the gap by 56%.** It is in the tail of the
+distribution (1.94×), and its gap is not the missing vectorizer either:
 blocking gcc's vectorizer and memset idiom (`-fno-tree-vectorize
 -fno-builtin`) moved gcc only 1467 → 1799 ms.
 
@@ -104,8 +116,8 @@ Whatever the remaining gap is, it is upstream MIR's scalar code generation.
 > figure came from a modified, sleep-free 300-frame variant.
 > `docs/benchmarks/fp-callchain.c` is an ORIGINAL benchmark isolating the same
 > mechanism — int→double converts feeding `sin`/`cos`/`sqrt`, bounded and
-> deterministic. Measured 2026-09-21: **gcc 26 ms, madc 27 ms, 1.04×**, output
-> identical. The pxor fix is holding.
+> deterministic. Measured 2026-10-23 on `787813947` (argument 20000): **gcc
+> 248 ms, madc 255 ms, 1.03×**, output identical. The pxor fix is holding.
 
 **Why this benchmark exists.** MIR's x86-64 generator emitted the merging
 scalar SSE converts (`cvtsi2ss` / `cvtsi2sd` / `cvtss2sd` / `cvtsd2ss`) bare,
@@ -136,7 +148,16 @@ real libstdc++.
 | `virtual-call.cpp` | virtual dispatch through a base pointer (the vtable path) |
 | `string-build.cpp` | `std::string` append + size, the libstdc++ interop path |
 
-Numbers are produced by the lane; see `history.tsv` for the tracked series.
+Measured 2026-10-23 on `787813947` (the released madc 0.106.0), argument
+20000:
+
+| benchmark | g++ (ms) | madc (ms) | madc/g++ |
+|---|---:|---:|---:|
+| virtual-call | 505 | 486 | **0.96×** |
+| vector-sum | 818 | 996 | 1.22× |
+| string-build | 104 | 207 | 1.99× |
+
+Geometric mean 1.33×. See `history.tsv` for the tracked series.
 
 ### What the C++ numbers actually compare
 
@@ -158,8 +179,10 @@ the cleaner read on raw codegen; these are the read on C++ interop cost.
 ## Compile time
 
 `gcc -O0 -c` is the must-beat bar (`.claude/rules/gcc-parity.md`: gcc is the
-performance baseline, not only the codegen one). Measured 2026-09-21 on
-`b3dc26b79`:
+performance baseline, not only the codegen one). Measured 2026-10-22 on
+`ded0cb01c`, the packaged madc 0.106.0 candidate (its default, `-O1`) against
+`gcc`/`g++ -O0 -c`, every compiler at its default `--std=`, best of 7,
+interleaved:
 
 **Measure with `bin/madc-release`, never `bin/madc`.** The `-O0` development
 build is 1.5–2.6× slower than the release build, which is what users actually
@@ -167,33 +190,64 @@ run. Timing the dev build against gcc's release build produced a 3.76×
 geometric mean that was pure artifact; `benchmark_lane.sh` now defaults to the
 release binary and warns if pointed elsewhere.
 
-**Small files are startup-dominated; large files are where the forest pays.**
-Both regimes belong in the table, or it tells the opposite half of the story
-depending on which sources were picked:
+**Both regimes belong in the table** — small files are startup-dominated,
+large files are where the forest pays — or it tells half the story depending
+on which sources were picked:
 
 | source | gcc/g++ (ms) | madc (ms) | madc/gcc |
 |---|---:|---:|---:|
-| hello.c (trivial) | 12 | 28 | 2.33× |
-| sieve.c (small) | 14 | 24 | 1.71× |
-| string-build.cpp (`<string>`) | 72 | 173 | 2.40× |
-| hello.cpp (`<iostream>`) | 132 | 103 | **0.78×** |
-| smaug `act_wiz.c` (12,041 lines) | 400 | 246 | **0.61×** |
-| smaug `build.c` (10,312 lines) | 293 | 227 | **0.77×** |
-| smaug `magic.c` (7,394 lines) | 238 | 183 | **0.77×** |
-| smaug `db.c` (7,936 lines) | 231 | 186 | **0.81×** |
-| smaug `act_info.c` (6,076 lines) | 197 | 161 | **0.82×** |
+| hello.c (trivial) | 10 | 6 | **0.60×** |
+| sieve.c (small) | 14 | 8 | **0.57×** |
+| virtual-call.cpp | 19 | 12 | **0.63×** |
+| vector-sum.cpp (`<vector>`) | 80 | 51 | **0.64×** |
+| string-build.cpp (`<string>`) | 96 | 57 | **0.59×** |
+| hello.cpp (`<iostream>`) | 145 | 83 | **0.57×** |
+| smaug `act_wiz.c` (12,041 lines) | 386 | 199 | **0.52×** |
+| smaug `build.c` (10,312 lines) | 266 | 181 | **0.68×** |
+| smaug `db.c` (7,936 lines) | 220 | 157 | **0.71×** |
 
-**On real C translation units madc compiles 20–40% faster than gcc `-O0`** —
-the frozen header forest earns that: gcc re-parses the system headers on every
-TU, madc does not. The trivial-file gap is fixed startup cost, tracked
-separately by the cold-startup arc (bar: tinycc parity, ~22 ms).
+**madc compiles every row 29–48% faster than gcc `-O0`.** The frozen header
+forest earns the large-file rows: gcc re-parses the system headers on every
+TU, madc does not. clang `-O0` is still faster on the large C files (act_wiz
+156 ms, build 127, db 119).
+
+Re-checked 2026-10-23 on the released `787813947` (the issue #8 fixes, and
+B231: a C++ `-c` compile merges the unwind personality's prebuilt object
+instead of generating it). That run's absolute times sit 10–20% above these
+for gcc and clang as well as madc (host load); every madc/gcc ratio matches
+to within 0.04 except virtual-call.cpp, 0.52×.
+
+Against the previous release, the same sources interleaved (2026-10-23,
+0.106.0 / 0.105.0): geometric mean **0.565×** over 40 `-c` and `-o`
+compiles — C files 0.35–0.63×, C++ 0.91–0.96×, lua 5.3 (issue #8's
+`lua53.c`) 170 → 152 ms.
 
 Two traps this table records so they are not rediscovered:
 
-- **`.c` does not select C mode.** madc chooses semantics from `--std=`, not
-  from the file extension. Compiling the SMAUG files without `--std=c17` put
-  them through the C++ path and cost 25–30% (`db.c` 269 ms vs 186 ms).
+- **`--std=` decides the semantics.** A `.c` file defaults to C (`gnu17`);
+  a `--std=c++…` on a `.c` file puts it through the C++ path, which cost the
+  SMAUG files 25–30% when it happened (`db.c` 269 ms vs 186 ms).
 - **Flags precede the source path** in a madc command line.
+
+## Real code — SQLite 3.54.0
+
+The amalgamation (`sqlite3.c`, 271,072 lines) to an object, best of 3,
+2026-10-23 on `787813947`; then the `--enable-all` `testfixture` built by each
+compiler (`configure CC=…`, `-O2`, parallel make) and SQLite's
+`veryquick.test` run on it:
+
+| | madc | gcc 13.3 | clang 18.1 |
+|---|---:|---:|---:|
+| `sqlite3.c` → object, `-O0` | 1.9 s | 3.0 s | **1.0 s** |
+| `sqlite3.c` → object, `-O2` | **3.2 s** | 16.8 s | 15.7 s |
+| object size `-O0` / `-O2` | 3.6 / 2.6 MB | 1.6 / 1.4 MB | 1.6 / 1.7 MB |
+| `testfixture` build | **21 s** | 36 s | 38 s |
+| `veryquick.test` run | 155 s | **141 s** | **141 s** |
+| `veryquick.test` result | 2 of 394,060 fail | 2 of 394,060 | 2 of 394,060 |
+
+The two failures are the same tests under all three compilers
+(`sessionnoact-4.3`, `zipfile-25.0`: the test host's Tcl, not the compiler).
+madc's SQLite runs its test suite at ~91% of gcc's speed.
 
 ## When to run this
 

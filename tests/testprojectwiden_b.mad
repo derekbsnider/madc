@@ -1,7 +1,11 @@
-// R4-lite widening reducer, TU 2 — the WIDER closure. `stdout` auto-includes
-// <stdio.h> (size_t pulls <stddef.h> again), so this TU's restore finds the
-// shared forest already materialized under TU 1's stddef-only filter and must
-// union in the stdio closure — FILE only materializes on the incremental pass.
+// R4-lite widening reducer, TU 2 — the WIDER closure. It includes <stdio.h>
+// (size_t pulls <stddef.h> again), so this TU's restore finds the shared
+// forest already materialized under TU 1's stddef-only filter and must union
+// in the stdio closure — FILE only materializes on the incremental pass. (The
+// include is written: the dialect's stdio streams are hard-coded and pull no
+// header, owner 2026-10-17.)
+#include <stdio.h>
+
 size_t narrow_len(const char *s);
 
 int main()

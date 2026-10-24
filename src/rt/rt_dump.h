@@ -65,6 +65,23 @@ static inline int madc_dump_entry_col(int flavor, int depth)
 	     + (flavor == MADC_DUMP_VAR_DUMP ? 2 : 4);
 }
 
+/* --- the madc dialect's stdio streams ----------------------------------- */
+/* Under --std=madc, stdin / stdout / stderr are hard-coded, as println is
+ * (owner 2026-10-17): a use no <stdio.h> declared lowers to
+ * __madc_stdio_stream(which) — the target libc's own stream (FILE* as void*),
+ * never a spelling of its backing symbol (glibc's `stderr` object, darwin's
+ * `__stderrp`, UCRT's `__acrt_iob_func(2)`). `which` crosses the
+ * generated/runtime boundary as a call argument; the compiler-side
+ * StdioStream (include/datatokens.h) converts to it at the one boundary
+ * (CirBuilder::stdio_stream_value). Thread contract: reads the libc's stream
+ * pointers, as a use of `stderr` does; no state of its own. */
+enum madc_stdio_stream {
+	MADC_STDIO_IN  = 0,
+	MADC_STDIO_OUT = 1,
+	MADC_STDIO_ERR = 2
+};
+void       *__madc_stdio_stream(int which);
+
 /* --- the capture sink (print_r's $return) ------------------------------- */
 /* NULL sink -> stdout; non-NULL -> an opaque growable buffer, OR a
  * pass-through stream sink from __madc_dump_sink_file (FILE* as void*

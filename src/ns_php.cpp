@@ -31,7 +31,6 @@
 #include <queue>
 #include <stack>
 #include <iterator>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -1533,6 +1532,107 @@ std::string &number_format(std::string &result, int64_t number, std::string &sep
 	{ return *php_number_format(&result, number, &separator); }
 std::string &wordwrap(std::string &s, int64_t width, std::string &separator)
 	{ return *php_wordwrap(&s, width, &separator); }
+
+}
+
+// The php:: publics (cpp-first-api.md): <ns_php> declares them,
+// libmadc defines them here, resolved mangled-direct. The extern "C"
+// functions below are C-linkage wrappers over the same cores.
+namespace php {
+
+void explode(madc::value &out, const char *delim, const char *text) { php_explode(&out, delim, text); }
+int64_t count(madc::value &values) { return php_count(&values); }
+void array_keys(madc::value &out, madc::value &values) { php_array_keys(&out, &values); }
+int64_t time() { return (int64_t)::time((time_t *)0); }
+int64_t array_push(madc::value &values, const char *text) { return php_array_push_str(&values, text); }
+int64_t array_push(madc::value &values, int64_t v) { return php_array_push_int(&values, v); }
+int64_t array_push(madc::value &values, double v) { return php_array_push_real(&values, v); }
+int64_t array_push(madc::value &values, bool v) { return php_array_push_bool(&values, v); }
+int64_t array_push(madc::value &values, const madc::value &v) { return php_array_push_value(&values, &v); }
+int64_t array_get_int(madc::value &values, int64_t index) { return php_array_get_int(&values, index); }
+const char *array_get_cstr(madc::value &values, int64_t index) { return php_array_get_cstr(&values, index); }
+void array_reverse(madc::value &values) { php_array_reverse(&values); }
+int64_t in_array(const char *needle, madc::value &values) { return php_in_array(needle, &values); }
+bool array_key_exists(const char *key, madc::value &values) { return php_array_key_exists(key, &values) != 0; }
+bool array_key_exists(int64_t key, madc::value &values) { return php_array_key_exists_int(key, &values) != 0; }
+const char *strtolower(madc::value &s) { return php_strtolower_value(&s); }
+const char *strtolower(const char *s) { return php_strtolower(s); }
+const char *strtoupper(madc::value &s) { return php_strtoupper_value(&s); }
+const char *strtoupper(const char *s) { return php_strtoupper(s); }
+const char *ucfirst(madc::value &s) { return php_ucfirst_value(&s); }
+const char *ucfirst(const char *s) { return php_ucfirst_cstr(s); }
+bool ctype_digit(madc::value &s) { return php_ctype_digit_value(&s) != 0; }
+bool ctype_digit(const char *s) { return php_ctype_digit(s) != 0; }
+bool file_exists(madc::value &filename) { return php_file_exists_value(&filename) != 0; }
+bool file_exists(const char *filename) { return php_file_exists(filename) != 0; }
+bool is_dir(madc::value &filename) { return php_is_dir_value(&filename) != 0; }
+bool is_dir(const char *filename) { return php_is_dir(filename) != 0; }
+bool is_readable(madc::value &filename) { return php_is_readable_value(&filename) != 0; }
+bool is_readable(const char *filename) { return php_is_readable(filename) != 0; }
+bool unlink(madc::value &filename) { return php_unlink_value(&filename) != 0; }
+bool unlink(const char *filename) { return php_unlink(filename) != 0; }
+bool mkdir(const char *dir) { return php_mkdir(dir, 0777) != 0; }
+bool mkdir(const char *dir, int64_t mode) { return php_mkdir(dir, mode) != 0; }
+bool rmdir(const char *dir) { return php_rmdir(dir) != 0; }
+bool file_get_contents(madc::value &out, const char *filename) { return php_file_get_contents(&out, filename) != 0; }
+bool file_get_contents(madc::value &out, madc::value &filename) { return php_file_get_contents_vpath(&out, &filename) != 0; }
+int64_t file_put_contents(const char *filename, const char *data) { return php_file_put_contents_cstr(filename, data); }
+int64_t file_put_contents(const char *filename, madc::value &data) { return php_file_put_contents_value(filename, &data); }
+int64_t intval(madc::value &v) { return php_intval_value(&v); }
+int64_t intval(const char *s) { return php_intval_cstr(s); }
+const char *trim(madc::value &s) { return php_trim_value(&s); }
+const char *trim(const char *s) { return php_trim_cstr(s); }
+const char *ltrim(madc::value &s) { return php_ltrim_value(&s); }
+const char *ltrim(const char *s) { return php_ltrim_cstr(s); }
+const char *rtrim(madc::value &s) { return php_rtrim_value(&s); }
+const char *rtrim(const char *s) { return php_rtrim_cstr(s); }
+const char *chop(madc::value &s) { return php_rtrim_value(&s); }
+const char *chop(const char *s) { return php_rtrim_cstr(s); }
+const char *lcfirst(madc::value &s) { return php_lcfirst_value(&s); }
+const char *lcfirst(const char *s) { return php_lcfirst_cstr(s); }
+const char *nl2br(madc::value &s) { return php_nl2br_value(&s); }
+const char *nl2br(const char *s) { return php_nl2br_cstr(s); }
+const char *str_rot13(madc::value &s) { return php_str_rot13_value(&s); }
+const char *str_rot13(const char *s) { return php_str_rot13_cstr(s); }
+const char *str_repeat(madc::value &s, int64_t count) { return php_str_repeat_value(&s, count); }
+const char *str_repeat(const char *s, int64_t count) { return php_str_repeat_cstr(s, count); }
+const char *str_replace(const char *search, const char *replace, madc::value &subject) { return php_str_replace_value(search, replace, &subject); }
+const char *str_replace(const char *search, const char *replace, const char *subject) { return php_str_replace_cstr(search, replace, subject); }
+const char *str_pad(madc::value &s, int64_t length, const char *pad) { return php_str_pad_value(&s, length, pad); }
+const char *str_pad(const char *s, int64_t length, const char *pad) { return php_str_pad_cstr(s, length, pad); }
+int64_t str_word_count(madc::value &s) { return php_str_word_count_value(&s); }
+int64_t str_word_count(const char *s) { return php_str_word_count_cstr(s); }
+const char *chunk_split(madc::value &s, int64_t chunklen, const char *separator) { return php_chunk_split_value(&s, chunklen, separator); }
+const char *chunk_split(const char *s, int64_t chunklen, const char *separator) { return php_chunk_split_cstr(s, chunklen, separator); }
+const char *number_format(int64_t number, const char *separator) { return php_number_format_sep(number, separator); }
+const char *wordwrap(madc::value &s, int64_t width, const char *brk) { return php_wordwrap_value(&s, width, brk); }
+const char *wordwrap(const char *s, int64_t width, const char *brk) { return php_wordwrap_cstr(s, width, brk); }
+const char *dirname(madc::value &path) { return php_dirname_value(&path, 1); }
+const char *dirname(madc::value &path, int64_t levels) { return php_dirname_value(&path, levels); }
+const char *dirname(const char *path) { return php_dirname_cstr(path, 1); }
+const char *dirname(const char *path, int64_t levels) { return php_dirname_cstr(path, levels); }
+const char *basename(madc::value &path) { return php_basename_value(&path, ""); }
+const char *basename(madc::value &path, const char *suffix) { return php_basename_value(&path, suffix); }
+const char *basename(const char *path) { return php_basename_cstr(path, ""); }
+const char *basename(const char *path, const char *suffix) { return php_basename_cstr(path, suffix); }
+const char *implode(const char *glue, madc::value &values) { return php_implode_cstr(glue, &values); }
+madc::value &array_pop(madc::value &out, madc::value &values) { return *php_array_pop_value(&out, &values); }
+madc::value &array_shift(madc::value &out, madc::value &values) { return *php_array_shift_value(&out, &values); }
+madc::value &array_get(madc::value &out, madc::value &values, int64_t index) { php_array_get_value(&values, index, &out); return out; }
+int64_t array_search(const char *needle, madc::value &values) { return php_array_search(needle, &values); }
+void array_unique(madc::value &values) { php_array_unique(&values); }
+void array_unshift(madc::value &values, const char *text) { php_array_unshift(&values, text); }
+void sort(madc::value &values) { php_sort(&values); }
+void rsort(madc::value &values) { php_rsort(&values); }
+void array_slice(madc::value &dest, madc::value &src, int64_t offset, int64_t length) { php_array_slice(&dest, &src, offset, length); }
+void array_merge(madc::value &dest, madc::value &src) { php_array_merge(&dest, &src); }
+void array_column(madc::value &dest, madc::value &src, int64_t column_index) { php_array_column(&dest, &src, column_index); }
+std::string &implode(std::string &result, const char *glue, madc::value &values) { return *php_implode(&result, glue, &values); }
+int64_t array_push(madc::value &values, std::string &text) { return php_array_push_str(&values, text.c_str()); }
+std::string &array_pop(std::string &result, madc::value &values) { return *php_array_pop(&result, &values); }
+std::string &array_get(std::string &result, madc::value &values, int64_t index) { return *php_array_get(&result, &values, index); }
+bool array_key_exists(std::string &key, madc::value &values) { return php_array_key_exists(key.c_str(), &values) != 0; }
+std::string &array_shift(std::string &result, madc::value &values) { return *php_array_shift(&result, &values); }
 
 }
 

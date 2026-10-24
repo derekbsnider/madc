@@ -107,14 +107,14 @@ reset_gm
 for src in "$MIRB"/*.c; do
 	nm=$(basename "$src" .c); a=""
 	[ -f "$MIRB/$nm.arg" ] && a=$(sh -c "$(cat "$MIRB/$nm.arg")" 2>/dev/null)
-	run_exec exec-c "$nm" "$src" "--std=c17" gcc $a
+	run_exec exec-c "$nm" "$src" "--std=gnu17" gcc $a
 done
 gm exec-c
 echo
 
 echo "EXECUTION — floating point (v0.93.0 MIR false-dependency sentinel)"
 reset_gm
-run_exec exec-fp fp-callchain docs/benchmarks/fp-callchain.c "--std=c17" gcc 20000
+run_exec exec-fp fp-callchain docs/benchmarks/fp-callchain.c "--std=gnu17" gcc 20000
 gm exec-fp
 echo
 
@@ -132,13 +132,13 @@ echo "COMPILE — TU to object (gcc -O0 vs madc; madc's front end is the subject
 printf "  %-18s %8s %8s %8s\n" source "gcc" "madc" ratio
 reset_gm
 for src in "$MIRB"/sieve.c "$MIRB"/binary-trees.c; do
-	[ -e "$src" ] && run_compile compile-c "$(basename "$src")" "$src" "--std=c17" gcc
+	[ -e "$src" ] && run_compile compile-c "$(basename "$src")" "$src" "--std=gnu17" gcc
 done
 # A LARGE real TU: small files are startup-dominated and large ones are where
 # the frozen forest pays, so a table of only small files tells half the story
 # (and the opposite half). SMAUG is a symlink; skipped when absent.
 for src in MadSMAUG/upstream/smaug1.8/src/db.c MadSMAUG/upstream/smaug1.8/src/act_wiz.c; do
-	[ -e "$src" ] && run_compile compile-c-large "$(basename "$src") (large)" "$src" "--std=c17 -IMadSMAUG/upstream/smaug1.8/src" gcc
+	[ -e "$src" ] && run_compile compile-c-large "$(basename "$src") (large)" "$src" "--std=gnu17 -IMadSMAUG/upstream/smaug1.8/src" gcc
 done
 for src in "$CPPB"/*.cpp; do
 	[ -e "$src" ] && run_compile compile-cpp "$(basename "$src")" "$src" "--std=c++11" g++

@@ -1,0 +1,17 @@
+// With SOURCE_DATE_EPOCH set, __TIMESTAMP__ names that instant, read as UTC,
+// in asctime's spelling — so __DATE__, __TIME__ and __TIMESTAMP__ all name
+// the one reproducible instant. Oracle: clang 18, -std=gnu17,
+// SOURCE_DATE_EPOCH=1696377600 (2023-10-04 00:00:00 UTC, a Wednesday with a
+// one-digit day), the lines below verbatim, under any TZ. gcc 13 keeps the
+// file's mtime here (it reads SOURCE_DATE_EPOCH only for __DATE__/__TIME__);
+// madc follows clang, the reproducible answer. madc before the fix: "use of
+// undeclared identifier '__TIMESTAMP__'".
+#include <stdio.h>
+
+int main(void)
+{
+	printf("stamp: [%s]\n", __TIMESTAMP__);
+	printf("date: [%s] time: [%s]\n", __DATE__, __TIME__);
+	printf("size: %d\n", (int)sizeof __TIMESTAMP__);
+	return 0;
+}

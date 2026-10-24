@@ -195,7 +195,14 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 >   (commit `b9c7829`, gcc-verified): cleanup-stack + discard-on-normal; objects in a
 >   try body register on the runtime cleanup stack, `__madc_throw_*` unwinds to
 >   `cleanup_mark`, normal exit discards (cleanup-attribute handles normal teardown);
->   dtor runs exactly once per path. 3 exception tests flipped green (incl. a
+>   dtor runs exactly once per path. 2026-10-19: the discard and the try frame's pop
+>   are SCOPE-BOUND (guard locals: `__madc_cleanup_leave` per object,
+>   `__madc_try_leave` per try) — a deferred discard double-destroyed a nested
+>   block's object, and a return/break/continue/goto out of a try body left its
+>   frame live for a later throw (`tests/testtry_scope_exit`). Still open: an object
+>   in a frame with NO lexical try is not registered, so a throw unwinding through
+>   that frame skips its destructor (`void h() { T x(1); throw 2; }` called inside
+>   a caller's try: g++ runs ~T, madc does not). 3 exception tests flipped green (incl. a
 >   cross-function throw). REMAINING is a MIR-backend bug (folded into P1.1b below):
 >   `testexcept_dtor_{string,order,nested}` crash in the MIR JIT on RE-ENTRANT dtor
 >   calls during unwind + longjmp (3+ objects or a string object) — lowering is
@@ -206,7 +213,13 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 >   parse; typed cstr/string catch binding needs parser+binding work (used
 >   `catch(...)` as the interim).
 > - **P1.1e — OBJECT / CLASS-typed exceptions with type-matched, inheritance-aware
->   catch (THE major remaining exception gap; verified 2026-06-15).** The SJLJ
+>   catch — DONE 2026-10-19** (owned exception object, Itanium type-name match
+>   table with unambiguous public bases, caught stack for `throw;`, handler
+>   binding by reference / value / pointer; `tests/testcatch_class_*`,
+>   `tests/testcatch_std_exception`). What follows is the pre-fix record. PLAN:
+>   `docs/plans/2026-10-19-class-exceptions.md` (BUGS.md B202, 2026-10-19: since
+>   `4b25ffb80` a class throw carries tag 4 = the class clauses' tag, so every class
+>   handler matches every such throw and binds a default-constructed object). The SJLJ
 >   runtime only carries SCALAR exceptions: `MadcException` is a fixed
 >   `{ int type; int64_t int_val; double double_val; const char *str_val; }` and the
 >   type tag enum is just `INT=1 / DOUBLE=2 / CSTR=3 / ANY=99`. So `throw` of a

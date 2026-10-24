@@ -24,27 +24,18 @@
 # 2). The named binary still does the freezing and the verification; only the
 # carrier changes. Same strip-before-pack ordering applies to that image.
 #
-# --dialect-only (--with-forest=none; pack-slices design §7): the pack-less
-# product still carries the madc dialect surface. The container holds the
-# list's dialect fragments frozen under --std=madc — with the C headers the
-# full pack freezes ahead of them — and nothing else: no source arm, no AOT
-# ledger, no shared standards. Such a build reads system headers from disk (it bakes no
-# MADC_FOREST_EXPECT_*), and a strict compile never binds a madc-only profile.
-#
 # Pack failure = build failure (set -e).
 set -e
 cd "$(dirname "$0")/.."
 . scripts/forest_pack_share.sh	# the standards the one profile serves
 . scripts/forest_pack_layout.sh	# the layout pass (format 60)
-. scripts/forest_pack_roots.sh	# the list's roots by population
+. scripts/forest_pack_c_layer.sh	# the C layer stage and its gate
 
 SIDECAR=0
-DIALECT_ONLY=0
 IMAGE=
 while [ $# -gt 0 ]; do
     case "$1" in
 	--sidecar) SIDECAR=1; shift ;;
-	--dialect-only) DIALECT_ONLY=1; shift ;;
 	--image) IMAGE="$2"; shift 2 ;;
 	--image=*) IMAGE="${1#--image=}"; shift ;;
 	*) break ;;
@@ -55,6 +46,7 @@ IMAGE="${IMAGE:-$BIN}"
 LIST=scripts/forest_pack_headers.txt
 GUARDED_LIST=scripts/forest_pack_guarded.txt
 LEDGER_LIST=scripts/ledger_sources.txt
+STAGE=tmp/forest_pack
 
 # The libstdc++ include root, ASKED not assumed: the guarded roots below are
 # included by absolute path, and a hard-coded /usr/include/c++/<ver> would rot
@@ -72,22 +64,7 @@ if [ -z "$CXX_INCLUDE" ] || [ ! -d "$CXX_INCLUDE" ]; then
     exit 1
 fi
 mkdir -p tmp
-TU=tmp/forest_pack_tu.cpp
-
-# --dialect-only: the roots are the list THROUGH its last dialect fragment —
-# the C headers the full pack freezes ahead of the fragments, then the
-# fragments — so each fragment unit freezes in the same context as the full
-# pack's (an explicitly included fragment gathers no prerequisites: the
-# auto-include alone does).
-if [ "$DIALECT_ONLY" = 1 ]; then
-    DIALECT_LIST=tmp/forest_pack_dialect_headers.txt
-    forest_pack_roots "$LIST" through-dialect > "$DIALECT_LIST"
-    if [ ! -s "$DIALECT_LIST" ]; then
-	echo "forest_pack: --dialect-only: $LIST names no dialect fragment" >&2
-	exit 1
-    fi
-    LIST=$DIALECT_LIST
-fi
+TU=${STAGE}_tu.cpp
 
 # The SOURCE ARM (owner 2026-10-13: the pack holds ALL system headers, never a
 # test-driven subset): every header the C library's, the kernel headers' and
@@ -95,11 +72,8 @@ fi
 # package manager's own lists, packed as source-only units beside the frozen
 # grove (--freeze-sources=) and checked unit by unit by the gate
 # (--units-from). docs/plans/2026-10-13-pack-all-system-headers.md.
-# (None in a dialect-only container: that build's system headers are disk's.)
-SOURCES_LIST=tmp/forest_pack_sources.txt
-if [ "$DIALECT_ONLY" = 1 ]; then
-    : > "$SOURCES_LIST"
-elif ! bash scripts/forest_pack_sources.sh linux "$CXX_INCLUDE" > "$SOURCES_LIST"; then
+SOURCES_LIST=${STAGE}_sources.txt
+if ! bash scripts/forest_pack_sources.sh linux "$CXX_INCLUDE" > "$SOURCES_LIST"; then
     echo "forest_pack: could not list the system headers" >&2
     exit 1
 fi
@@ -109,10 +83,7 @@ fi
 # -static-libmadc programs carry the machinery inside their own image.
 # scripts/ledger_sources.txt is the single owner of the tagged list
 # (src/Makefile selects from the same file to build these into libmadc).
-# (None in a dialect-only container.)
-if [ "$DIALECT_ONLY" = 1 ]; then
-    LEDGER_SOURCES=
-elif ! LEDGER_SOURCES=$(bash scripts/select_ledger_sources.sh linux "$LEDGER_LIST"); then
+if ! LEDGER_SOURCES=$(bash scripts/select_ledger_sources.sh linux "$LEDGER_LIST"); then
     echo "forest_pack: could not select Linux ledger sources" >&2
     exit 1
 fi
@@ -132,9 +103,7 @@ LEDGER_MODULE_COUNT=${#LEDGER_ARGS[@]}
     # behind __cplusplus guards. Absolute roots keep their canonical sysroot
     # names while their guarded bodies stay semantically empty in this profile;
     # the freeze still records the exact raw text for live C++20
-    # re-tokenization. Same mechanism as the win64 pack. (Not in a
-    # dialect-only container: no C++ standard header is its root.)
-    [ "$DIALECT_ONLY" = 1 ] ||
+    # re-tokenization. Same mechanism as the win64 pack.
     grep -vE '^[[:space:]]*(#|$)' "$GUARDED_LIST" | while read -r h; do
         echo "#include \"$CXX_INCLUDE/$h\""
     done
@@ -175,21 +144,27 @@ fi
 # class stopped parsing is exactly the silent loss the ratchet catches.
 # Redirect-then-cat, never `| tee` — without pipefail a pipeline's status is
 # tee's, so a pack FAILURE would read as success.
-PACK_LOG=tmp/forest_pack_freeze.log
-FREEZE_ARGS=(--freeze-mir-cache)
-if [ "$DIALECT_ONLY" = 0 ]; then
-    FREEZE_ARGS+=("--freeze-sources=$SOURCES_LIST" "${LEDGER_ARGS[@]}" "${FOREST_SHARE_ARGS[@]}")
-fi
+#
+# THE C LAYER first (docs/plans/2026-10-18-c-pack-layer.md; owner 2026-10-17:
+# "C is separate, uncompressed, and not on the same list"): one raw profile
+# per FOREST_C_LAYER row, each laid out before the next lands on top
+# (scripts/forest_pack_c_layer.sh owns the stage). The source arm and the AOT
+# ledger ride the madc profile frozen above them; a C compile reads them from
+# there (Program::ensure_source_forest / ensure_ledger_forest).
+C_LIST=scripts/forest_pack_c_headers.txt
+forest_pack_c_freeze "$C_LIST" "$STAGE" "$APPEND_TO" 900 tmp/forest_packer_madc
+
+PACK_LOG=${STAGE}_freeze.log
+FREEZE_ARGS=(--freeze-mir-cache "--freeze-sources=$SOURCES_LIST" "${LEDGER_ARGS[@]}"
+    "${FOREST_SHARE_ARGS[@]}")
 if ! timeout 900 tmp/forest_packer_madc --no-config --std=madc "${FREEZE_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack: FAILED - freeze-append exited nonzero" >&2
     exit 1
 fi
 cat "$PACK_LOG"
-if [ "$DIALECT_ONLY" = 0 ]; then
-    timeout 120 tmp/forest_packer_madc --dump-forest="$APPEND_TO" > tmp/forest_pack_share_dump.txt
-    forest_share_check tmp/forest_pack_share_dump.txt
-fi
+timeout 120 tmp/forest_packer_madc --dump-forest="$APPEND_TO" > ${STAGE}_share_dump.txt
+forest_share_check ${STAGE}_share_dump.txt
 # Lay the container out by the reads the pack's root binds make (format 60).
 if ! forest_pack_layout "$APPEND_TO" "$LIST" timeout 120 tmp/forest_packer_madc; then
     echo "forest_pack: FAILED - layout pass" >&2
@@ -204,25 +179,25 @@ fi
 # plain strip kept .dynsym intact. Packing the binary's OWN image verifies
 # through the self-image arm (no path: the running executable's blob); every
 # other carrier names the container file explicitly.
+DUMP=${STAGE}_dump.txt
 if [ "$OUT" = "$BIN" ]; then
-    timeout 120 "$BIN" --dump-forest > tmp/forest_pack_dump.txt
+    timeout 120 "$BIN" --dump-forest > "$DUMP"
     timeout 120 "$BIN" --run-frozen
 else
-    timeout 120 "$BIN" --dump-forest="$OUT" > tmp/forest_pack_dump.txt
+    timeout 120 "$BIN" --dump-forest="$OUT" > "$DUMP"
     timeout 120 "$BIN" --run-frozen="$OUT"
 fi
-if ! grep -q '^forest	units=' tmp/forest_pack_dump.txt; then
+if ! grep -q '^forest	units=' "$DUMP"; then
     echo "forest_pack: FAILED - packed image has no forest directory" >&2
     exit 1
 fi
-if ! grep -q '^layout	reads' tmp/forest_pack_dump.txt; then
+if ! grep -q '^layout	reads' "$DUMP"; then
     echo "forest_pack: FAILED - the packed container was not laid out" >&2
     exit 1
 fi
-if [ "$DIALECT_ONLY" = 0 ] &&
-   ! grep -q "^ledger	modules=$LEDGER_MODULE_COUNT	symbols=" tmp/forest_pack_dump.txt; then
+if ! grep -q "^ledger	modules=$LEDGER_MODULE_COUNT	symbols=" "$DUMP"; then
     echo "forest_pack: FAILED - expected $LEDGER_MODULE_COUNT selected ledger modules" >&2
-    if ! grep -a '^ledger' tmp/forest_pack_dump.txt >&2; then
+    if ! grep -a '^ledger' "$DUMP" >&2; then
         echo "forest_pack: dump has no ledger record" >&2
     fi
     exit 1
@@ -230,11 +205,26 @@ fi
 while IFS= read -r src; do
     [ -n "$src" ] || continue
     LEDGER_MODULE_PREFIX=$'ledgermod\t'"$src"$'\t'
-    if ! grep -Fq "$LEDGER_MODULE_PREFIX" tmp/forest_pack_dump.txt; then
+    if ! grep -Fq "$LEDGER_MODULE_PREFIX" "$DUMP"; then
         echo "forest_pack: FAILED - selected ledger module is missing: $src" >&2
         exit 1
     fi
 done <<<"$LEDGER_SOURCES"
+# The startup objects (B231): the freezer generated the image-only members'
+# native objects into the ledger, and an -c link merges the pack's copy — it
+# never compiles the member's text in-process.
+if ! grep -q $'^crtobj\t' "$DUMP"; then
+    echo "forest_pack: FAILED - the ledger carries no startup object" >&2
+    exit 1
+fi
+printf 'struct D { ~D(); };\nvoid g();\nvoid f() { D d; g(); }\n' > ${STAGE}_crt.cpp
+v=$(timeout 120 "$BIN" -v -c -o ${STAGE}_crt.o ${STAGE}_crt.cpp 2>&1 | tr -d '\0')
+rm -f ${STAGE}_crt.o
+if ! grep -aq ': object from the ledger' <<<"$v"; then
+    echo "forest_pack: FAILED - a -c link of a frame with a destructor did not merge the ledger's startup object" >&2
+    grep -a '^crt: ' <<<"$v" >&2
+    exit 1
+fi
 
 # MIR-cache bind-lane equivalence (rung 3, opt-in lane): the packed binary
 # compiling a real test with MADC_MIR_CACHE_BIND=1 must (a) actually engage
@@ -242,14 +232,18 @@ done <<<"$LEDGER_SOURCES"
 # testing nothing — and (b) produce byte-identical output vs the default
 # (lane off) run: the blob is DERIVED state, never semantic. The bind reaches
 # its container through the DISCOVERY chain, so for a sidecar or a library
-# image this doubles as that carrier's arm smoke. (The system pack's lane: a
-# dialect-only container carries no <iostream> for the test to bind.)
-if [ "$DIALECT_ONLY" = 0 ]; then
-    v=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" -v tests/testfreezerun.mad 2>&1 | tr -d '\0')
-    grep -aq 'mir cache: bind module staged' <<<"$v"
-    out_cache=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
-    out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
-    [ "$out_cache" = "$out_nocache" ]
+# image this doubles as that carrier's arm smoke.
+v=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" -v tests/testfreezerun.mad 2>&1 | tr -d '\0')
+if ! grep -aq 'mir cache: bind module staged' <<<"$v"; then
+    echo "forest_pack: FAILED - the MIR-cache bind lane staged no module for tests/testfreezerun.mad" >&2
+    exit 1
+fi
+out_cache=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
+out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
+if [ "$out_cache" != "$out_nocache" ]; then
+    printf 'with the cache bind:\n%s\nwithout:\n%s\n' "$out_cache" "$out_nocache" >&2
+    echo "forest_pack: FAILED - the MIR-cache bind lane's output differs from the default lane's" >&2
+    exit 1
 fi
 
 # Degradation gate (task #63) — the consumer half. A -v run of the PACKED
@@ -264,23 +258,20 @@ fi
 # win64 and darwin packs each carried their own "every listed entry point must
 # be a unit" loop, and THIS pack — the primary lane — had none, so a dropped
 # unit here was invisible until the headerless lane. One owner, three callers.
-# A dialect-only container is its own profile, its load log the dialect
-# workload's (the fragments it binds).
-LOAD_LOG=tmp/forest_pack_load.log
-if [ "$DIALECT_ONLY" = 1 ]; then
-    timeout 300 "$BIN" -v scripts/parse_cost/dialect.mad > "$LOAD_LOG" 2>&1
-    bash scripts/forest_pack_gate.sh --profile linux-dialect \
-	--pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
-	--dump tmp/forest_pack_dump.txt --units-from "$LIST"
-else
-    timeout 300 "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
-    bash scripts/forest_pack_gate.sh --profile linux \
-	--pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
-	--dump tmp/forest_pack_dump.txt \
-	--units-from "$LIST" --units-from "$SOURCES_LIST" --sources-from "$GUARDED_LIST"
-fi
+LOAD_LOG=${STAGE}_load.log
+timeout 300 "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
+bash scripts/forest_pack_gate.sh --profile linux \
+    --pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
+    --dump "$DUMP" \
+    --units-from "$LIST" --units-from "$SOURCES_LIST" --sources-from "$GUARDED_LIST"
 
-units=$(grep -c '^unit	' tmp/forest_pack_dump.txt)
+# The C layer's gate (plan section J4; scripts/forest_pack_c_layer.sh): a .c
+# compile binds it, and per profile a quiet freeze, every C root a unit, raw,
+# within its recorded size, still in the packed stack, and a compile under its
+# standard and each label on the PACKED product binds it.
+forest_pack_c_gate "$C_LIST" "$STAGE" linux "$DUMP" 120 "$BIN"
+
+units=$(grep -c '^unit	' "$DUMP")
 if [ "$SIDECAR" = 1 ]; then
     echo "forest_pack: OK ($units units in sidecar $OUT; bind cache == no-cache)"
 else

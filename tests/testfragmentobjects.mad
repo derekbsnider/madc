@@ -1,6 +1,5 @@
-// Two units that each use the namespaces whose embedded fragments define
-// code — the web and ws UI hosts (ui::WEB, the level a program asks for;
-// ui_ws::), git:: and markdown:: — compiled to objects (`madc -c`) and
+// Two units that each use the dialect (ui::WEB, the level a program asks
+// for; println) compiled to objects (`madc -c`) and
 // linked (`madc -o`). A fragment's namespace-scope variables are inline and
 // its function bodies have vague linkage, so each object's copy is one
 // entity and the link keeps one; a plain variable in a header is a second
@@ -9,7 +8,8 @@
 // form of libmadcide) is this shape. scripts/check-fragment-inline-vars.sh
 // holds the rule for every fragment.
 // Before the fix this link refused: "cannot merge object: duplicate symbol
-// '_ZN5ui_ws9__pendingE'"; chthonia's three objects (madcide's base, its
+// '_ZN5ui_ws9__pendingE'" (the ws host's slot, since moved into libmadc —
+// src/ui_ws.cpp); chthonia's three objects (madcide's base, its
 // plugin, its main) refused '_ZN6ui_web11__last_hostE' the same way.
 // Oracle: g++ 13 and clang++ 18 over the C++ analogue (a header defining a
 // variable and a function in a namespace, included by two units): plain
@@ -22,13 +22,11 @@ int main()
 	var a = format("{}/a.mad", dir);
 	php::file_put_contents(a.c_str(),
 		"long a_side(void)\n{\n\tlong l = ui::WEB;\n"
-		"\treturn l + (git::available() ? 1 : 0) + (markdown::available() ? 1 : 0)\n"
-		"\t\t+ (ui_ws::__pending == 0 ? 0 : 1);\n}\n");
+		"\treturn l;\n}\n");
 	var b = format("{}/b.mad", dir);
 	php::file_put_contents(b.c_str(),
 		"long a_side(void);\nint main()\n{\n\tlong l = ui::WEB;\n"
-		"\tlong b = l + (git::available() ? 1 : 0) + (markdown::available() ? 1 : 0)\n"
-		"\t\t+ (ui_ws::__pending == 0 ? 0 : 1);\n"
+		"\tlong b = l;\n"
 		"\tprintln(\"same: {}\", a_side() == b ? 1 : 0);\n\treturn 0;\n}\n");
 	var ao = format("{}/a.o", dir);
 	var bo = format("{}/b.o", dir);

@@ -1,0 +1,18 @@
+// sizeof of a typename-specifier OUTSIDE a template (B107): `typename` before
+// a qualified name is allowed anywhere a qualified type name is
+// ([temp.res.general]/5), in a plain function body and in a default template
+// argument alike. It was refused unless the body was a template's.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): "p1 3 4 1".
+#include <cstdio>
+#include <type_traits>
+template<typename T> struct traits {};
+template<typename T> struct traits<T *> { typedef int category; };
+template<typename It, typename = typename std::enable_if<sizeof(typename traits<It>::category) != 0>::type>
+int pick(It) { return 1; }
+int main()
+{
+	traits<int *>::category c = 3;
+	int *ip = 0;
+	printf("p1 %d %zu %d\n", c, sizeof(typename traits<int *>::category), pick(ip));
+	return 0;
+}

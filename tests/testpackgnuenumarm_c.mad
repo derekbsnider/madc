@@ -1,0 +1,20 @@
+/* A C consumer that defines _GNU_SOURCE takes header arms the C pack froze
+ * skipped. glibc bits/socket.h's `#ifdef __USE_GNU` arms sit INSIDE its MSG_*
+ * enum body, so they cannot replay at the include site: the header parses
+ * live (here reached after <sys/time.h> bound its shared units), and the GNU
+ * enumerators and struct ucred are declared.
+ * gcc 13 / clang 18 -std=gnu17: "tryhard 4 cloexec 1073741824", "ucred 12",
+ * "timeval 16". */
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <sys/time.h>
+#include <sys/socket.h>
+
+int main(void)
+{
+	printf("tryhard %d cloexec %ld\n", (int)MSG_TRYHARD, (long)MSG_CMSG_CLOEXEC);
+	printf("ucred %zu\n", sizeof(struct ucred));
+	struct timeval tv = { 0, 0 };
+	printf("timeval %zu\n", sizeof tv);
+	return 0;
+}

@@ -3,7 +3,7 @@
 # it is absent from EVERY strict standard mode.
 #
 # The tests in tests/testufcs*.mad cover behaviour, and each ships a
-# negative control — but each pins exactly ONE strict mode (--std=c++17). The
+# negative control — but each pins exactly ONE standard mode (--std=gnu++17). The
 # claim this feature actually makes is stronger: every explicit --std=, C and
 # C++ alike, is byte-identical to what it was before UFCS existed. That is the
 # claim a future dialect feature is most likely to break silently, by gating

@@ -23,6 +23,20 @@ Perform the full release workflow:
    - Change the top `[Unreleased]` header to `[vX.Y.Z] — YYYY-MM-DD` with today's date
    - Add a brief one-line summary after the version header describing the theme of this release
    - Add a new empty `## [Unreleased]` section above it for future changes
+   - The versioned section names the existing duplicate family this release
+     consolidated (owner law 2026-10-16, `.claude/rules/branching.md`):
+     `Consolidated: <DupFamily> — gate scripts/check-<name>.sh`. Then run
+     `bash scripts/check-release-consolidation.sh`; red means the release
+     consolidated nothing — STOP and tell the user, do not release.
+   - The versioned section names this release's C23 / C++20 gain (owner law
+     2026-10-16, `.claude/rules/branching.md`). On the build container, over
+     the seam battery's `bin/madc-release` (the release content, committed):
+     `bash scripts/conformance_measure.sh --release vX.Y.Z --madc
+     bin/madc-release --record`; bring `docs/parity/conformance-ledger.tsv`
+     back. Add the line `Conformance: <corpus> <old> -> <new>[, ...]` for
+     each count that rose, then run `bash scripts/check-release-conformance.sh`;
+     red means the release moved neither C23 nor C++20, or lowered one —
+     STOP and tell the user, do not release.
 
 6. **Write `docs/release-notes/vX.Y.Z.md`**:
    - Title: `# Release vX.Y.Z — YYYY-MM-DD`
@@ -69,10 +83,13 @@ Perform the full release workflow:
     `bash scripts/release_bins.sh archive` — it files the tree's
     `bin/madc-release` WITH its `lib/` (the driver is thin since v0.98.0) as
     `tmp/release-bins/vX.Y.Z/`, after checking the tree holds the release's
-    content and the entry runs. Then on the NAS
-    `bash scripts/release_bins.sh sync` mirrors it. The master push gate
+    content and the entry runs. Then, on the build container,
+    `bash scripts/release_bins.sh map vX.Y.Z` makes the release's callgrind
+    map (a symbolized build of the release commit, the parse-cost workloads
+    under callgrind; owner 2026-10-08). Then on the NAS
+    `bash scripts/release_bins.sh sync` mirrors both. The master push gate
     (`scripts/lane_ledger.sh check --release`) refuses a release missing from
-    the archive.
+    the archive, or one since v0.102.1 without its map.
 
 14. **Report**: Print a summary of what was released and the madc version, and remind the user to run `/promote` when ready to push to master
 

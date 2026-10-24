@@ -1,0 +1,16 @@
+// NDEBUG defined after a system header bound and before <cassert>: assert
+// expands to nothing (C++17 [assertions.assert], C11 7.2p1). The pack froze
+// <assert.h> without NDEBUG, so its `#ifdef NDEBUG` takes the other arm here
+// and the verified bind declines that root to a live parse
+// (docs/plans/2026-10-18-verified-cxx-bind.md, K3). Oracle: g++ and clang++
+// print "ok" and exit 0; the packed madc before K3 aborted in assert(0).
+#include <cstdio>
+#define NDEBUG
+#include <cassert>
+
+int main()
+{
+	assert(0);
+	std::puts("ok");
+	return 0;
+}

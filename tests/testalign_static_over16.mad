@@ -1,0 +1,53 @@
+/* A static object may be aligned beyond 16 bytes, up to a page: gcc's
+ * aligned(N) or C11 _Alignas(N) on the object, or a type whose member is
+ * over-aligned. SQLite's mutex table is `static ALIGN128 union staticMutex
+ * {...} aMutex[] = {...};` (ALIGN128 = __attribute__((aligned(128)))), a
+ * function-scope static. Pins: the object sits on its boundary in a run, an
+ * executable and an object file -- initialized data, zero-filled storage,
+ * a function-scope static, an over-aligned member's struct -- and its
+ * contents and size are intact.
+ * Before: "unsupported alignmnent" for any alignment above 16.
+ * Oracle: gcc 13 and clang 18 -O0 -std=c17 print the lines in the .expect. */
+#include <stdio.h>
+#include <stdint.h>
+
+#define ALIGN128 __attribute__((aligned(128)))
+
+typedef struct { long owner; int id; } mutex_t;
+
+static int on(const void *p, uintptr_t n) { return (uintptr_t)p % n == 0; }
+
+static mutex_t *static_mutex(int i)
+{
+	static ALIGN128 union staticMutex {
+		mutex_t m;
+		char aSpacer[128];
+	} aMutex[] = {
+		{ .m = { 0, 2 } }, { .m = { 0, 3 } }, { .m = { 0, 4 } },
+	};
+	return &aMutex[i].m;
+}
+
+struct line { _Alignas(64) char c; int n; };
+
+char pad1 = 1;
+_Alignas(256) int table[3] = { 7, 8, 9 };
+char pad2 = 2;
+static char zeroed[40] __attribute__((aligned(4096)));
+static struct line lines[2] = { { 'a', 1 }, { 'b', 2 } };
+
+int main(void)
+{
+	mutex_t *m1 = static_mutex(1);
+	printf("mutex: on128=%d id=%d stride=%ld\n", on(static_mutex(0), 128), m1->id,
+	       (long)((char *)m1 - (char *)static_mutex(0)));
+	printf("table: on256=%d sum=%d\n", on(table, 256), table[0] + table[1] + table[2]);
+	int z = 0;
+	for (int i = 0; i < 40; i++)
+		z |= zeroed[i];
+	printf("zeroed: on4096=%d zero=%d\n", on(zeroed, 4096), z == 0);
+	printf("line: on64=%d sizeof=%zu alignof=%zu n=%d%d c=%c%c\n", on(lines, 64),
+	       sizeof(struct line), _Alignof(struct line), lines[0].n, lines[1].n,
+	       lines[0].c, lines[1].c);
+	return pad1 + pad2 - 3;
+}

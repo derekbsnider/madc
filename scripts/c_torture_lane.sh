@@ -22,9 +22,10 @@
 #   MADC_TORTURE_ROOT      testsuite root (default /workspace/gcc_testsuite; the
 #                          repo's gcc_testsuite symlink DANGLES on the container)
 #   MADC_TORTURE_BASELINE  baseline file
-#   MADC_TORTURE_STD       --std= handed to madc (default c17: torture is C-era
-#                          code and K&R / implicit-int recovery only exists
-#                          under --std=c78..c17)
+#   MADC_TORTURE_STD       --std= handed to madc (default gnu17: gcc's own
+#                          default and the dialect the pack precompiles; torture
+#                          is C-era code and K&R / implicit-int recovery only
+#                          exists under --std=c78..c17, gnu dialects included)
 #   MADC_TORTURE_OUT       raw runner output (kept for triage)
 #   MADC_TORTURE_REUSE=1   ratchet an EXISTING MADC_TORTURE_OUT instead of
 #                          running the suite again (triage, and the ratchet's
@@ -35,7 +36,7 @@ cd "$(dirname "$0")/.."
 BIN="${MADC_BIN:-bin/madc}"
 ROOT="${MADC_TORTURE_ROOT:-/workspace/gcc_testsuite}"
 BASE="${MADC_TORTURE_BASELINE:-docs/parity/c-torture-baseline.txt}"
-STD="${MADC_TORTURE_STD:-c17}"
+STD="${MADC_TORTURE_STD:-gnu17}"
 OUT="${MADC_TORTURE_OUT:-tmp/torture/lane.txt}"
 
 if [ ! -d "$ROOT/gcc.c-torture/execute" ]; then

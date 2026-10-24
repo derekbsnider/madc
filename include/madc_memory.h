@@ -22,7 +22,7 @@
 // close / link / unlink / context / explain / sources / sync (an	//
 // external system's tasks, from its MCP server); test.discover / list /	//
 // candidates / run / results. With the registry's version history	//
-// (madcgit), a node's history begins with its commits.			//
+// (the git module), a node's history begins with its commits.		//
 //									//
 // Thread contract (C++ standard library convention): a memory is used	//
 // from its world's thread; its stream and folds are its own.		//

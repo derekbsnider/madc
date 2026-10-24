@@ -1,0 +1,5 @@
+after-source: rc=0 object=1
+second-source: refused=1 object=0
+script-argv: rc=0 object=0
+arg1=-c
+arg2=-o

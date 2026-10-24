@@ -24,7 +24,6 @@
 #include <unistd.h>
 #endif
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "tokens.h"
@@ -93,13 +92,8 @@ std::vector<std::string> madc::history_entries(const std::string &path,
 
 static std::string utc_now()
 {
-    time_t t = time(NULL);
-    struct tm parts;
-#ifdef _WIN32
-    gmtime_s(&parts, &t);
-#else
-    gmtime_r(&t, &parts);
-#endif
+    struct tm parts = {};
+    madc::detail::utc_time(time(NULL), parts);
     char buf[32];
     strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%SZ", &parts);
     return buf;

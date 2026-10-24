@@ -103,6 +103,7 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 	case SIGFPE:  name = "SIGFPE (arithmetic error)";	break;
 	case SIGBUS:  name = "SIGBUS (bus error)";		break;
 	case SIGILL:  name = "SIGILL (illegal instruction)";	break;
+	case SIGTRAP: name = "SIGTRAP (trace/breakpoint trap)";	break;
     }
     const char *prefix = "\nmadc: caught ";
     madc_crash_write(prefix, strlen(prefix));
@@ -152,6 +153,10 @@ void madc_install_crash_handler(void)
     sigaction(SIGFPE,  &sa, NULL);
     sigaction(SIGBUS,  &sa, NULL);
     sigaction(SIGILL,  &sa, NULL);
+    // A trap instruction: AArch64's `brk` (__builtin_trap, a pointer-
+    // authentication failure in arm64e libunwind) raises SIGTRAP, where
+    // x86-64's ud2 raises SIGILL.
+    sigaction(SIGTRAP, &sa, NULL);
 }
 #else
 // Win32 crash surface: faults arrive as SEH exceptions, not signals.

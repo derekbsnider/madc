@@ -49,7 +49,10 @@ madc_target_data_model	engine global: target ABI facts
 madc_target_int64_alias	engine global: target ABI facts
 madc_target_os	engine global: target ABI facts
 madc_target_va_list	engine global: target ABI facts
+madc_toolchain_library_dirs	engine global: toolchain library search path (-l)
+madc_toolchain_target	engine global: toolchain target triple (-dumpmachine)
 madc_verbose	engine global: -v/--verbose flag (DBG)
+madc_verbose_requested	engine global: DBG's process-wide pre-test (set once any thread turns -v on)
 #
 # Misc unprefixed internals (visibility-trim candidates, .so.1 era):
 debug_node	MIR debug helper

@@ -48,9 +48,29 @@ enum MadcNativeKind {
     mnkObject, mnkExecutable, mnkShared, mnkPieExecutable, mnkRelocatable
 };
 
+// The command line's link paths, handed to the native lanes (gcc's -L and
+// -Wl,-rpath). Per call, so in-process callers (madc::build_native) never
+// inherit a CLI's.
+struct MadcLinkPaths
+{
+    std::vector<std::string> lib_dirs;	// -L: searched for the libraries, ahead of the toolchain's
+    std::vector<std::string> runpath;	// -Wl,-rpath: DT_RUNPATH, after madc's own arms
+};
+
+// A produced image's dynamic link environment (cir_native_link_env).
+// `as_needed` names the members of `needed` the toolchain adds on its own (the
+// stdlib flavor's C++ runtime, libm): an ELF image keeps one only when it
+// imports from it — gcc's --as-needed link, where a C program names libc alone.
+struct CirLinkEnv
+{
+    std::vector<std::string> needed;	// DT_NEEDED, in order
+    std::vector<std::string> as_needed;	// the implicit members of `needed`
+    std::string runpath;		// DT_RUNPATH ("" = omit)
+};
+
 // --pack-forest=<container>: every emitted native EXECUTABLE additionally
 // carries the named frozen container in its self-image carrier — the ELF
-// arm pads the written image to 16 and appends the blob (footer at EOF,
+// arm pads the written image to a page and appends the blob (footer at EOF,
 // exactly the --freeze-append placement); the Mach-O arm hands the blob to
 // the fork writer as the __MADC,__forest section, signed once at emit (a
 // signed Mach-O cannot take appended bytes). NULL = off. Read at the two
@@ -95,6 +115,19 @@ bool madc_session_interrupt_raise();
 // is none. One raised after it waits for the entry's first poll, however
 // long the entry takes to compile.
 void madc_session_interrupt_reset();
+
+// The image-only startup members (madc_crt_member) an object-mode link
+// selected, as the native objects merged into its capture once, ahead of its
+// first emit — gcc's crtbegin.o placement. The objects live for the process.
+// `carrier`: the program whose forest carries the members' objects (the
+// link-time pull's), for the ones generation adds (cir_crt_objects_merge).
+struct CirCrtObject;
+struct CirCrtPicks
+{
+	std::vector<const CirCrtObject *> objs;
+	bool merged = false;
+	Program *carrier = NULL;
+};
 
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
@@ -198,17 +231,15 @@ public:
     bool emit_native_object(const char *out_path);
 
     // -o: write the capture as a complete dynamic executable (mode 0755) —
-    // MIR assembles it directly, no external toolchain. needed = DT_NEEDED
-    // sonames; runpath ("" = omit) = DT_RUNPATH search path. kind selects
+    // MIR assembles it directly, no external toolchain. env = its DT_NEEDED
+    // and DT_RUNPATH (cir_native_link_env). kind selects
     // the image flavor: mnkPieExecutable = position-independent ET_DYN
     // executable (the default, gcc parity), mnkExecutable = fixed-base
     // ET_EXEC (-no-pie), mnkShared = ET_DYN shared object
     // (dlopen/#load-consumable; exports the module's globals; the
     // file-scope ctors ride DT_INIT_ARRAY, run by ld.so at load).
     // mnkObject is not valid here — the .o lane is emit_native_object().
-    bool emit_native_executable(const char *out_path,
-				const std::vector<std::string> &needed,
-				const std::string &runpath,
+    bool emit_native_executable(const char *out_path, const CirLinkEnv &env,
 				MadcNativeKind kind);
 
 private:
@@ -234,6 +265,8 @@ private:
     madc::dis::istring live_init;
     // A link has succeeded: the image's code (its exit handlers') exists.
     bool linked;
+    // Object mode: the startup objects the link selected.
+    CirCrtPicks crt_picks;
     // Slice 2: the cells late-bound objects are read through, by cell symbol
     // (a node-stable map: an import binds to a value's address), and the
     // object each unbound cell waits for.
@@ -266,9 +299,11 @@ c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p = false);
 // in cir_builder.cpp is the sole tree builder. See madc_cir_execute.)
 
 // Type-check the translated tree and generate MIR.
-// Returns 1 on success, 0 on error.
+// Returns 1 on success, 0 on error. `unwind_p`: the tree's language has
+// exceptions -- C++ and the dialect compile with unwind regions (gcc's
+// -fexceptions), C without.
 int cir_compile(MIR_context_t mir_ctx, c2m_ctx_t c2m, node_t tree,
-		const char *module_name);
+		const char *module_name, bool unwind_p);
 
 // Clean up the c2mir context.
 void cir_finish(c2m_ctx_t c2m);
@@ -303,11 +338,14 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 // All output is PIC (R6): address slots live in the .mir.addrpool data
 // section, .text carries no relocations, no DT_TEXTREL.
 // user_libs ("-l<name>" or a path) join
-// the DT_NEEDED list for the linked kinds. No execution. Returns 0 on
-// success, -1 on failure.
+// the image's library list for the linked kinds as ld records them — found
+// through link_paths.lib_dirs and the toolchain's library directories;
+// link_paths.runpath joins DT_RUNPATH after madc's own runtime arms.
+// No execution. Returns 0 on success, -1 on failure.
 int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
-			 const std::vector<std::string> &user_libs);
+			 const std::vector<std::string> &user_libs,
+			 const MadcLinkPaths &link_paths = MadcLinkPaths());
 
 // Multi-object lanes (the .o-input twins of madc_cir_emit_native and
 // madc_cir_run_object). The inputs are madc-emitted relocatable objects;
@@ -334,7 +372,8 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
 			  const std::vector<std::string> &user_libs,
-			  Program *prog);
+			  Program *prog,
+			  const MadcLinkPaths &link_paths = MadcLinkPaths());
 int madc_cir_run_objects(const std::vector<std::string> &paths,
 			 int argc, char **argv,
 			 const madc_stdlib_flavor *flavor = NULL);
@@ -364,7 +403,18 @@ int madc_project_emit_native(MadcEngine &engine,
 			     MadcNativeKind kind, const char *out_path,
 			     const std::vector<std::string> &user_libs,
 			     bool forest_bind,
-			     const std::string &forest_bind_path);
+			     const std::string &forest_bind_path,
+			     const MadcLinkPaths &link_paths = MadcLinkPaths());
+
+// What a ledger entry's bytes are: a MIR module (a C-lane runtime source, read
+// into a -static-libmadc link's context), or a native relocatable (an
+// image-only startup member, generated by the freezer and merged into an
+// -o / -c capture as gcc links crtbegin.o). The wire value is the entry's.
+enum class CirLedgerForm : uint32_t
+{
+	mir_module = 0,
+	native_object = 1
+};
 
 // One AOT-ledger module (forest-carriers S5), decoded: a C-lane madc runtime
 // source compiled to a MIR module, with the symbol set it DEFINES — the
@@ -373,9 +423,11 @@ int madc_project_emit_native(MadcEngine &engine,
 struct cir_ledger_module
 {
 	madc::dis::istring              name;	 // the ledger source path (module name)
-	std::vector<madc::dis::istring> syms;	 // defined symbols
-	std::vector<uint8_t>     bytes;	 // MIR_write_module bytes
+	std::vector<madc::dis::istring> syms;	 // defined symbols (a native
+						 // object's: its exported ones)
+	std::vector<uint8_t>     bytes;	 // MIR_write_module bytes, or the object
 	madc::dis::istring              init;	 // its image init, "" = none
+	CirLedgerForm            form = CirLedgerForm::mir_module;
 };
 
 // One startup member (madc_crt.cpp): what crtbegin.o and libc_nonshared.a
@@ -387,6 +439,13 @@ struct cir_ledger_module
 // pulled. `init` names the member's image init (an executable's or shared
 // object's init array runs it), NULL = none; `fini` its image fini (DT_FINI:
 // ld.so calls it when it unloads the image or the process exits), NULL = none.
+// `image_only`: pulled for -o / -c output alone; a JIT session resolves the
+// member's names out of the libmadc it runs inside (libgcc's personality
+// role: the image carries it, the host already has it). `aliases`: names the
+// member's object defines that C cannot spell (MIR's dotted "mir.va_arg"), as
+// space-separated "name=function" pairs — each a weak global symbol at the
+// member's (file-local) function, as gcc's alias attribute writes one; NULL =
+// none. Its `defines` lists them like any other name.
 struct madc_crt_member
 {
 	const char *name;
@@ -394,7 +453,19 @@ struct madc_crt_member
 	const char *init;
 	const char *fini;
 	const char *source;
+	bool image_only;
+	const char *aliases;
 };
+
+// The routine every generated function with unwind regions names (B205): the
+// DWARF personality, or on Windows x64 the language-specific handler; both
+// run the function's region table (src/rt/rt_personality.c). Host == target,
+// as the try lowering's setjmp.
+#ifdef _WIN32
+#define MADC_UNWIND_PERSONALITY "__madc_seh_handler"
+#else
+#define MADC_UNWIND_PERSONALITY "__madc_personality"
+#endif
 // The target's members, ended by an all-NULL row.
 extern const madc_crt_member madc_crt_members[];
 
@@ -414,12 +485,16 @@ extern const madc_crt_member madc_crt_members[];
 // Warnings and errors print regardless. `also_std` names more --std=
 // spellings this profile serves (--freeze-also-std=): each labels it with
 // the config word a compile under that standard carries
-// (CIR_FOREST_SEG_SHARED_CONFIGS). Returns 0 on success, -1 on failure.
+// (CIR_FOREST_SEG_SHARED_CONFIGS). `raw` (--freeze-raw) stores the container
+// with no codec — every segment, the MIR cache and the ledger — so a bind
+// reads it in place (the release pack's C layer, docs/plans/2026-10-18-c-pack-
+// layer.md). Returns 0 on success, -1 on failure.
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache = false,
 		    const std::vector<cir_ledger_module> *ledger = NULL,
 		    bool progress = true,
-		    const std::vector<madc::dis::istring> *also_std = NULL);
+		    const std::vector<madc::dis::istring> *also_std = NULL,
+		    bool raw = false);
 
 // Compile the AOT ledger sources (--freeze-ledger=, one per call site entry;
 // scripts/ledger_sources.txt is the canonical list) into MIR modules with
@@ -436,6 +511,12 @@ bool madc_cir_ledger_compile(MadcEngine &engine,
 			     const std::vector<std::string> &sources,
 			     std::vector<cir_ledger_module> &out,
 			     Program *restore);
+
+// Append the image-only startup members to the ledger as the native objects
+// an -o / -c link merges (CirLedgerForm::native_object), generated by this
+// madc for the target it emits, so a link reads them instead of compiling
+// their text in every process (B231). False on the first failure (printed).
+bool madc_cir_crt_objects_compile(std::vector<cir_ledger_module> &out);
 
 // Thaw + compile + run a frozen forest: from the container file at
 // `container_path`, or from the blob appended to the running executable

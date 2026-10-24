@@ -6,6 +6,7 @@
 // printable run arrives as text, tab / right / enter navigate the menu and
 // choose, and the snapshot shows the line-DOM carrying the inserted text
 // and the menu's selected option.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 var doc = "alpha\nbeta";
 long caret = 2;
 long selected_from_choose = 0;

@@ -1,5 +1,60 @@
 # Test Status
 
+0.106.0 final seam battery (2026-10-23, `1156d1650` content on `feature/dialect-faces-claude`:
+the `c8ce207ae` content below plus issue #8's fixes — `0b0c7ffc6` an ELF image names only the
+libraries an import reaches, `c1edbb684` MIR's call helpers ride the image, `1c696ff85` c2mir's
+x86-64 `<stddef.h>` defines NULL on every target, `8dba861a4` Apple arm64 long double is 8
+bytes, `1f0380e1d` the istring record, `1156d1650` `mir_arg_memcpy` file-local again): static
+gates 0 red of 118, `make gates` green (forest_ledger_gate leg 10 incl. its win64 sub-leg;
+macho_exe_dylib_gate leg C), parse-cost 0 red of 21. Linux packed madc-release 0.106.0
+headerless 2110/0/69skip + ondisk 60/0; exeobj JIT 2170/0/9skip, EXE 1943/0, OBJ 1943/0.
+headerless-win 2050/0/129skip + ondisk-win 27/0/33skip; wine64 2077/0/102skip; genuine Windows
+11 full suite 2049/0/130skip. darwin-suite native: arm64 Mac Mini 2123/0/56skip + mac battery
+12/0, Intel MacBook 2126/0/53skip + mac battery 12/0 (EXE advisory 280 / 281, from 294 / 297).
+Interactive subset: Linux 61/0 + units 7/0 (packed 61/0), Windows 55/0/6skip, both Macs
+59/0/2skip. Homebrew lane 2170/0/9skip. Fast lanes at baseline. macOS build and aarch64-ld
+green (new fixture `aarch64_blkarg.c`). madcide on the candidate: build, gates, 67/0 tests,
+17/0 window tests. Conformance on the final binary unchanged: c23-compile 38, c23-run 40,
+torture-c23 1493, cpp2a 350. Against the packaged v0.106.0 build of `60679aed1`, measured
+before the long suites: execution geometric mean 0.982 over 19 benchmarks (the three rows
+over 1.01 — hash, method-call, array — have byte-identical code; their time follows `.text`
+placement), compile geometric mean 0.948 over 40 rows; a plain C image starts in 11 ms per 20
+runs against 20 ms (libc alone). Untracked known-RED `testnoreturn_c11` excluded throughout.
+
+0.106.0 seam battery, with the release-seam fixes (2026-10-23, `c8ce207ae` content on
+`feature/dialect-faces-claude`: the `Release v0.106.0` commit `c056a3937` plus the pack
+fixes `ecb30bafd` (a pack-bound struct's one-element / flexible array member) and
+`2ad1c9428` (forest v76: an arm inside a declaration does not replay at the include site),
+their cost refinement `085b0f3b0`, the B229 fix `89ba23129` (a C++ program with destructors
+needs no madc library: the unwind personality rides the image), the B232 fix `9adba41c5`
+(x86-64: every function and innermost loop head starts a 32-byte block) with its
+branch-estimate follow-up `ebeba1ceb`, and the B231 fix `c8ce207ae` (the personality's
+object rides the pack's ledger, generated once by the freezer, merged into each -c / -o
+output)): static gates 0 red of 117, `make gates` green (forest_ledger_gate 32 legs incl.
+6c/6d/7b; loop_align_gate), parse-cost 1 red of 21 (`c_headers.forest` +0.50% against its
+2026-10-21 baseline, B233; the row is 35.2M Ir against 0.105.0's 245.0M). Linux packed
+madc-release 0.106.0 headerless 2110 passed, 0 failed, 69 skipped + ondisk 60/0; exeobj
+JIT 2170/0/9skip, EXE 1943/0, OBJ 1943/0. headerless-win (packed PE under wine)
+2050/0/129skip + ondisk-win 27/0/33skip; wine64 (hosted PE) 2077/0/102skip; genuine
+Windows 11 full suite 2049/0/130skip (a first run's 9 timeouts were host load during a
+large file move; green on the full rerun). Conformance re-measured on the final binary:
+c23-compile 38, c23-run 40, torture-c23 1493, cpp2a 350 (unchanged).
+darwin-suite native libc++: arm64 Mac Mini (macOS 14) 2123/0/56skip + mac battery 12/0, Intel
+MacBook (macOS 15) 2126/0/53skip + mac battery 12/0. Interactive subset: Linux 61/0 + units
+7/0 (packed 61/0), Windows 55/0/6skip, both Macs 59/0/2skip. Homebrew lane 2170/0/9skip.
+Fast lanes at baseline (c-testsuite 220/0, c-torture 1620 with 5 baseline, c2mir 368/0/4,
+gui 13/13, gxx-c++11 1505, index-c 50/50, commonmark 664/6). macOS build and aarch64-ld
+green. tests-jit (batch) = the exeobj stage, 2170/0/9skip. Against packaged 0.105.0, measured
+before the long suites: execution (-O2 native, best of 5 interleaved, outputs identical)
+geometric mean 0.985 over 19 benchmarks, every mover re-measured over 5-6 code placements
+(heapsort 1.005, funnkuch-reduce 0.933, virtual-call 0.993, hash 1.005, lists 0.996);
+compile wall time (best of 9 interleaved) geometric mean 0.799 over 16 rows, none slower
+(-c hello.cpp 84 -> 81 ms, smaug act_wiz.c 234 -> 198 ms); `madc-release -c hello.cpp`
+473.1M -> 453.0M Ir from B231. A C-pack differential (6 feature
+macros x every ordered pair of the 30 C-pack headers, 5220 compiles) has no compile the live
+headers accept and the pack refuses. Untracked known-RED `testnoreturn_c11` excluded
+throughout.
+
 0.105.0 seam battery (2026-10-14, `a2a6d317c` content on `feature/pack-slices-claude`: the REPL live
 reparse and the pack slices): static gates 0 red of 98, `make gates` green, parse-cost 0 red of
 14. Linux packed madc-release headerless 2000 passed, 0 failed, 43 skipped + ondisk 34/0;
@@ -8,6 +63,14 @@ stage rerun (the battery run's two reds, `teststringobj` and `testtrycatchdtor`,
 `wine_suite_flake_class` singletons, green on an isolated rerun) + ondisk-win 1/0. macOS build
 and aarch64-ld green. Batch (dev JIT) 2034/0/9skip; interactive lane 57/0 + units 7/0. New
 reducer `testlazymoduledirect`; the `--no-sysroot-includes` pair names `<zstd.h>`.
+
+0.106.0 arc section J, the pack's C layer (2026-10-18, `24e02f5bc`, Linux): the packed release
+carries two raw C profiles (`c17 c11`, `gnu17 gnu11`); `forest_pack.sh`'s C gate block OK
+(`linux-c-default`, `linux-c17` 2,126,488 bytes, `linux-gnu17` 3,409,816 bytes, every C probe
+binds); `forest_pack_gate --selftest` 25 legs; `forest_bind_gate` 42/42 + `[rawgate]` `[clayer]`
+`[cenv]`; parse-cost re-recorded (`c_headers.forest` 243.0M -> 52.1M Ir); fast lanes on the
+PACKED release: c-testsuite 220/0, c2mir 368/0, index-c 50/50, c-torture's one non-baseline
+red is B200 (also on 0.105.0). Batch (dev JIT) 2093/0/9skip at `91c63d95a`. Static gates 0 red.
 
 Split arc Phase 2 — madcide leaves madc (2026-10-11, `072ea1f25`): the
 madcide tests, its window tests and its gates moved to the madcide

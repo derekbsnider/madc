@@ -1,0 +1,4 @@
+vec-ref: s=6 calls=1
+map-ref: s=30 calls=2
+vec-val: s=9 calls=3
+param-ref: s=6 calls=3

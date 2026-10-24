@@ -19,7 +19,6 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -390,6 +389,44 @@ madc::value *python_format_value(madc::value *out, const char *fmt,
 	return out;
 }
 
+
+// The python:: publics (cpp-first-api.md): <ns_python> declares them,
+// libmadc defines them here, resolved mangled-direct. The extern "C"
+// functions below are C-linkage wrappers over the same cores.
+namespace python {
+
+madc::value &format(madc::value &out, const char *fmt, madc::value &args) { python_format_value(&out, fmt, &args); return out; }
+int64_t count(const char *haystack, const char *needle) { return python_count(haystack, needle); }
+int64_t startswith(const char *text, const char *prefix) { return python_startswith(text, prefix); }
+int64_t endswith(const char *text, const char *suffix) { return python_endswith(text, suffix); }
+int64_t isdigit(const char *text) { return python_isdigit(text); }
+int64_t isalpha(const char *text) { return python_isalpha(text); }
+int64_t isalnum(const char *text) { return python_isalnum(text); }
+int64_t isspace(const char *text) { return python_isspace(text); }
+const char *title(madc::value &s) { return python_title_value(&s); }
+const char *title(const char *s) { return python_title_cstr(s); }
+const char *swapcase(madc::value &s) { return python_swapcase_value(&s); }
+const char *swapcase(const char *s) { return python_swapcase_cstr(s); }
+const char *center(madc::value &s, int64_t width, const char *fill) { return python_center_value(&s, width, fill); }
+const char *center(const char *s, int64_t width, const char *fill) { return python_center_cstr(s, width, fill); }
+const char *ljust(madc::value &s, int64_t width, const char *fill) { return python_ljust_value(&s, width, fill); }
+const char *ljust(const char *s, int64_t width, const char *fill) { return python_ljust_cstr(s, width, fill); }
+const char *rjust(madc::value &s, int64_t width, const char *fill) { return python_rjust_value(&s, width, fill); }
+const char *rjust(const char *s, int64_t width, const char *fill) { return python_rjust_cstr(s, width, fill); }
+const char *zfill(madc::value &s, int64_t width) { return python_zfill_value(&s, width); }
+const char *zfill(const char *s, int64_t width) { return python_zfill_cstr(s, width); }
+const char *replace(madc::value &s, const char *old_text, const char *new_text) { return python_replace_value(&s, old_text, new_text); }
+const char *replace(const char *s, const char *old_text, const char *new_text) { return python_replace_cstr(s, old_text, new_text); }
+std::string &title(std::string &s) { return *python_title(&s); }
+std::string &swapcase(std::string &s) { return *python_swapcase(&s); }
+std::string &center(std::string &s, int64_t width, const char *fill) { return *python_center(&s, width, fill); }
+std::string &ljust(std::string &s, int64_t width, const char *fill) { return *python_ljust(&s, width, fill); }
+std::string &rjust(std::string &s, int64_t width, const char *fill) { return *python_rjust(&s, width, fill); }
+std::string &zfill(std::string &s, int64_t width) { return *python_zfill(&s, width); }
+std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *python_replace(&s, old_text, new_text); }
+std::string &format(std::string &result, const char *fmt, madc::value &args) { return *python_format(&result, fmt, &args); }
+
+}
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution

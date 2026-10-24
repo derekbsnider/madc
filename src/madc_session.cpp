@@ -34,7 +34,6 @@
 #include <unistd.h>	// isatty: the default editor runs only on a terminal
 #endif
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "tokens.h"
@@ -51,7 +50,8 @@
 #include "madc_documents.h"	// document_buffer: host_documents' answer
 #include "madc_posix_io.h"	// host_path_stem / drop_extension: %call's and %build's names
 #include "madc_project.h"	// %project: the manifest's reader and writer
-#include "madc_modules.h"	// a module's row: the commands it brings (1B.10)
+#include "madc_module.h"	// an imported module's description: its commands (1B.10)
+#include "madc_cli.h"		// madc_cli_standard_of: a standard option read as the command line reads it
 
 // The command registry (plan §41.8a, D13/D24; the modes and the extension
 // point: split arc 1A.2, docs/plans/2026-10-09-command-registry-design.md):
@@ -374,11 +374,9 @@ void InteractiveSession::register_module_commands()
 {
     if ( !prog->is_auto_library_loading_enabled() )
 	return;
-    for ( const madc::dis::istring &spelling : prog->loaded_modules() )
-	if ( modules_seen.insert(spelling).second )
-	    add_module_commands(reinterpret_cast<madc_module_commands_fn>(
-				   madc_module_entry_point(spelling,
-							   madc_module_entry::commands)));
+    for ( const Program::ImportedModule &m : prog->imported_modules )
+	if ( modules_seen.insert(m.name).second )
+	    add_module_commands(m.desc->commands);
 }
 
 bool InteractiveSession::add_host_command(const std::string &name,
@@ -447,14 +445,14 @@ InteractiveSession::~InteractiveSession()
 
 bool InteractiveSession::begin(const std::string &std_option)
 {
-    if ( !std_option.empty() && !prog->set_language_standard_option(std_option) )
+    // The option reads as the command line reads it (--std=NAME, -std=NAME).
+    madc::dis::istring name;
+    if ( !std_option.empty()
+	 && !(madc_cli_standard_of(std_option, name) && prog->set_language_standard(name)) )
     {
 	// Its refusal is said, as the CLI says it (the host may have no
 	// terminal: a backend's client reads the Program's error stream).
-	const std::string prefix("--std=");
-	prog->error() << "Unknown --std target: "
-		      << (std_option.compare(0, prefix.size(), prefix) == 0
-			  ? std_option.substr(prefix.size()) : std_option)
+	prog->error() << "Unknown --std target: " << (name.empty() ? std_option : name.str())
 		      << std::endl;
 	return false;
     }
@@ -1652,9 +1650,9 @@ bool InteractiveSession::std_command(const std::string &argument,
 	return true;
     }
     std::string spelling = argument.substr(b, argument.find_last_not_of(blanks) + 1 - b);
-    const std::string option("--std=");
-    if ( spelling.compare(0, option.size(), option) == 0 )
-	spelling.erase(0, option.size());
+    madc::dis::istring named;			// %std --std=c17, as the command line says it
+    if ( madc_cli_standard_of(spelling, named) )
+	spelling = named;
     Program::LanguageStd std;
     bool gnu;
     if ( !Program::standard_of_spelling(spelling, std, gnu) )

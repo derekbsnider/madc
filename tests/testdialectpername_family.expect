@@ -1,0 +1,5 @@
+count 5 extra 42
+items a 7 2.5 true whole
+value MIXED cstr CSTR
+bare WALK
+directive refused

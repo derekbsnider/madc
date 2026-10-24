@@ -1,0 +1,3 @@
+dialect first: refused 1
+program FILE * into the dialect after its first use: ok
+one stderr: 1

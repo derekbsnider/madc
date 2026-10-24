@@ -23,8 +23,25 @@
 #include "madc_typeid.h"
 
 extern thread_local bool madc_verbose;
+// Set (never cleared) once any thread turns verbose output on: DBG's
+// process-wide pre-test. madc_verbose is a thread_local in libmadc, so each
+// read of it is a __tls_get_addr call; a process that never asked for -v
+// reads only this plain flag. Thread safety: an atomic set-only flag; each
+// thread's madc_verbose stays its own answer.
+extern std::atomic<bool> madc_verbose_requested;
+// The ONE writer of madc_verbose: keeps madc_verbose_requested true for
+// every thread that turns verbose on (scripts/check-one-dbg-macro.sh).
+inline void madc_set_verbose(bool v)
+{
+    if ( v )
+	madc_verbose_requested.store(true, std::memory_order_relaxed);
+    madc_verbose = v;	// the one writer
+}
+// The ONE definition of DBG (a unit-test binary defines its own before the
+// project headers). do-while(0): one statement, its own scope.
 #ifndef DBG
-#define DBG(x) do { if (madc_verbose) { x; } } while (0)
+#define DBG(x) do { if (madc_verbose_requested.load(std::memory_order_relaxed) \
+			 && madc_verbose) { x; } } while (0)
 #endif
 // JIT/codegen optimization level (0-3), set by the `-O<n>` CLI flag. Drives
 // both MIR_gen_set_optimize_level and c2mir's compile optimize_level. Default 1.
@@ -139,6 +156,16 @@ enum class TargetVaList { SysVTagArray, AAPCS64Struct, Scalar };
 extern TargetVaList madc_target_va_list;
 inline bool target_scalar_va_list()
 { return madc_target_va_list == TargetVaList::Scalar; }
+
+// The TARGET's long double size and alignment — the sixth target property.
+// Not a model madc chooses: c2mir lays TP_LDOUBLE out per target (sizeof
+// (mir_ldouble), MIR_LDOUBLE_ALIGN), and every parse-time sizeof, _Alignof
+// and struct layout must agree with it, so the backend is the one owner and
+// these read it (defined in src/madc_cir.cpp, the c2mir boundary). Never
+// sizeof(long double) at a consumer: that is the HOST's, and an emit-only
+// cross madc (Linux x86-64 host, arm64-macos target: 16 vs 8) differs.
+size_t target_ldouble_size();
+size_t target_ldouble_align();
 
 // The TARGET-shaped C types whose width the data model decides (task #46b).
 // LP64: `long` IS int64 (ddINT64/ddUINT64) and wchar_t is the 4-byte int32
@@ -296,6 +323,12 @@ enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
 // id-routed (no getArrayType exists yet). See
 // docs/plans/2026-06-12-type-table-value-abi-design.md §2.
 enum class DerivedKind : uint8_t { dkPointer, dkReference, dkConst };
+
+// Which platform-width integer singleton a type IS (DataDefPlatformLONG /
+// ULONG / LONGLONG / ULONGLONG, declared after DataDef), piNONE for every
+// other type: the answer DataDef::platform_integer() gives in place of one
+// dynamic_cast per class.
+enum class PlatformInteger : uint8_t { piNONE, piLONG, piULONG, piLONGLONG, piULONGLONG };
 
 // The cv-qualifier MASK a qualified type carries (DataDefQUAL::quals): one
 // variant per (unqualified base, mask), minted only by
@@ -553,6 +586,10 @@ public:
     virtual DataDefFPTR          *as_fptr_dd()     { return NULL; }
     virtual DataDefSIMD          *as_simd_dd()     { return NULL; }
     virtual FuncDef              *as_funcdef_dd()  { return NULL; }
+    // The platform-width integer this type IS; the four singleton classes
+    // override it. A qualified wrapper answers piNONE, as a dynamic_cast to
+    // one of those classes did on it.
+    virtual PlatformInteger platform_integer() const { return PlatformInteger::piNONE; }
     // Const twins (non-virtual; funnel through the virtuals above).
     const DataDefSTRUCT  *as_struct_dd()  const { return const_cast<DataDef *>(this)->as_struct_dd(); }
     const DataDefCLASS   *as_class_dd()   const { return const_cast<DataDef *>(this)->as_class_dd(); }
@@ -1678,6 +1715,20 @@ public:
 		return (i < member_counts.size()) ? member_counts[i] : 1;
 	return 1;
     }
+    // Member `i` is a FIXED array (an array declarator, not runtime-sized):
+    // true, with its element count (every extent multiplied; a flexible or
+    // zero-length array holds 0) in `elements`.
+    bool member_fixed_array(size_t i, size_t &elements) const
+    {
+	if ( i >= member_counts.size()
+	  || (i < member_count_exprs.size() && member_count_exprs[i]) )
+	    return false;
+	if ( member_counts[i] == 1
+	  && !(i < member_array_flags.size() && member_array_flags[i]) )
+	    return false;
+	elements = member_counts[i];
+	return true;
+    }
     // Per-member access flag (0=public, vfPRIVATE, vfPROTECTED). Returns 0
     // (public) for an unknown member or a struct with no access info (a plain
     // C struct never sets member_access entries past the default 0).
@@ -1919,8 +1970,12 @@ public:
     void collect_vbases(std::vector<DataDefCLASS *> &out,
 			std::set<DataDefCLASS *> &seen, int depth = 0) const;
     // Virtual function table
-    std::vector<madc::dis::istring> vtable_slots; // method names in vtable slot order
-    std::map<madc::dis::istring, bool> virtual_methods;  // names of methods declared virtual
+    // Slot keys in vtable slot order: FuncDef::virtual_slot_key (one per
+    // virtual SIGNATURE), "~" / "~$deleting" for the destructor.
+    std::vector<madc::dis::istring> vtable_slots;
+    // Display NAMES with a virtual member — the cheap "may this name occupy
+    // a slot" prefilter; the slot itself is per signature (vtable_slots).
+    std::map<madc::dis::istring, bool> virtual_methods;
     void **vtable;         // runtime vtable (array of function pointers, filled at compile time)
     bool has_vtable;       // true if this class or any base has virtual methods
     bool from_system_header;  // defined in a system/toolchain header (glibc/libstdc++):
@@ -1957,8 +2012,8 @@ public:
     // secondary_vptr_owners from RESTORED vtable_groups (frozen forest: the
     // groups are frozen, the owners list is not). Defined in parser.cpp.
     void secondary_vptr_owners_from_groups();
-    // Resolve a virtual method name to its (group, in-group slot). Returns false if
-    // not a virtual method of any group.
+    // Resolve a slot key to its (group, in-group slot). Returns false if no
+    // group holds it.
     bool find_vslot(const madc::dis::istring &m, size_t &group, int &slot) const {
 	for ( size_t g = 0; g < vtable_groups.size(); g++ )
 	    for ( size_t i = 0; i < vtable_groups[g].slots.size(); i++ )
@@ -1991,6 +2046,11 @@ public:
 	  from_system_header(false), is_extern_template_instantiated(false) {}
     virtual BaseType basetype() const override { return BaseType::btClass; }
     Variable *findMethod(const madc::dis::istring &s);
+    // The FINAL OVERRIDER of the vtable slot `key` (FuncDef::virtual_slot_key)
+    // in this class: its own method with that key, else the dominant one
+    // across every base (a vbase's overrider loses to a class derived from
+    // it). NULL when no method fills the slot. Defined in parser.cpp.
+    Variable *slot_overrider(const madc::dis::istring &key);
     // Among the same-name method overloads (this class + base chain), pick the
     // one whose parameter types best match `argtypes` (overload resolution by
     // argument type). Returns NULL when no same-name method exists; falls back
@@ -2083,9 +2143,11 @@ class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint
 // (parser.cpp) are the one owner — on LP64 they return ddINT64/ddUINT64
 // (long IS int64 there) and these classes go uninstantiated.
 class DataDefPlatformLONG:  public DataDef { public:
-	DataDefPlatformLONG():  DataDef("long", 4, DataType::dtINT32) {} };
+	DataDefPlatformLONG():  DataDef("long", 4, DataType::dtINT32) {}
+	PlatformInteger platform_integer() const override { return PlatformInteger::piLONG; } };
 class DataDefPlatformULONG: public DataDef { public:
-	DataDefPlatformULONG(): DataDef("unsigned long", 4, DataType::dtUINT32) {} };
+	DataDefPlatformULONG(): DataDef("unsigned long", 4, DataType::dtUINT32) {}
+	PlatformInteger platform_integer() const override { return PlatformInteger::piULONG; } };
 // Platform `long long` / `unsigned long long` — the darwin mirror of the
 // pair above (LP64 target whose headers alias int64_t to long long): full
 // 8-byte i64 rank, but a DISTINCT identity whose NAME feeds the Itanium
@@ -2095,20 +2157,20 @@ class DataDefPlatformULONG: public DataDef { public:
 // (parser.cpp) are the one owner — everywhere else they return
 // ddINT64/ddUINT64 and these classes go uninstantiated.
 class DataDefPlatformLONGLONG:  public DataDef { public:
-	DataDefPlatformLONGLONG():  DataDef("long long", 8, DataType::dtINT64) {} };
+	DataDefPlatformLONGLONG():  DataDef("long long", 8, DataType::dtINT64) {}
+	PlatformInteger platform_integer() const override { return PlatformInteger::piLONGLONG; } };
 class DataDefPlatformULONGLONG: public DataDef { public:
-	DataDefPlatformULONGLONG(): DataDef("unsigned long long", 8, DataType::dtUINT64) {} };
+	DataDefPlatformULONGLONG(): DataDef("unsigned long long", 8, DataType::dtUINT64) {}
+	PlatformInteger platform_integer() const override { return PlatformInteger::piULONGLONG; } };
 // A platform-width integer: one of the four singletons above — a DISTINCT
 // fundamental type sharing another integer's storage (LLP64 long beside int,
 // darwin long long beside long). Its rawtype cannot tell it apart; its class
-// can. The integer conversion rank (tokens.h) and the type-name renderer
-// (_Generic, __builtin_types_compatible_p) ask this.
+// can, through platform_integer(). The integer conversion rank (tokens.h) and
+// the type-name renderer (_Generic, __builtin_types_compatible_p) ask this.
+// NULL-safe.
 inline bool dd_is_platform_integer(const DataDef *dd)
 {
-    return dynamic_cast<const DataDefPlatformLONG *>(dd)
-	|| dynamic_cast<const DataDefPlatformULONG *>(dd)
-	|| dynamic_cast<const DataDefPlatformLONGLONG *>(dd)
-	|| dynamic_cast<const DataDefPlatformULONGLONG *>(dd);
+    return dd && dd->platform_integer() != PlatformInteger::piNONE;
 }
 // wchar_t / char16_t / char32_t (datadef.h decls above): distinct
 // fundamental types whose STORAGE is an integer DataType (so every width /
@@ -2143,23 +2205,23 @@ class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("doub
 // used to lex straight to ddDOUBLE, so sizeof said 8, printf("%Lg") read 80 bits
 // off the varargs stack and printed nan, and the mangler emitted Itanium `e`
 // for a value passed as a double.
-// The size and alignment are the TARGET's, read off the compiler building
-// this madc for it (a hosted madc runs where it was built for; the cross
-// builds compile with -target): 16/16 on x86-64 (x87 extended), 16/16 on
-// Linux aarch64 (IEEE quad), 8/8 on Apple arm64 where long double IS
-// double. c2mir sizes TP_LDOUBLE the same way (sizeof (mir_ldouble)), so
-// the front end and the backend agree by construction; a baked 16 made madc
-// fold sizeof(long double) = 16 and lay structs out 16-aligned on an Apple
-// M-series Mac whose libc, c2mir and MIR all say 8 (darwin D4:
-// testlongdouble, testldblalign, testcomplexretconv, testsignalingnan).
+// The size and alignment are the TARGET's, read from c2mir's layout of
+// TP_LDOUBLE (target_ldouble_size / target_ldouble_align): 16/16 on x86-64
+// (x87 extended), 16/16 on Linux aarch64 (IEEE quad), 8/8 on Apple arm64
+// where long double IS double — so the front end and the backend agree by
+// construction. A baked 16 made madc fold sizeof(long double) = 16 and lay
+// structs out 16-aligned on an Apple M-series Mac whose libc, c2mir and MIR
+// all say 8 (darwin D4: testlongdouble, testldblalign, testcomplexretconv,
+// testsignalingnan); the host's sizeof(long double) did the same in the
+// Linux-hosted arm64-macos cross madc, which freezes the darwin forest.
 class DataDefLDOUBLE:   public DataDef { public:
-	DataDefLDOUBLE(): DataDef("long double", sizeof(long double), DataType::dtLDOUBLE) {}
+	DataDefLDOUBLE(): DataDef("long double", target_ldouble_size(), DataType::dtLDOUBLE) {}
 	// SysV x86-64 alignment IS 16 as the comment above has always said —
 	// but the base alignment() caps simple types at 8, so without this
 	// override struct layout placed long double members on 8-byte
 	// boundaries (parse-time sizeof folded 24 for a struct c2mir lays
 	// out as 32 — gcc/clang: 32). Apple arm64: alignof(long double) = 8.
-	virtual size_t alignment() const override { return alignof(long double); } };
+	virtual size_t alignment() const override { return target_ldouble_align(); } };
 
 // generic pointer-to-type — tracks what the pointer points to
 // pointers are 64-bit integers at the ABI level (stored in Gp registers)

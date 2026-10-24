@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <atomic>
 #include <string>
 #include "madc_dl.h"
 #include "madc_posix_io.h"
@@ -27,6 +28,9 @@ thread_local int madc_opt_level MADC_GLOBAL_WEAK = 1;
 thread_local bool madc_debug_info MADC_GLOBAL_WEAK = false;
 thread_local bool madc_no_warnings MADC_GLOBAL_WEAK = false;
 thread_local bool madc_object_mode MADC_GLOBAL_WEAK = false;
+// DBG's process-wide pre-test (datadef.h): set once any thread turns verbose
+// on, never cleared.
+std::atomic<bool> madc_verbose_requested(false);
 
 // Resolved absolute path of the running executable (see datadef.h).
 std::string madc_self_exe_path()

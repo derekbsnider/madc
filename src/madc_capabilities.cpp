@@ -17,23 +17,23 @@
  *     looks up (Program::supported_stdlib_flavor_names).
  *   - CIR emission targets come from CIR_EMIT_TARGETS — the same string the
  *     `--emit=` "unknown target" error cites — split on '|', never re-listed.
+ *   - introspection comes from madc's command-line table (src/madc_cli.cpp):
+ *     the rows tagged mt_introspection, by their long spellings.
  *
- * native_outputs and introspection have NO shared registry to derive from (the
- * MadcNativeKind enum names its kinds, not their CLI -c/-o/-shared/-r
- * spellings; the --dump-* set is scattered arg handling), so they are
- * CLI-surface literals here by design: this file owns the CLI's own surface.
+ * native_outputs has NO shared registry to derive from (the MadcNativeKind
+ * enum names its kinds, not their CLI -c/-o/-shared/-r spellings), so it is
+ * a CLI-surface literal here by design.
  */
 
 #include "madc_capabilities.h"
 #include "json.hpp"
 #include "cir_emit_c.h"		// CIR_EMIT_TARGETS
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"		// Program::supported_*_standard_names()
-#include "madc_modules.h"	// the module map: a GUI-flagged row = a web-level target
+#include "madc_cli.h"	// introspection: madc's rows tagged mt_introspection
 #include "madcdis/ui_events.h"	// ui_level_name — the one spelling owner of ui::level
 
 #include <iostream>
@@ -101,20 +101,20 @@ void madc_print_capabilities_json()
 
     // CLI-owned surfaces (no shared registry — see the file header).
     m["native_outputs"] = { "object", "executable", "shared", "relocatable" };
-    m["introspection"] = { "dump-source", "dump-cir", "dump-nodes",
-			   "dump-cir-checked", "dump-forest", "dump-registered",
-			   "show-stats" };
+    m["introspection"] = json::array();
+    const madc::cli::table &cli = madc_cli_table();
+    for ( size_t k = 0; k < cli.nrows; k++ )
+	if ( cli.rows[k].tags & mt_introspection )
+	    m["introspection"].push_back(std::string(cli.rows[k].spellings[0].text).substr(2));
 
-    // The UI LEVELS this build has a target for (ui::level, bits/ui_enums —
+    // The UI LEVELS this binary has a target for (ui::level, bits/ui_enums —
     // the names from the one spelling owner): the grid frontend (tui) is
-    // built in; the web level exists when the module map carries a GUI-flagged
-    // row (a LAZY library: known to the build, opened at first use — the
-    // manifest describes the binary, not the machine it runs on). ui::NONE and
-    // ui::LINE are every program's and list once a frontend serves them.
+    // built in. A level a MODULE serves (the web level: `import ui_web;`) is
+    // the module's, not the binary's — whether it is installed is answered by
+    // trying the import (`madc --import=ui_web`). ui::NONE and ui::LINE are
+    // every program's and list once a frontend serves them.
     m["ui"]["levels"] = json::array();
     m["ui"]["levels"].push_back(madc::hub::ui_level_name(ui::TUI));
-    if ( madc_module_any_flagged(MADC_MODULE_GUI) )
-	m["ui"]["levels"].push_back(madc::hub::ui_level_name(ui::WEB));
 
     m["embedding"]["libmadc"] = true;
     m["embedding"]["c_api"] = true;

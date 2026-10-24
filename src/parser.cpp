@@ -34,7 +34,6 @@
 #include <chrono>
 #include <algorithm>
 #include "libmadc/program.h"
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 // Temporary fn-template pack diagnostics — enable with
 // make CXXFLAGS="-std=c++11 -Wall -DMADC_DBG_PACK" (worker-thread-safe,
 // unlike DBG/madc_verbose which is thread_local-dead on parser workers).
@@ -454,8 +453,8 @@ bool internal_program_graph_at(int64_t handle, int64_t line, int64_t column,
 bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
 					    const std::string &source_text,
 					    value &out_diags, bool commit);
-// The git substrate (Nexus L4a) is the madcgit MODULE since the V6 seam
-// (src/modules/madcgit/madcgit.cpp; owner ruling 2026-09-15: libgit2 is a
+// The git substrate (Nexus L4a) is the git MODULE since the V6 seam
+// (src/modules/git/; owner ruling 2026-09-15: libgit2 is a
 // dependency of the IDE, never part of madc) — no Program face, no bridge here.
 // L4b (design §3.3): revision handles by generation TAG — see madc_program.cpp.
 int64_t internal_program_parse_open_tagged(::Program &self, const std::string &source_text,
@@ -707,65 +706,72 @@ Program *require_runtime_eval_program(std::unique_ptr<Program> &owned)
     return owned.get();
 }
 
+// The runtime-eval helper names, one interned row per spelling (one hash
+// lookup on the name's identity, never a compare ladder per call): a source
+// or expression helper names its scope-capturing _ctx twin; a _ctx twin
+// names none.
+enum class RuntimeEvalHelper : uint8_t { Source, Expression, Ctx };
+
+struct RuntimeEvalHelperRow {
+    RuntimeEvalHelper kind;
+    madc::dis::istring ctx;
+};
+
+const RuntimeEvalHelperRow *runtime_eval_helper_row(const madc::dis::istring &name)
+{
+    typedef RuntimeEvalHelper K;
+    static const std::unordered_map<madc::dis::istring, RuntimeEvalHelperRow> rows = {
+	{ "__madc_eval_runtime", { K::Source, "__madc_eval_ctx_runtime" } },
+	{ "__madc_eval_bool_runtime", { K::Source, "__madc_eval_bool_ctx_runtime" } },
+	{ "__madc_eval_int_runtime", { K::Source, "__madc_eval_int_ctx_runtime" } },
+	{ "__madc_eval_double_runtime", { K::Source, "__madc_eval_double_ctx_runtime" } },
+	{ "__madc_eval_string_runtime", { K::Source, "__madc_eval_string_ctx_runtime" } },
+	{ "__madc_eval_expression_runtime",
+	  { K::Expression, "__madc_eval_expression_ctx_runtime" } },
+	{ "__madc_eval_expression_bool_runtime",
+	  { K::Expression, "__madc_eval_expression_bool_ctx_runtime" } },
+	{ "__madc_eval_expression_int_runtime",
+	  { K::Expression, "__madc_eval_expression_int_ctx_runtime" } },
+	{ "__madc_eval_expression_double_runtime",
+	  { K::Expression, "__madc_eval_expression_double_ctx_runtime" } },
+	{ "__madc_eval_expression_string_runtime",
+	  { K::Expression, "__madc_eval_expression_string_ctx_runtime" } },
+	{ "__madc_eval_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_bool_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_int_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_double_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_string_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_bool_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_int_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_double_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_string_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+    };
+    std::unordered_map<madc::dis::istring, RuntimeEvalHelperRow>::const_iterator ri =
+	rows.find(name);
+    return ri == rows.end() ? NULL : &ri->second;
+}
+
 bool is_runtime_eval_scope_helper_name(const madc::dis::istring &name)
 {
-    return name == "__madc_eval_runtime"
-	|| name == "__madc_eval_bool_runtime"
-	|| name == "__madc_eval_int_runtime"
-	|| name == "__madc_eval_double_runtime"
-	|| name == "__madc_eval_string_runtime"
-	|| name == "__madc_eval_expression_runtime"
-	|| name == "__madc_eval_expression_bool_runtime"
-	|| name == "__madc_eval_expression_int_runtime"
-	|| name == "__madc_eval_expression_double_runtime"
-	|| name == "__madc_eval_expression_string_runtime";
+    const RuntimeEvalHelperRow *row = runtime_eval_helper_row(name);
+    return row && row->kind != RuntimeEvalHelper::Ctx;
 }
 
 bool is_runtime_eval_scope_ctx_helper_name(const madc::dis::istring &name)
 {
-    return name == "__madc_eval_ctx_runtime"
-	|| name == "__madc_eval_bool_ctx_runtime"
-	|| name == "__madc_eval_int_ctx_runtime"
-	|| name == "__madc_eval_double_ctx_runtime"
-	|| name == "__madc_eval_string_ctx_runtime"
-	|| name == "__madc_eval_expression_ctx_runtime"
-	|| name == "__madc_eval_expression_bool_ctx_runtime"
-	|| name == "__madc_eval_expression_int_ctx_runtime"
-	|| name == "__madc_eval_expression_double_ctx_runtime"
-	|| name == "__madc_eval_expression_string_ctx_runtime";
+    const RuntimeEvalHelperRow *row = runtime_eval_helper_row(name);
+    return row && row->kind == RuntimeEvalHelper::Ctx;
 }
 
 bool is_runtime_eval_scope_public_name(const madc::dis::istring &name)
 {
-    return name == "eval"
-	|| name == "eval_unit"
-	|| name == "eval_bool"
-	|| name == "eval_int"
-	|| name == "eval_double"
-	|| name == "eval_string"
-	|| name == "eval_expression"
-	|| name == "eval_expression_bool"
-	|| name == "eval_expression_int"
-	|| name == "eval_expression_double"
-	|| name == "eval_expression_string";
-}
-
-bool is_runtime_eval_source_helper_name(const madc::dis::istring &name)
-{
-    return name == "__madc_eval_runtime"
-	|| name == "__madc_eval_bool_runtime"
-	|| name == "__madc_eval_int_runtime"
-	|| name == "__madc_eval_double_runtime"
-	|| name == "__madc_eval_string_runtime";
-}
-
-bool is_runtime_eval_expression_helper_name(const madc::dis::istring &name)
-{
-    return name == "__madc_eval_expression_runtime"
-	|| name == "__madc_eval_expression_bool_runtime"
-	|| name == "__madc_eval_expression_int_runtime"
-	|| name == "__madc_eval_expression_double_runtime"
-	|| name == "__madc_eval_expression_string_runtime";
+    static const std::unordered_set<madc::dis::istring> names = {
+	"eval", "eval_unit", "eval_bool", "eval_int", "eval_double", "eval_string",
+	"eval_expression", "eval_expression_bool", "eval_expression_int",
+	"eval_expression_double", "eval_expression_string",
+    };
+    return names.count(name) != 0;
 }
 
 } // namespace
@@ -1387,9 +1393,6 @@ void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column)
     madc::internal_program_graph_at(handle, line, column, out);
     return result;
 }
-
-// (The git substrate's bridges lived here until the V6 seam; the madcgit
-// MODULE now carries its own C API — src/modules/madcgit/madcgit.cpp.)
 
 // L4b: revision handles by generation TAG. parse_open_tagged needs the active
 // Program exactly as madc_parse_open does; generation/route read the registry.
@@ -2214,6 +2217,10 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 		if ( ad.paren >= 2 && at->type() == TokenType::ttIdentifier
 		  && madc_gnu_attribute_kind(((TokenIdent *)at)->spelling()) == GnuAttributeKind::Weak )
 		    pending_weak_binding = true;
+		if ( ad.paren == 2 && token_names_gnu_attribute(at, GnuAttributeKind::NoInline) )
+		    pending_noinline = true;
+		if ( ad.paren == 2 && token_names_gnu_attribute(at, GnuAttributeKind::NoInstrumentFunction) )
+		    pending_no_instrument_function = true;
 		if ( token_names_gnu_attribute(at, GnuAttributeKind::Optimize) )
 		    saw_optimize = true;
 		else if ( saw_optimize && at->type() == TokenType::ttString )
@@ -2304,6 +2311,26 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 	nt = nextToken();
     }
     return nt;
+}
+
+void Program::apply_pending_function_attributes(FuncDef *func)
+{
+    if ( pending_no_instrument_function )
+	func->no_instrument_function = true;
+    if ( pending_no_strict_aliasing )
+	func->no_strict_aliasing = true;
+    if ( pending_weak_binding )
+	func->weak_binding = true;
+    if ( pending_noinline )
+	func->noinline = true;
+}
+
+void Program::clear_pending_function_attributes()
+{
+    pending_no_instrument_function = false;
+    pending_no_strict_aliasing = false;
+    pending_weak_binding = false;
+    pending_noinline = false;
 }
 
 bool Program::consume_aggregate_attributes(AggregateAttributes &a)
@@ -2945,7 +2972,7 @@ static int64_t literal_token_sizeof(TokenStr *ts)
 
 static bool is_decltype_identifier(const madc::dis::istring &name)
 {
-    return name == "decltype";
+    return name == MADC_ISTRING_LITERAL("decltype");
 }
 
 // The ONE owner of the alignof operator's spellings: C++ `alignof`, C11
@@ -2953,7 +2980,8 @@ static bool is_decltype_identifier(const madc::dis::istring &name)
 // alignof" question asks it (gated by scripts/check-one-alignof-spelling.sh).
 bool is_alignof_identifier(const madc::dis::istring &name)
 {
-    static const char *const spellings[] = {
+    // Interned once: each test is an identity compare.
+    static const madc::dis::istring spellings[] = {
 	"alignof", "_Alignof", "__alignof__", "__alignof"
     };
     for ( size_t i = 0; i < sizeof(spellings) / sizeof(spellings[0]); ++i )
@@ -2965,7 +2993,7 @@ bool is_alignof_identifier(const madc::dis::istring &name)
 // `sizeof` or an alignof spelling: an operator over a type-id or expression.
 static bool is_type_query_identifier(const madc::dis::istring &name)
 {
-    return name == "sizeof" || is_alignof_identifier(name);
+    return name == MADC_ISTRING_LITERAL("sizeof") || is_alignof_identifier(name);
 }
 
 // An operator whose parenthesized operand is UNEVALUATED — decltype
@@ -2975,27 +3003,28 @@ static bool is_type_query_identifier(const madc::dis::istring &name)
 static bool has_unevaluated_operand(const madc::dis::istring &name)
 {
     return is_decltype_identifier(name) || is_type_query_identifier(name)
-	|| name == "noexcept";
+	|| name == MADC_ISTRING_LITERAL("noexcept");
 }
 
 static bool is_static_assert_identifier(const madc::dis::istring &name)
 {
-    return name == "_Static_assert" || name == "static_assert";
+    return name == MADC_ISTRING_LITERAL("_Static_assert")
+	|| name == MADC_ISTRING_LITERAL("static_assert");
 }
 
 static bool is_nullptr_identifier(const madc::dis::istring &name)
 {
-    return name == "nullptr";
+    return name == MADC_ISTRING_LITERAL("nullptr");
 }
 
 static bool is_bool_literal_identifier(const madc::dis::istring &name, bool &value)
 {
-    if ( name == "true" )
+    if ( name == MADC_ISTRING_LITERAL("true") )
     {
 	value = true;
 	return true;
     }
-    if ( name == "false" )
+    if ( name == MADC_ISTRING_LITERAL("false") )
     {
 	value = false;
 	return true;
@@ -3071,7 +3100,7 @@ TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
     // the chained-receiver precedent of the arrow method-call arm.
     if ( !lhs )
 	return NULL;
-    TokenVar *otv = dynamic_cast<TokenVar *>(lhs);
+    TokenVar *otv = lhs->as_var_tok();
     if ( !otv )
 	return NULL;
     DataDef *rdd = NULL;
@@ -3088,7 +3117,7 @@ TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
 	   || lhs->type() == TokenType::ttCallMethod
 	   || lhs->type() == TokenType::ttCallFunc )
     {
-	if ( TokenMember *mtm = dynamic_cast<TokenMember *>(lhs) )
+	if ( TokenMember *mtm = lhs->as_member_tok() )
 	    if ( mtm->is_fixed_array_member() )
 		return NULL;
 	rdd = lhs->datadef();
@@ -3129,9 +3158,20 @@ TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
     return opcall;
 }
 
-static uint32_t member_proxy_flags(uint32_t owner_flags)
+// The flags of a `const`-declared variable (vfCONSTDECL / vfCONSTBAKED say
+// how its value reads).
+static const uint32_t CONST_DECLARED_FLAGS = vfCONSTANT | vfCONSTDECL | vfCONSTBAKED;
+
+// A member's proxy variable inherits its object's flags. Through a pointer
+// (`p->m`) the object is `*p`, never the pointer variable: an `S *const p`
+// is not a const object, so the pointer's own const declaration stays
+// behind (the pointee's cv qualifies the member's TYPE instead).
+static uint32_t member_proxy_flags(uint32_t owner_flags, bool through_pointer)
 {
-    return owner_flags & ~vfFIXEDARRAY;
+    uint32_t flags = owner_flags & ~vfFIXEDARRAY;
+    if ( through_pointer )
+	flags &= ~CONST_DECLARED_FLAGS;
+    return flags;
 }
 
 static DataDef *build_fixed_array_query_type(DataDef *base_type,
@@ -3171,12 +3211,14 @@ TokenBase *Program::skip_expression_whitespace()
 
 static bool is_realpart_identifier(const madc::dis::istring &name)
 {
-    return name == "__real" || name == "__real__";
+    return name == MADC_ISTRING_LITERAL("__real")
+	|| name == MADC_ISTRING_LITERAL("__real__");
 }
 
 static bool is_imagpart_identifier(const madc::dis::istring &name)
 {
-    return name == "__imag" || name == "__imag__";
+    return name == MADC_ISTRING_LITERAL("__imag")
+	|| name == MADC_ISTRING_LITERAL("__imag__");
 }
 
 static TokenBase *make_complex_component_token(TokenBase *expr, bool imag_part)
@@ -3863,7 +3905,7 @@ static bool libc_prototype_return_matches(const madc::dis::istring &name, FuncDe
     return !have.is_pointer() && have.rawtype() == want.dt;
 }
 
-static madc::dis::istring namespace_cpp_variable_symbol(const madc::dis::istring &ns_name,
+madc::dis::istring namespace_cpp_variable_symbol(const madc::dis::istring &ns_name,
 						 const madc::dis::istring &member_name)
 {
     return itanium_mangle_nested_var(namespace_qualifiers(ns_name),
@@ -3896,6 +3938,30 @@ madc::dis::istring Program::host_flavor_fn_symbol(const madc::dis::istring &ns_n
 	}
     MangleHostFlavorScope host_state;
     return namespace_cpp_function_symbol(ns_name, member_name, fd, &mask);
+}
+
+// The vtable slot identity (declared beside ref_qualifier in madc.h). Each
+// parameter encodes on its own (no cross-parameter substitutions, no class
+// prefix), so the key is the same in every class that declares the
+// signature: an override in a derived class names its base's slot.
+madc::dis::istring FuncDef::virtual_slot_key() const
+{
+    if ( method_display_name.empty() || method_display_name[0] == '~'
+      || param_cpp_spellings.size() != parameters.size() )
+	return method_display_name;
+    std::vector<madc::dis::istring> psp;
+    for ( size_t i = 1; i < param_cpp_spellings.size(); ++i )
+	psp.push_back(mangle_param_spelling(i));
+    spell_varargs_tail(psp);
+    std::string key(method_display_name.c_str());	// built text; returned interned
+    key += '(';
+    for ( size_t i = 0; i < psp.size(); ++i )
+	key += itanium_encode_type_sub(psp[i]).c_str();
+    key += ')';
+    if ( is_const_method ) key += 'K';
+    if ( is_volatile_method ) key += 'V';
+    if ( ref_qualifier ) key += ref_qualifier == 1 ? 'R' : 'O';
+    return key;
 }
 
 // task #69, method half: the HOST-flavor twin of a host-implemented class
@@ -4077,78 +4143,112 @@ DataDef *Program::madc_array_subscript_type()
 // lexer's type-specifier path emits (`int` -> ddINT32), so identity-sensitive
 // consumers (template instantiation keys) converge on one name regardless of
 // how the type was spelled.
+// The spelling is read ONCE, at the boundary, into its row's kind: an interned
+// table (one hash lookup on the name's identity, never a compare ladder). The
+// target-shaped rows ask their accessors per lookup — the data model is known
+// only once the target is.
+enum class BuiltinSpelling : uint8_t {
+    Void, Bool, Char, SChar, UChar, Short, UShort, Int, UInt,
+    Long, ULong, LongLong, ULongLong, Int128, UInt128,
+    Float, LDouble, Double, Size, PtrDiff, WChar, Char16, Char32,
+    MaxAlign, LPSTR, Auto, VaList
+};
+
+static const std::unordered_map<madc::dis::istring, BuiltinSpelling> &
+builtin_spelling_rows()
+{
+    typedef BuiltinSpelling B;
+    static const std::unordered_map<madc::dis::istring, BuiltinSpelling> rows = {
+	{ "void", B::Void },
+	{ "bool", B::Bool }, { "_Bool", B::Bool },
+	{ "char", B::Char },
+	{ "signed char", B::SChar },
+	{ "unsigned char", B::UChar },
+	{ "short", B::Short }, { "short int", B::Short },
+	{ "signed short", B::Short }, { "signed short int", B::Short },
+	{ "unsigned short", B::UShort }, { "unsigned short int", B::UShort },
+	{ "int", B::Int }, { "signed", B::Int }, { "signed int", B::Int },
+	{ "unsigned", B::UInt }, { "unsigned int", B::UInt },
+	// Plain `long` rows follow the target data model (4-byte on LLP64);
+	// `long long`/__int128 spellings are 8-byte on every target.
+	{ "long", B::Long }, { "long int", B::Long },
+	{ "signed long", B::Long }, { "signed long int", B::Long },
+	{ "unsigned long", B::ULong }, { "unsigned long int", B::ULong },
+	{ "long long", B::LongLong }, { "long long int", B::LongLong },
+	{ "signed long long", B::LongLong }, { "signed long long int", B::LongLong },
+	{ "unsigned long long", B::ULongLong },
+	{ "unsigned long long int", B::ULongLong },
+	// __int128 and long double are their OWN types with their own dds
+	// (ddINT128/ddUINT128, ddLDOUBLE — the lexer's type-specifier path
+	// emits them). These rows once pointed at the 64-bit / double dds
+	// from before those types landed, so the identity formers keyed
+	// K<long double> as K<double> and W<__int128> as W<long>: one shared
+	// instantiation, sizeof(K<double>) 16, the wrong specialization
+	// picked, and (once the overload scorer compared identity through
+	// this table) f(long double) tied f(double) — tests/testbuiltintplkey,
+	// tests/teststaticoverload.
+	{ "__int128", B::Int128 }, { "signed __int128", B::Int128 },
+	{ "unsigned __int128", B::UInt128 },
+	{ "float", B::Float }, { "_Float16", B::Float }, { "_Float32", B::Float },
+	{ "__bf16", B::Float },
+	{ "long double", B::LDouble },
+	// The _FloatN spellings ride the nearest-supported approximation (no
+	// dd of their own); a real _Float128/_Float64x type is its own slice.
+	{ "double", B::Double }, { "_Float64", B::Double }, { "_Float128", B::Double },
+	{ "_Float32x", B::Double }, { "_Float64x", B::Double }, { "__float128", B::Double },
+	{ "int8_t", B::SChar }, { "int16_t", B::Short }, { "int32_t", B::Int },
+	// int64_t/uint64_t follow the target's own alias spelling: `long long`
+	// on Apple/mingw (the accessors), `long` on glibc (the same pinned dds
+	// the accessors return there).
+	{ "int64_t", B::LongLong },
+	{ "uint8_t", B::UChar }, { "uint16_t", B::UShort }, { "uint32_t", B::UInt },
+	{ "uint64_t", B::ULongLong },
+	{ "size_t", B::Size }, { "ptrdiff_t", B::PtrDiff },
+	{ "wchar_t", B::WChar }, { "char16_t", B::Char16 }, { "char32_t", B::Char32 },
+	{ "max_align_t", B::MaxAlign }, { "LPSTR", B::LPSTR }, { "auto", B::Auto },
+	{ "__builtin_va_list", B::VaList },
+    };
+    return rows;
+}
+
 DataDef *Program::resolve_builtin_type_spelling(const madc::dis::istring &name)
 {
-    if ( name == "void" ) return &ddVOID;
-    if ( name == "bool" || name == "_Bool" ) return &ddBOOL;
-    if ( name == "char" ) return &ddCHAR;
-    if ( name == "signed char" ) return &ddINT8;
-    if ( name == "unsigned char" ) return &ddUINT8;
-    if ( name == "short" || name == "short int"
-      || name == "signed short" || name == "signed short int" )
-	return &ddINT16;
-    if ( name == "unsigned short" || name == "unsigned short int" )
-	return &ddUINT16;
-    if ( name == "int" || name == "signed" || name == "signed int" )
-	return &ddINT32;
-    if ( name == "unsigned" || name == "unsigned int" )
-	return &ddUINT32;
-    // Plain `long` rows follow the target data model (4-byte on LLP64);
-    // `long long`/__int128 spellings are 8-byte on every target.
-    if ( name == "long" || name == "long int"
-      || name == "signed long" || name == "signed long int" )
-	return dd_platform_long();
-    if ( name == "unsigned long" || name == "unsigned long int" )
-	return dd_platform_ulong();
-    if ( name == "long long" || name == "long long int"
-      || name == "signed long long" || name == "signed long long int" )
-	return dd_platform_longlong();
-    if ( name == "unsigned long long" || name == "unsigned long long int" )
-	return dd_platform_ulonglong();
-    // __int128 and long double are their OWN types with their own dds
-    // (ddINT128/ddUINT128, ddLDOUBLE — the lexer's type-specifier path
-    // emits them). These rows once pointed at the 64-bit / double dds
-    // from before those types landed, so the identity formers keyed
-    // K<long double> as K<double> and W<__int128> as W<long>: one shared
-    // instantiation, sizeof(K<double>) 16, the wrong specialization
-    // picked, and (once the overload scorer compared identity through
-    // this table) f(long double) tied f(double) — tests/testbuiltintplkey,
-    // tests/teststaticoverload.
-    if ( name == "__int128" || name == "signed __int128" )
-	return &ddINT128;
-    if ( name == "unsigned __int128" )
-	return &ddUINT128;
-    if ( name == "float" || name == "_Float16" || name == "_Float32"
-      || name == "__bf16" )
-	return &ddFLOAT;
-    if ( name == "long double" )
-	return &ddLDOUBLE;
-    // The _FloatN spellings ride the nearest-supported approximation (no
-    // dd of their own); a real _Float128/_Float64x type is its own slice.
-    if ( name == "double" || name == "_Float64" || name == "_Float128"
-      || name == "_Float32x" || name == "_Float64x" || name == "__float128" )
-	return &ddDOUBLE;
-    if ( name == "int8_t" ) return &ddINT8;
-    if ( name == "int16_t" ) return &ddINT16;
-    if ( name == "int32_t" ) return &ddINT32;
-    // int64_t/uint64_t follow the target's own alias spelling: `long long`
-    // on Apple/mingw (the accessors), `long` on glibc (the same pinned dds
-    // the accessors return there).
-    if ( name == "int64_t" ) return dd_platform_longlong();
-    if ( name == "uint8_t" ) return &ddUINT8;
-    if ( name == "uint16_t" ) return &ddUINT16;
-    if ( name == "uint32_t" ) return &ddUINT32;
-    if ( name == "uint64_t" ) return dd_platform_ulonglong();
-    if ( name == "size_t" ) return &ddUINT64;
-    if ( name == "ptrdiff_t" ) return &ddINT64;
-    if ( name == "wchar_t" ) return dd_platform_wchar();
-    if ( name == "char16_t" ) return dd_char16();
-    if ( name == "char32_t" ) return dd_char32();
-    if ( name == "max_align_t" ) return &ddMAX_ALIGN_T;
-    if ( name == "LPSTR" ) return &ddLPSTR;
-    if ( name == "auto" ) return &ddAUTO;
-    if ( name == "__builtin_va_list" ) return builtin_va_list_type();
-
+    const std::unordered_map<madc::dis::istring, BuiltinSpelling> &rows =
+	builtin_spelling_rows();
+    std::unordered_map<madc::dis::istring, BuiltinSpelling>::const_iterator ri =
+	rows.find(name);
+    if ( ri == rows.end() )
+	return NULL;
+    switch ( ri->second )
+    {
+	case BuiltinSpelling::Void:      return &ddVOID;
+	case BuiltinSpelling::Bool:      return &ddBOOL;
+	case BuiltinSpelling::Char:      return &ddCHAR;
+	case BuiltinSpelling::SChar:     return &ddINT8;
+	case BuiltinSpelling::UChar:     return &ddUINT8;
+	case BuiltinSpelling::Short:     return &ddINT16;
+	case BuiltinSpelling::UShort:    return &ddUINT16;
+	case BuiltinSpelling::Int:       return &ddINT32;
+	case BuiltinSpelling::UInt:      return &ddUINT32;
+	case BuiltinSpelling::Long:      return dd_platform_long();
+	case BuiltinSpelling::ULong:     return dd_platform_ulong();
+	case BuiltinSpelling::LongLong:  return dd_platform_longlong();
+	case BuiltinSpelling::ULongLong: return dd_platform_ulonglong();
+	case BuiltinSpelling::Int128:    return &ddINT128;
+	case BuiltinSpelling::UInt128:   return &ddUINT128;
+	case BuiltinSpelling::Float:     return &ddFLOAT;
+	case BuiltinSpelling::LDouble:   return &ddLDOUBLE;
+	case BuiltinSpelling::Double:    return &ddDOUBLE;
+	case BuiltinSpelling::Size:      return &ddUINT64;
+	case BuiltinSpelling::PtrDiff:   return &ddINT64;
+	case BuiltinSpelling::WChar:     return dd_platform_wchar();
+	case BuiltinSpelling::Char16:    return dd_char16();
+	case BuiltinSpelling::Char32:    return dd_char32();
+	case BuiltinSpelling::MaxAlign:  return &ddMAX_ALIGN_T;
+	case BuiltinSpelling::LPSTR:     return &ddLPSTR;
+	case BuiltinSpelling::Auto:      return &ddAUTO;
+	case BuiltinSpelling::VaList:    return builtin_va_list_type();
+    }
     return NULL;
 }
 
@@ -5095,6 +5195,22 @@ DataDef *Program::resolve_template_param(const madc::dis::istring &name)
     return NULL;
 }
 
+// The type an UNQUALIFIED identifier names where a cast's type-id may start
+// (`(u32)x`, `(size_type)n`): the flat datatype map — the live scope's
+// typedef and class names, a C block-scope object having hidden a same-named
+// typedef there (hide_typedef_name_in_block) — else the class being
+// defined's member type (resolve_current_class_type_alias). NULL: an
+// ordinary name, so `(x)` stays a parenthesized expression. A struct TAG is
+// no answer: in C `(S)x` without `struct` is no cast. Every cast head asks
+// it — the expression parser's and the constant-expression folder's.
+DataDef *Program::unqualified_type_name_datadef(const madc::dis::istring &name)
+{
+    flat_datatype_map_iter it = datatype_map.find(name);
+    if ( it != datatype_map.end() )
+	return &(*it)->definition;
+    return resolve_current_class_type_alias(name);
+}
+
 DataDef *Program::resolve_current_class_type_alias(const madc::dis::istring &name)
 {
     // Two-tree Phase 2 / 2a: during a DEPENDENT template-body parse, the template's
@@ -5336,10 +5452,6 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
 	j += 2;
     }
 
-    namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
-    if ( nti == namespace_datatype_map.end() )
-	return NULL;
-
     if ( j >= tokens.size() )
 	return NULL;
     TokenBase *member_tb = tokens[j];
@@ -5353,6 +5465,14 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
     else if ( is_contextual_identifier_token(member_tb) )
 	member_name = contextual_identifier_name(member_tb);
     else
+	return NULL;
+    // The member read: a dialect type's first touch registers it (the
+    // dialect is builtin, R4c) — before the namespace's type map is read,
+    // which holds none of the dialect's types until one is named.
+    dialect_demand(ns_name, member_name);
+
+    namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
+    if ( nti == namespace_datatype_map.end() )
 	return NULL;
     datatype_map_iter dti = nti->find(member_name);
     if ( dti == nti->end() )
@@ -5523,6 +5643,47 @@ static size_t delim_scan_step(const Seq &toks, size_t i, DelimDepth &d)
     return 1;
 }
 
+// The lexer's produced buffer as an index sequence: TokenStream's operator[]
+// and size() read from the parse cursor, this reads every produced token.
+struct TokenBufferView
+{
+    const TokenStream &s;
+    size_t size() const { return s.buf_size(); }
+    TokenBase *operator[](size_t i) const { return s.buf_at(i); }
+};
+
+// K2 (docs/plans/2026-10-18-verified-cxx-bind.md) pushes a replayed arm's
+// tokens at the root's include site, at file scope: an arm inside an enum body
+// (glibc bits/socket.h's `#ifdef __USE_GNU` enumerators), a class, a namespace
+// or a parameter list is not there. A linkage specification's braces
+// (`extern "C" {`, C++'s __BEGIN_DECLS) hold namespace-scope declarations, so
+// they are transparent. An index scan over a stored run, so no Program: only
+// ( [ { are read.
+bool Program::pack_output_at_declaration_scope()
+{
+    if ( !pack_scope_delims )
+	pack_scope_delims.reset(new DelimDepth());
+    DelimDepth &d = *pack_scope_delims;
+    const TokenBufferView view = { tokens };
+    while ( pack_scope_scanned < view.size() )
+    {
+	TokenBase *before = pack_scope_scanned ? view[pack_scope_scanned - 1] : NULL;
+	const int braces = d.brace;
+	pack_scope_scanned += delim_scan_step(view, pack_scope_scanned, d);
+	if ( d.brace > braces )
+	    pack_scope_linkage.push_back(before && before->type() == TokenType::ttString);
+	else if ( d.brace < braces && !pack_scope_linkage.empty() )
+	    pack_scope_linkage.pop_back();
+    }
+    if ( d.paren || d.square
+      || std::find(pack_scope_linkage.begin(), pack_scope_linkage.end(), false)
+	 != pack_scope_linkage.end() )
+	return false;
+    TokenBase *last = pack_scope_scanned ? view[pack_scope_scanned - 1] : NULL;
+    return !last || last->id() == TokenID::tkSemi || last->id() == TokenID::tkClBrc
+	|| last->id() == TokenID::tkOpBrc;	// a linkage specification just opened
+}
+
 // Read-only lookahead over a template-id in the LIVE token stream. The stream
 // begins at (or contains at lt_index) the opening '<'; return the token after
 // its balanced argument list without advancing the parser. DelimDepth is the
@@ -5583,7 +5744,7 @@ static madc::dis::istring template_token_fragment(TokenBase *tb)
     }
     if ( tb->type() == TokenType::ttString )
 	return ((TokenStr *)tb)->str;
-    if ( TokenMultiOp *mo = dynamic_cast<TokenMultiOp *>(tb) )
+    if ( TokenMultiOp *mo = tb->as_multiop_tok() )
 	return mo->str;
     char c = (char)tb->get();
     return c ? madc::dis::istring(1, c) : madc::dis::istring("_");
@@ -6125,6 +6286,70 @@ DataDef *Program::proven_scalar_identity(const DataDef *dd)
 	u = u->scalar_alias_of;
     const madc::dis::istring &cs = u->canonical_cpp_spelling();
     return resolve_builtin_type_spelling(cs.empty() ? u->name : cs);
+}
+
+// [basic.types] identity of two types — what `__is_same` answers. Each
+// level: the same cv-qualifiers, the same reference kind; then a pointer
+// or reference descends to its pointee, an array to its element at the
+// same bound, and the level ends at its owner: one fundamental type
+// (proven_scalar_identity — typedef-transparent, so std::size_t and
+// unsigned long are one type, wchar_t and int two), one aggregate
+// (denotes_same_type — a restored twin and its live re-declaration), one
+// function type (its structural spelling). A kind no owner proves (an
+// enum, a member pointer) is the same dd or the same spelling.
+bool Program::proven_same_type(const DataDef *a, const DataDef *b)
+{
+    for ( int depth = 0; a && b && depth < 16; ++depth )
+    {
+	if ( a == b )
+	    return true;
+	if ( a->cv_quals() != b->cv_quals() )
+	    return false;
+	a = a->unqualified();
+	b = b->unqualified();
+	if ( a == b )
+	    return true;
+	if ( a->is_reference() != b->is_reference()
+	  || a->is_rvalue_reference() != b->is_rvalue_reference() )
+	    return false;
+	DataDef *ma = const_cast<DataDef *>(a);
+	DataDef *mb = const_cast<DataDef *>(b);
+	if ( ma->is_function() || mb->is_function() )
+	{
+	    madc::dis::istring fa = fptr_structural_spelling(ma);
+	    return !fa.empty() && fa == fptr_structural_spelling(mb);
+	}
+	DataDefCArray *ca = ma->as_carray_dd();
+	DataDefCArray *cb = mb->as_carray_dd();
+	if ( ca || cb )
+	{
+	    if ( !ca || !cb || ca->count != cb->count
+	      || ca->unbounded != cb->unbounded
+	      || ca->has_runtime_size() || cb->has_runtime_size() )
+		return false;
+	    a = ca->element_type;
+	    b = cb->element_type;
+	    continue;
+	}
+	const DataDefPTR *pa = pointer_dd_of(a);
+	const DataDefPTR *pb = pointer_dd_of(b);
+	if ( pa || pb )
+	{
+	    if ( !pa || !pb )
+		return false;
+	    a = pa->base_type;
+	    b = pb->base_type;
+	    continue;
+	}
+	DataDef *sa = proven_scalar_identity(a);
+	DataDef *sb = proven_scalar_identity(b);
+	if ( sa || sb )
+	    return sa == sb;
+	if ( a->is_struct() && b->is_struct() )
+	    return ma->denotes_same_type(*mb);
+	return a->name == b->name;
+    }
+    return false;
 }
 
 static madc::dis::istring sanitize_template_fragment(const madc::dis::istring &s)
@@ -6675,7 +6900,7 @@ static std::vector<TokenBase *> substitute_var_template_init(
     return clone_template_tokens_with_pack_subst(vd.init, subst, pack_name, pack_elems);
 }
 
-static madc::dis::istring template_tokens_spelling(
+madc::dis::istring template_tokens_spelling(
 	const std::vector<TokenBase *> &tokens)
 {
     std::string spelling;
@@ -6778,6 +7003,31 @@ static size_t balanced_group_close(const Seq &tokens, size_t open_idx)
 	i += n ? n : 1;
     }
     return open_idx;
+}
+
+// Past the attribute specifiers starting at tokens[i] — each an introducer
+// (is_attribute_identifier_token: a GNU `__attribute__` group, `_Alignas`)
+// and its balanced `( ... )`: the index of the first token after them. `i`
+// itself when none starts there; an unclosed group's `(` when one never
+// closes. The lookahead twin of consume_gnu_attributes, for a test that must
+// not consume.
+template<typename Seq>
+static size_t attribute_specifiers_end(const Seq &tokens, size_t i)
+{
+    while ( i < tokens.size() && is_attribute_identifier_token(tokens[i]) )
+    {
+	size_t open = i + 1;
+	if ( open >= tokens.size() || !tokens[open] || tokens[open]->id() != TokenID::tkOpBrk )
+	{
+	    i = open;
+	    continue;
+	}
+	size_t close = balanced_group_close(tokens, open);
+	if ( close == open )
+	    return open;
+	i = close + 1;
+    }
+    return i;
 }
 
 // The opener that the close at tokens[close_idx] (`)` `]` `}` `>` `>>`)
@@ -12684,6 +12934,9 @@ TokenDataType *Program::namespace_chain_datatype(const madc::dis::istring &nm)
     madc::dis::istring scope = current_namespace();
     while ( !scope.empty() )
     {
+	// A dialect type named bare inside its namespace (the dialect is
+	// builtin, R4c): its first touch registers it.
+	dialect_demand(scope, nm);
 	namespace_datatype_map_t::iterator nti =
 	    namespace_datatype_map.find(scope);
 	if ( nti != namespace_datatype_map.end() )
@@ -13703,6 +13956,13 @@ bool Program::request_template_instantiation_completion(const madc::dis::istring
 // covers a replaced map entry.
 DataDef *Program::complete_class_type_on_demand(DataDef *dd)
 {
+    // A cv-qualified class completes as its class and keeps its cv.
+    if ( dd && dd->as_qualified_dd() )
+    {
+	DataDef *unq = dd->unqualified();
+	DataDef *done = complete_class_type_on_demand(unq);
+	return done == unq ? dd : getQualifiedType(done, dd->cv_quals());
+    }
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
     if ( !cls || !is_incomplete_class_datadef(cls) )
 	return dd;
@@ -14479,7 +14739,10 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     // keeps the lazy opaque route (arming it real-instantiated container
     // internals eagerly and broke their lowering — the new_allocator
     // address() regression).
-    bool stmt_scope_demand = !dependent_parse_in_progress
+    // C has no templates: the demand is read only around a template
+    // instantiation, so the scan is C++'s alone.
+    bool stmt_scope_demand = presents_as_cpp()
+			  && !dependent_parse_in_progress
 			  && class_scope_stack.empty()
 			  && !class_pattern_capture_in_progress;
     if ( stmt_scope_demand )
@@ -14488,10 +14751,18 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	if ( !tokens.empty() && tokens[0]
 	  && tokens[0]->id() == TokenID::tkLT )
 	{
-	    DelimDepth d;
-	    // The deque starts AT the '<'; seed the tracker's context with
-	    // the template-name token so the opener is recognized.
-	    d.prev = tb;
+	    // With the Program, the tracker asks name lookup whether this `<`
+	    // opens ([temp.names]/3): a name lookup finds as a variable or
+	    // other non-template (`if (x < y)` probes `x` here) reads it as
+	    // less-than, so the scan ends at its first step instead of running
+	    // to a later `>` or the guard. The deque starts AT the '<'; seed
+	    // the tracker's context with the name token and the token before
+	    // it, so a qualified name (`ns::Tmpl <`) keeps the opening reading
+	    // a stream scan gives it.
+	    DelimDepth d(this);
+	    d.prev = d.hist[0] = tb;
+	    if ( curToken() == tb )
+		d.hist[1] = prevToken();
 	    size_t qi = 0;
 	    size_t guard = 0;
 	    while ( qi < tokens.size() && ++guard < 4096 )
@@ -15048,7 +15319,7 @@ static void parse_objtemp_ctor_arguments(Program &pgm, TokenObjTemp *ot,
 // token is a TYPE (e.g. a substituted class template type parameter,
 // `_KeyOfValue()(__v)` in std::_Rb_tree::_M_insert_) steals the `(` for the
 // cast/compound-literal path, which drops the temp and the trailing arguments.
-bool Program::paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack)
+bool Program::paren_opens_call_on_receiver(token_stack_t &exStack)
 {
 	if ( exStack.empty() )
 		return false;
@@ -16522,33 +16793,103 @@ size_t Program::parse_alignment_specifier()
 // CORRECTNESS-FIRST: only traits madc can answer FAITHFULLY from its DataDef model
 // are recognized; the rest fall through to the normal undeclared-identifier path
 // (a clear error, never a WRONG bool that would silently corrupt SFINAE). Adding a
-// new trait = one entry here + one branch in eval_type_trait — provided madc can
-// model it exactly.
+// new trait = one row in type_trait_of's table + one case in eval_type_trait —
+// provided madc can model it exactly.
 // Implement EXACTLY the gcc-13 trait builtins that madc can answer faithfully —
 // no more: providing a builtin gcc lacks (e.g. __is_pointer/__is_void, which gcc
 // implements in libstdc++, not the compiler) could shadow a library identifier.
 static const int TRAIT_ARITY_VARIADIC = -2;   // one-or-more type arguments
 
+// The type-trait builtins madc answers, as a kind (enum over strings): the
+// spelling is read ONCE, at the name (type_trait_of); both evaluation sites —
+// the live parse (evaluate_type_trait) and a template argument's fold
+// (eval_local_type_trait) — dispatch on the kind through eval_type_trait.
+// Gated by scripts/check-one-trait-dispatch.sh.
+enum class TypeTrait : unsigned char
+{
+    None, IsSame, IsBaseOf, IsAssignable, IsConvertible,
+    IsClass, IsUnion, IsEnum, IsEmpty, IsFinal, HasTrivialDestructor,
+    IsTrivial, IsTriviallyCopyable, IsStandardLayout, IsPod, IsDestructible,
+    IsPolymorphic, IsAbstract, HasVirtualDestructor,
+    IsConstructible, IsNothrowConstructible
+};
+
+// name -> kind + arity; arity 0 (TypeTrait::None) for any other name.
+static TypeTrait type_trait_of(const madc::dis::istring &name, int *arity = NULL)
+{
+    struct Row { madc::dis::istring name; TypeTrait kind; int arity; };
+    // Interned once: each test is an identity compare.
+    static const Row rows[] = {
+	{ "__is_same", TypeTrait::IsSame, 2 },
+	{ "__is_base_of", TypeTrait::IsBaseOf, 2 },
+	{ "__is_assignable", TypeTrait::IsAssignable, 2 },
+	// Ungated with the [dcl.spec]/1 east-specifier fix: folding
+	// __has_*_iterator_category flips libc++'s copy dispatch onto
+	// __copy<_ClassicAlgPolicy,...>, whose `pair<...> inline constexpr`
+	// declaration head now parses (the guard's motivating regression).
+	{ "__is_convertible_to", TypeTrait::IsConvertible, 2 },
+	{ "__is_convertible", TypeTrait::IsConvertible, 2 },
+	{ "__is_class", TypeTrait::IsClass, 1 },
+	{ "__is_union", TypeTrait::IsUnion, 1 },
+	{ "__is_enum", TypeTrait::IsEnum, 1 },
+	{ "__is_empty", TypeTrait::IsEmpty, 1 },
+	{ "__is_final", TypeTrait::IsFinal, 1 },
+	{ "__has_trivial_destructor", TypeTrait::HasTrivialDestructor, 1 },
+	{ "__is_trivial", TypeTrait::IsTrivial, 1 },
+	{ "__is_trivially_copyable", TypeTrait::IsTriviallyCopyable, 1 },
+	{ "__is_standard_layout", TypeTrait::IsStandardLayout, 1 },
+	{ "__is_pod", TypeTrait::IsPod, 1 },
+	{ "__is_destructible", TypeTrait::IsDestructible, 1 },
+	{ "__is_polymorphic", TypeTrait::IsPolymorphic, 1 },
+	{ "__is_abstract", TypeTrait::IsAbstract, 1 },
+	{ "__has_virtual_destructor", TypeTrait::HasVirtualDestructor, 1 },
+	{ "__is_constructible", TypeTrait::IsConstructible, TRAIT_ARITY_VARIADIC },
+	{ "__is_nothrow_constructible", TypeTrait::IsNothrowConstructible,
+	  TRAIT_ARITY_VARIADIC },
+    };
+    if ( arity )
+	*arity = 0;   // not a supported trait
+    // The expression parser asks about EVERY identifier it meets. A name
+    // shorter than every spelling, or not starting "__" plus a third character
+    // some spelling has, is no trait — read from the table itself, once (a row
+    // not starting "__" turns the filter off rather than hiding it).
+    static const struct Filter
+    {
+	size_t shortest;
+	bool on;
+	bool third[256];
+	Filter(const Row *b, const Row *e) : shortest((size_t)-1), on(true), third()
+	{
+	    for ( ; b != e; ++b )
+	    {
+		const madc::dis::istring &s = b->name;
+		if ( s.size() < 3 || s[0] != '_' || s[1] != '_' )
+		    on = false;
+		else
+		    third[(unsigned char)s[2]] = true;
+		if ( s.size() < shortest )
+		    shortest = s.size();
+	    }
+	}
+    } filter(rows, rows + sizeof(rows) / sizeof(rows[0]));
+    if ( filter.on && (name.size() < filter.shortest || name[0] != '_'
+		       || name[1] != '_' || !filter.third[(unsigned char)name[2]]) )
+	return TypeTrait::None;
+    for ( const Row &r : rows )
+	if ( r.name == name )
+	{
+	    if ( arity )
+		*arity = r.arity;
+	    return r.kind;
+	}
+    return TypeTrait::None;
+}
+
 static int type_trait_arity(const madc::dis::istring &name)
 {
-    if ( name == "__is_same" || name == "__is_base_of"
-      || name == "__is_assignable" )
-	return 2;
-    // Ungated with the [dcl.spec]/1 east-specifier fix: folding
-    // __has_*_iterator_category flips libc++'s copy dispatch onto
-    // __copy<_ClassicAlgPolicy,...>, whose `pair<...> inline constexpr`
-    // declaration head now parses (the guard's motivating regression).
-    if ( name == "__is_convertible_to" || name == "__is_convertible" )
-	return 2;
-    if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
-      || name == "__has_trivial_destructor" || name == "__is_trivial"
-      || name == "__is_empty" || name == "__is_standard_layout"
-      || name == "__is_pod" || name == "__is_destructible"
-      || name == "__is_final" || name == "__is_trivially_copyable" )
-	return 1;
-    if ( name == "__is_constructible" || name == "__is_nothrow_constructible" )
-	return TRAIT_ARITY_VARIADIC;
-    return 0;   // not a supported trait
+    int arity = 0;
+    type_trait_of(name, &arity);
+    return arity;
 }
 
 // Declared in madc.h: __has_builtin answers from this same registry, so a
@@ -16559,21 +16900,27 @@ bool is_type_trait_builtin(const madc::dis::istring &name)
     return type_trait_arity(name) != 0;
 }
 
+// The class-property traits below answer for remove_cv<T> ([meta.unary.prop];
+// [meta.rel] ignores cv for is_base_of; [basic.types.general]/9 makes cv
+// versions of a trivially copyable type trivially copyable). They read the
+// type through the kind accessors, which see through a DataDefQUAL
+// (datadef.h): `volatile X` — an operand, or a volatile class-type MEMBER the
+// recursion meets — answers as X. A dynamic_cast answered "not a class" there.
 static bool trait_is_enum(DataDef *dd)
 {
-    return dynamic_cast<DataDefENUM *>(dd) != NULL;
+    return dd && dd->as_enum_dd() != NULL;
 }
 // __is_class: a (non-union) class OR struct. DataDefCLASS derives from
 // DataDefSTRUCT, so both match the cast; union_layout separates out unions, and a
 // DataDefENUM is not a DataDefSTRUCT so enums are excluded.
 static bool trait_is_class(DataDef *dd)
 {
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     return s && !s->union_layout;
 }
 static bool trait_is_union(DataDef *dd)
 {
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     return s && s->union_layout;
 }
 // __is_final(T) ([class.pre]/4): T is a class declared with the `final`
@@ -16593,7 +16940,7 @@ static bool trait_is_final(DataDef *dd)
 {
     // DataDefSTRUCT, not DataDefCLASS: `struct X final { int x; };` never earns
     // promotion to a class, and a union is a class type too ([class.union]).
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     return s && s->struct_is_final;
 }
 // __is_empty(T) ([meta.unary.prop]): T is a non-union class with NO non-static
@@ -16606,12 +16953,12 @@ bool trait_is_empty(DataDef *dd)
     // A non-class/union type is not empty (is_empty<int> = false). `members`
     // lives on the DataDefSTRUCT base, so a bare empty struct (DataDefSTRUCT not
     // promoted to DataDefCLASS) is handled too.
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     if ( !s || s->union_layout )
 	return false;
     if ( !s->members.empty() )		// non-static data members -> not empty
 	return false;
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd->as_class_dd();
     if ( !c )
 	return true;			// plain empty struct: no bases / virtuals
     if ( c->is_polymorphic() )		// virtual functions -> not empty
@@ -16638,7 +16985,7 @@ static bool trait_has_trivial_destructor(DataDef *dd)
     // as the CIR builder destroys it (class_needs_dtor).
     if ( dd && dd->is_madc_array() )
 	return false;
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
     if ( !c )
 	return true;
     if ( c->has_user_dtor )
@@ -16664,7 +17011,7 @@ static bool trait_has_trivial_destructor(DataDef *dd)
 // Verified against g++ and clang++ (int/ptr/POD=1, user-ctor/user-dtor/virtual=0).
 static bool trait_is_trivial(DataDef *dd)
 {
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
     if ( !c )
 	return true;
     if ( c->has_user_ctor || c->has_user_dtor || c->is_polymorphic() )
@@ -16690,7 +17037,7 @@ static bool trait_is_trivial(DataDef *dd)
 // fails an assert LOUDLY or disables an optimization, never miscompiles.
 static bool trait_is_trivially_copyable(DataDef *dd)
 {
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
     if ( !c )
 	return true;
     if ( c->has_user_ctor || c->has_user_dtor || c->is_polymorphic()
@@ -16719,10 +17066,10 @@ static bool trait_is_trivially_copyable(DataDef *dd)
 // g++/clang for int/ptr/empty-class (=1) and virtual/mixed-access (=0).
 static bool trait_is_standard_layout(DataDef *dd)
 {
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     if ( !s )
 	return true;   // scalar / pointer / enum
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd->as_class_dd();
     if ( c && c->is_polymorphic() )
 	return false;   // virtual functions / vptr
     uint32_t acc0 = 0;
@@ -16772,13 +17119,35 @@ static bool trait_is_pod(DataDef *dd)
 {
     return trait_is_trivial(dd) && trait_is_standard_layout(dd);
 }
+// __is_polymorphic(T) ([class.virtual]/1): a class that declares or inherits a
+// virtual function — madc's has_vtable (DataDefCLASS::is_polymorphic). A virtual
+// BASE alone makes no polymorphic class.
+static bool trait_is_polymorphic(DataDef *dd)
+{
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
+    return c && c->is_polymorphic();
+}
+// __is_abstract(T) ([class.abstract]/2): a pure virtual function whose final
+// overrider stays pure, or the class's own pure destructor (class_is_abstract).
+static bool trait_is_abstract(DataDef *dd)
+{
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
+    return c && class_is_abstract(c);
+}
+// __has_virtual_destructor(T): the destructor, declared or inherited, is
+// virtual — the class's vtable carries the destructor slot.
+static bool trait_has_virtual_destructor(DataDef *dd)
+{
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
+    return c && c->vtable_slot("~") >= 0;
+}
 // __is_base_of(B, D): true if B and D name the same class, or B is a (direct or
 // indirect) base of class D. Ignores access (matches the intrinsic's semantics —
 // std:: layers accessibility on top). Both must be class types.
 static bool trait_is_base_of(DataDef *base, DataDef *derived)
 {
-    DataDefCLASS *b = dynamic_cast<DataDefCLASS *>(base);
-    DataDefCLASS *d = dynamic_cast<DataDefCLASS *>(derived);
+    DataDefCLASS *b = base ? base->as_class_dd() : NULL;
+    DataDefCLASS *d = derived ? derived->as_class_dd() : NULL;
     if ( !b || !d )
 	return false;
     if ( b == d || b->name == d->name )
@@ -16802,11 +17171,17 @@ struct TraitTypeArg
     bool is_rref;          // trailing `&&`
     bool referent_const;   // leading `const`
     TraitTypeArg() : dd(NULL), is_lref(false), is_rref(false), referent_const(false) {}
+    // A spelled leading `const` rides the flag, a baked one may still sit in
+    // the dd: compare the referent's const once, then the rest of the type
+    // through the one identity test.
     bool same_as(const TraitTypeArg &o) const
     {
-	return dd && o.dd && dd->name == o.dd->name
-	    && is_lref == o.is_lref && is_rref == o.is_rref
-	    && referent_const == o.referent_const;
+	if ( !dd || !o.dd || is_lref != o.is_lref || is_rref != o.is_rref
+	  || (referent_const || dd->is_const())
+	     != (o.referent_const || o.dd->is_const())
+	  || (dd->cv_quals() & ~cvCONST) != (o.dd->cv_quals() & ~cvCONST) )
+	    return false;
+	return Program::proven_same_type(dd->unqualified(), o.dd->unqualified());
     }
 };
 
@@ -17600,9 +17975,85 @@ static int trait_is_constructible(const TraitTypeArg &to,
     return 0;
 }
 
+// The ONE evaluation of a type-trait builtin over its parsed arguments: 1 or
+// 0, or -1 when madc cannot answer faithfully (the live parse refuses, a fold
+// declines). No default: a new TypeTrait without a case is a -Wswitch error.
+// `site` tags the __is_assignable probe line (MADC_VRI_DEBUG).
+static int eval_type_trait(TypeTrait kind, std::vector<TraitTypeArg> &args,
+			   const char *site)
+{
+    switch ( kind )
+    {
+    case TypeTrait::IsSame:
+	return args[0].same_as(args[1]) ? 1 : 0;
+    case TypeTrait::IsBaseOf:
+	return !trait_arg_is_reference(args[0]) && !trait_arg_is_reference(args[1])
+	    && trait_is_base_of(args[0].dd, args[1].dd) ? 1 : 0;
+    case TypeTrait::IsClass:
+	return !trait_arg_is_reference(args[0]) && trait_is_class(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsUnion:
+	return !trait_arg_is_reference(args[0]) && trait_is_union(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsEnum:
+	return !trait_arg_is_reference(args[0]) && trait_is_enum(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsEmpty:
+	return !trait_arg_is_reference(args[0]) && trait_is_empty(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsFinal:
+	return !trait_arg_is_reference(args[0]) && trait_is_final(args[0].dd) ? 1 : 0;
+    case TypeTrait::HasTrivialDestructor:
+	return trait_arg_is_reference(args[0])
+	    || trait_has_trivial_destructor(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsTrivial:
+	return !trait_arg_is_reference(args[0]) && trait_is_trivial(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsTriviallyCopyable:
+	return !trait_arg_is_reference(args[0])
+	    && trait_is_trivially_copyable(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsStandardLayout:
+	return !trait_arg_is_reference(args[0])
+	    && trait_is_standard_layout(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsPod:
+	return !trait_arg_is_reference(args[0]) && trait_is_pod(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsDestructible:
+	return trait_is_destructible(args[0]);
+    case TypeTrait::IsPolymorphic:
+	return !trait_arg_is_reference(args[0]) && trait_is_polymorphic(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsAbstract:
+	return !trait_arg_is_reference(args[0]) && trait_is_abstract(args[0].dd) ? 1 : 0;
+    case TypeTrait::HasVirtualDestructor:
+	return !trait_arg_is_reference(args[0])
+	    && trait_has_virtual_destructor(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsAssignable:
+    {
+	const int s = trait_is_assignable(args[0], args[1]);
+	if ( vri_debug_enabled() )
+	    fprintf(stderr, "[vriprobe] %s __is_assignable to=%s l%d r%d c%d "
+		    "from=%s l%d r%d c%d -> %d\n", site,
+		    args[0].dd ? args[0].dd->name.c_str() : "?",
+		    (int)args[0].is_lref, (int)args[0].is_rref,
+		    (int)args[0].referent_const,
+		    args[1].dd ? args[1].dd->name.c_str() : "?",
+		    (int)args[1].is_lref, (int)args[1].is_rref,
+		    (int)args[1].referent_const, s);
+	return s;
+    }
+    case TypeTrait::IsConstructible:
+    case TypeTrait::IsNothrowConstructible:
+    {
+	std::vector<TraitTypeArg> ctor_args(args.begin() + 1, args.end());
+	return trait_is_constructible(args[0], ctor_args,
+				      kind == TypeTrait::IsNothrowConstructible, 0);
+    }
+    case TypeTrait::IsConvertible:
+	return trait_is_convertible(args[0], args[1]);
+    case TypeTrait::None:
+	break;
+    }
+    return -1;
+}
+
 TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const madc::dis::istring &name)
 {
-    int arity = type_trait_arity(name);
+    int arity = 0;
+    const TypeTrait kind = type_trait_of(name, &arity);
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	Throw(op_tb) << "Expecting '(' after " << name << flush;
     nextToken(); // consume '('
@@ -17651,7 +18102,7 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const madc::dis::istri
 	// pending shell (a deferred template-argument instantiation, a bodyless
 	// forward instantiation) completes on demand here, as sizeof's operand
 	// does; a dependent placeholder has no record and is refused below.
-	if ( dynamic_cast<DataDefCLASS *>(a.dd) )
+	if ( a.dd && a.dd->as_class_dd() )	// a cv-qualified class too
 	    a.dd = complete_class_type_on_demand(a.dd);
 	// A DEPENDENT argument (an unbound template param `_Tp`, a dependent
 	// member-type placeholder) is unanswerable: any 0/1 answered here
@@ -17678,80 +18129,11 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const madc::dis::istri
 		     << (arity == TRAIT_ARITY_VARIADIC ? " or more" : "")
 		     << " type argument(s), got " << args.size() << flush;
 
-    bool result = false;
-    if ( name == "__is_same" )
-	result = args[0].same_as(args[1]);
-    else if ( name == "__is_enum" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_enum(args[0].dd);
-    else if ( name == "__is_class" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_class(args[0].dd);
-    else if ( name == "__is_union" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_union(args[0].dd);
-    else if ( name == "__is_empty" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_empty(args[0].dd);
-    else if ( name == "__is_final" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_final(args[0].dd);
-    else if ( name == "__is_base_of" )
-	result = !trait_arg_is_reference(args[0])
-	      && !trait_arg_is_reference(args[1])
-	      && trait_is_base_of(args[0].dd, args[1].dd);
-    else if ( name == "__has_trivial_destructor" )
-	result = trait_arg_is_reference(args[0])
-	      || trait_has_trivial_destructor(args[0].dd);
-    else if ( name == "__is_trivial" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_trivial(args[0].dd);
-    else if ( name == "__is_trivially_copyable" )
-	result = !trait_arg_is_reference(args[0])
-	      && trait_is_trivially_copyable(args[0].dd);
-    else if ( name == "__is_standard_layout" )
-	result = !trait_arg_is_reference(args[0])
-	      && trait_is_standard_layout(args[0].dd);
-    else if ( name == "__is_pod" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_pod(args[0].dd);
-    else if ( name == "__is_destructible" )
-    {
-	int s = trait_is_destructible(args[0]);
-	if ( s < 0 )
-	    Throw(op_tb) << "cannot faithfully evaluate __is_destructible(...) "
-			 << "for this operand type" << flush;
-	result = s != 0;
-    }
-    else if ( name == "__is_assignable" )
-    {
-	int s = trait_is_assignable(args[0], args[1]);
-	if ( vri_debug_enabled() )
-	    fprintf(stderr, "[vriprobe] LIVE __is_assignable to=%s l%d r%d c%d "
-		    "from=%s l%d r%d c%d -> %d\n",
-		    args[0].dd ? args[0].dd->name.c_str() : "?",
-		    (int)args[0].is_lref, (int)args[0].is_rref,
-		    (int)args[0].referent_const,
-		    args[1].dd ? args[1].dd->name.c_str() : "?",
-		    (int)args[1].is_lref, (int)args[1].is_rref,
-		    (int)args[1].referent_const, s);
-	if ( s < 0 )
-	    Throw(op_tb) << "cannot faithfully evaluate __is_assignable(...) for "
-			 << "these operand types" << flush;
-	result = s != 0;
-    }
-    else if ( name == "__is_constructible"
-	   || name == "__is_nothrow_constructible" )
-    {
-	std::vector<TraitTypeArg> ctor_args(args.begin() + 1, args.end());
-	int s = trait_is_constructible(args[0], ctor_args,
-				       name == "__is_nothrow_constructible", 0);
-	if ( s < 0 )
-	    Throw(op_tb) << "cannot faithfully evaluate " << name
-			 << "(...) for these operand types" << flush;
-	result = s != 0;
-    }
-    else if ( name == "__is_convertible_to" || name == "__is_convertible" )
-    {
-	int s = trait_is_convertible(args[0], args[1]);
-	if ( s < 0 )
-	    Throw(op_tb) << "cannot faithfully evaluate " << name
-			 << "(...) for these operand types" << flush;
-	result = s != 0;
-    }
+    const int s = eval_type_trait(kind, args, "LIVE");
+    if ( s < 0 )
+	Throw(op_tb) << "cannot faithfully evaluate " << name
+		     << "(...) for these operand types" << flush;
+    const bool result = s != 0;
 
     TokenInt *ti = new TokenInt(result ? 1 : 0);
     ti->setDataType(&ddBOOL);
@@ -18273,14 +18655,14 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 {
     if ( !expr )
 	return -1;
-    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+    if ( TokenVar *tv = expr->as_var_tok() )
     {
 	int64_t array_size = fixed_array_object_size(tv->var);
 	if ( array_size >= 0 )
 	    return array_size;
 	return tv->var.object_size_hint;
     }
-    if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
+    if ( TokenMember *tm = expr->as_member_tok() )
     {
 	if ( tm->is_fixed_array_member() )
 	{
@@ -18291,16 +18673,16 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 	}
 	return tm->var.object_size_hint;
     }
-    if ( TokenAddrOf *tao = dynamic_cast<TokenAddrOf *>(expr) )
+    if ( TokenAddrOf *tao = expr->as_addr_of_tok() )
     {
 	int64_t array_size = fixed_array_object_size(tao->var);
 	if ( array_size >= 0 )
 	    return array_size;
 	return tao->var.type ? (int64_t)tao->var.type->size : -1;
     }
-    if ( TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(expr) )
+    if ( TokenAddrExpr *tae = expr->as_addr_expr_tok() )
 	return known_object_size_for_lvalue(tae->expr, mode);
-    if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(expr) )
+    if ( TokenAdd *ta = expr->id() == TokenID::tkAdd ? static_cast<TokenAdd *>(expr) : NULL )
     {
 	int64_t offset = 0;
 	if ( try_eval_known_integer(ta->right, offset) )
@@ -18315,7 +18697,7 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 	}
 	return -1;
     }
-    if ( TokenSub *ts = dynamic_cast<TokenSub *>(expr) )
+    if ( TokenSub *ts = expr->id() == TokenID::tkSub ? static_cast<TokenSub *>(expr) : NULL )
     {
 	int64_t offset = 0;
 	if ( try_eval_known_integer(ts->right, offset) )
@@ -18325,7 +18707,7 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 	}
 	return -1;
     }
-    if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
+    if ( TokenTerQ *tt = expr->as_terq_tok() )
     {
 	int64_t true_size = known_object_size_for_expr(tt->true_expr, mode);
 	int64_t false_size = known_object_size_for_expr(tt->false_expr, mode);
@@ -18334,9 +18716,9 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 	return mode == 1 ? std::min(true_size, false_size)
 			 : std::max(true_size, false_size);
     }
-    if ( TokenCast *tc = dynamic_cast<TokenCast *>(expr) )
+    if ( TokenCast *tc = expr->as_cast_tok() )
 	return known_object_size_for_expr(tc->expr, mode);
-    if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr) )
+    if ( TokenCallFunc *tcf = expr->as_callfunc_tok() )
     {
 	if ( (tcf->var.name == "__builtin_alloca" || tcf->var.name == "alloca" || tcf->var.name == "malloc")
 	  && tcf->argc() == 1 )
@@ -18353,9 +18735,9 @@ static void update_pointer_object_size_hints(TokenBase *expr)
 {
     if ( !expr )
 	return;
-    if ( TokenAssign *ta = dynamic_cast<TokenAssign *>(expr) )
+    if ( TokenAssign *ta = expr->as_assign_tok() )
     {
-	if ( TokenVar *lhs = dynamic_cast<TokenVar *>(ta->left) )
+	if ( TokenVar *lhs = ta->left ? ta->left->as_var_tok() : NULL )
 	{
 	    if ( lhs->var.type && lhs->var.type->is_pointer() && !lhs->var.is_fixed_array() )
 		lhs->var.object_size_hint = known_object_size_for_expr(ta->right, 0);
@@ -18364,13 +18746,13 @@ static void update_pointer_object_size_hints(TokenBase *expr)
 	update_pointer_object_size_hints(ta->right);
 	return;
     }
-    if ( TokenComma *tc = dynamic_cast<TokenComma *>(expr) )
+    if ( TokenComma *tc = expr->id() == TokenID::tkComma ? static_cast<TokenComma *>(expr) : NULL )
     {
 	update_pointer_object_size_hints(tc->left);
 	update_pointer_object_size_hints(tc->right);
 	return;
     }
-    if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
+    if ( TokenTerQ *tt = expr->as_terq_tok() )
     {
 	update_pointer_object_size_hints(tt->condition);
 	update_pointer_object_size_hints(tt->true_expr);
@@ -19704,10 +20086,15 @@ ConstValue Program::parse_constant_primary()
 	// token) — the old arm swallowed it to the `)` as the cast target, the
 	// fold failed, the default stayed unfolded and the partial specialization
 	// keyed on `true` was never selected (tests/testtpldefaultdepfold).
+	// A typedef or class name the lexer left an identifier (`(u32)4`,
+	// SQLite's BITVEC_NPTR) heads a type-id as a type token does — the cast
+	// arm's own test, unqualified_type_name_datadef.
 	TokenBase *inner = peekToken();
 	if ( inner && (inner->type() == TokenType::ttDataType
 	  || inner->id() == TokenID::tkCONST
-	  || inner->id() == TokenID::tkRESTRICT) )
+	  || inner->id() == TokenID::tkRESTRICT
+	  || (inner->type() == TokenType::ttIdentifier
+	   && unqualified_type_name_datadef(((TokenIdent *)inner)->spelling_name()))) )
 	{
 	    DataDef *cast_dd = NULL;
 	    bool is_unsigned = false;
@@ -19789,9 +20176,16 @@ size_t Program::constant_cast_type_id_extent(DataDef *&cast_dd, bool &is_unsigne
 	TokenBase *t = tokens[i];
 	if ( t->id() == TokenID::tkClBrk )
 	    return saw_type ? i : 0;
+	// A type token, or a typedef / class name the lexer left an identifier
+	// (unqualified_type_name_datadef — the cast arm's test).
+	DataDef *head = NULL;
 	if ( t->type() == TokenType::ttDataType )
+	    head = &((TokenDataType *)t)->definition;
+	else if ( !saw_type && t->type() == TokenType::ttIdentifier )
+	    head = unqualified_type_name_datadef(((TokenIdent *)t)->spelling_name());
+	if ( head )
 	{
-	    cast_dd = &((TokenDataType *)t)->definition;
+	    cast_dd = head;
 	    saw_type = true;
 	    ++i;
 	    if ( i < tokens.size() && tokens[i]
@@ -20392,8 +20786,7 @@ static bool constant_initializer_has_runtime_access(Program &pgm, bool comma_end
 	// fold then declines it under a placeholder, which is the correct
 	// capture-time outcome).
 	if ( next && next->id() == TokenID::tkOpBrk && !constant_callable
-	  && (pgm.datatype_map.find(name) != pgm.datatype_map.end()
-	   || pgm.resolve_current_class_type_alias(name)) )
+	  && pgm.unqualified_type_name_datadef(name) )
 	    constant_callable = true;
 	if ( next && next->id() == TokenID::tkOpBrk && !constant_callable )
 	    return true;
@@ -20797,12 +21190,18 @@ DataDef *dd_platform_ulonglong()
     return dd;
 }
 
+// max_align_t's layout is the target's own: every use of the name binds to
+// this pre-registered type, so it is the one place that layout is decided.
+// gcc's <stddef.h> (Linux, mingw): { long long; long double; }, each at its
+// natural alignment; clang's on Apple (__stddef_max_align_t.h): long double.
 struct DataDefMAXAlignTInit
 {
     DataDefMAXAlignTInit()
     {
-	ddMAX_ALIGN_T.addMember("__max_align_ll", ddINT64, 1);
-	ddMAX_ALIGN_T.addMember("__max_align_ld", ddDOUBLE, 1);
+#if !MADC_TARGET_APPLE_P
+	ddMAX_ALIGN_T.addMember("__max_align_ll", ddINT64, 1);	// long long's layout
+#endif
+	ddMAX_ALIGN_T.addMember("__max_align_ld", ddLDOUBLE, 1);
 	ddMAX_ALIGN_T.finalize();
 	ddMAX_ALIGN_T.is_complete = true;
     }
@@ -20881,6 +21280,42 @@ Variable *DataDefCLASS::findMethod(const madc::dis::istring &s)
 	return base_class->findMethod(s);
 
     return NULL;
+}
+
+Variable *DataDefCLASS::slot_overrider(const madc::dis::istring &key)
+{
+    // Own declarations only: a using-declaration lists the base's Variable
+    // here too, and that one is the base's own (found below, ranked there).
+    for ( Variable *m : methods )
+    {
+	FuncDef *fd = m ? dynamic_cast<FuncDef *>(m->type) : NULL;
+	Method *mm = fd ? (Method *)m->data : NULL;
+	if ( !fd || (m->flags & vfSTATIC) || (mm && mm->owner_class
+		&& mm->owner_class != this) )
+	    continue;
+	// The key begins with the display name: encode only same-name members.
+	const madc::dis::istring &dn = fd->method_display_name;
+	if ( dn.empty() || key.size() < dn.size()
+	  || key.compare(0, dn.size(), dn.c_str()) != 0
+	  || (key.size() > dn.size() && key[dn.size()] != '(') )
+	    continue;
+	if ( fd->virtual_slot_key() == key )
+	    return m;
+    }
+    Variable *best = NULL;
+    DataDefCLASS *best_owner = NULL;
+    for ( const BaseSpec &bs : bases )
+    {
+	Variable *c = bs.base ? bs.base->slot_overrider(key) : NULL;
+	Method *cm = c ? (Method *)c->data : NULL;
+	DataDefCLASS *co = cm && cm->owner_class ? cm->owner_class : bs.base;
+	if ( c && (!best || (co != best_owner && co->is_or_derives_from(best_owner))) )
+	{
+	    best = c;
+	    best_owner = co;
+	}
+    }
+    return best;
 }
 
 static bool method_callable_with_arg_count(Variable *mv, size_t argc,
@@ -21928,24 +22363,25 @@ DataDefCLASS *Program::operand_object_class(TokenBase *operand)
 {
     if ( !operand )
 	return NULL;
+    DataDef *dd = operand->datadef();
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
+    // A reference-typed operand, else a reference variable: the class behind.
+    DataDefPTR *rp = (!c && dd && dd->is_reference()) ? dd->as_pointer_dd() : NULL;
+    TokenVar *tv = (!c && !rp) ? operand->as_var_tok() : NULL;
+    if ( rp )
+	c = rp->base_type ? rp->base_type->as_class_dd() : NULL;
+    else if ( tv && tv->var.is_reference() )
+	if ( DataDefPTR *vp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
+	    c = vp->base_type ? vp->base_type->as_class_dd() : NULL;
     // An operand that denotes an ARRAY is no class object, whatever its
     // element ([conv.array]): madc stores an array flattened, so datadef()
     // names the element, and `a + 1` over an array of a class with a
     // constructor typed as D::operator+'s missing result (int) instead of
-    // the decayed D*.
-    if ( array_operand_type(operand) )
+    // the decayed D*. Asked only of a class candidate: the array owner builds
+    // the extents, and every other operand answers NULL either way.
+    if ( c && array_operand_type(operand) )
 	return NULL;
-    DataDef *dd = operand->datadef();
-    if ( DataDefCLASS *c = (dd ? dd->as_class_dd() : NULL) )
-	return c;
-    if ( dd && dd->is_reference() )
-	if ( DataDefPTR *rp = (dd ? dd->as_pointer_dd() : NULL) )
-	    return (rp->base_type ? rp->base_type->as_class_dd() : NULL);
-    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
-    if ( tv && (tv->var.is_reference()) )
-	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
-	    return (rp->base_type ? rp->base_type->as_class_dd() : NULL);
-    return NULL;
+    return c;
 }
 
 bool Program::operator_function_operand(TokenBase *operand)
@@ -22254,7 +22690,9 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 						bool no_rewrite)
 {
-    if ( !to || to->argc() != 2 || !to->left || !to->right )
+    // Operator functions exist only where the language presents as C++ (C
+    // has no `operator`): a C operator never has one to lower to.
+    if ( !to || to->argc() != 2 || !to->left || !to->right || !presents_as_cpp() )
 	return NULL;
     const char *opsym = object_operator_symbol(to->id());
     if ( !opsym )
@@ -23161,7 +23599,7 @@ Variable *Program::find_namespace_function_overload(const madc::dis::istring &ns
 		const FnTemplateDeduction *deduction,
 		const std::vector<ArgValueCategory> *categories)
 {
-    activate_forest_function_family(ns, name);
+    activate_forest_member(ns, name);
     if ( strict_no_viable )
 	*strict_no_viable = false;
     if ( ambiguity )
@@ -23286,7 +23724,7 @@ int Program::implicit_object_cv(Variable &recv)
 	return pp && pp->base_type ? (int)(pp->base_type->cv_quals() & (cvCONST | cvVOLATILE))
 				   : cvNONE;
     }
-    if ( recv.flags & (vfCONSTANT | vfCONSTDECL | vfCONSTBAKED) )
+    if ( recv.flags & CONST_DECLARED_FLAGS )
 	cv |= cvCONST;
     // A MEMBER receiver read through the implicit `this` joins the implicit
     // object's cv ([expr.ref]): inside a const method a data member is a
@@ -24237,7 +24675,7 @@ void DataDefCLASS::build_vtable_groups()
     if ( !has_vtable && !has_vptr_slot ) return;
 
     // The primary group holds the PRIMARY-chain slots: the primary base's slots
-    // (overrides resolved by name at emit time) plus this class's own newly
+    // (overrides resolved by slot key at emit time) plus this class's own newly
     // introduced virtuals. Secondary bases' slots live in their own groups, so
     // exclude them from the primary group.
     DataDefCLASS *prim = NULL;
@@ -24499,7 +24937,9 @@ bool DataDefCLASS::is_externally_defined() const
     {
 	FuncDef *fd = dynamic_cast<FuncDef *>(m ? m->type : NULL);
 	if ( fd && has_madc_body(m) && !fd->method_display_name.empty()
-	  && virtual_methods.find(fd->method_display_name) != virtual_methods.end() )
+	  && !(m->flags & vfSTATIC)
+	  && virtual_methods.find(fd->method_display_name) != virtual_methods.end()
+	  && vtable_slot(fd->virtual_slot_key()) >= 0 )
 	    return false;
     }
     // A destructor with a body (dtors don't carry method_display_name). Any
@@ -24694,10 +25134,12 @@ Variable *TokenCpnd::findVariableLocal(const madc::dis::intern_table &sp, const 
     return NULL;
 }
 
+// Interned names: identity is string equality (one compare per entry, never
+// a byte walk).
 Variable *Method::findVariable(const madc::dis::istring &s)
 {
     for ( variable_vec_iter vvi = variables.begin(); vvi != variables.end(); ++vvi )
-	if ( !s.compare((*vvi)->name) )
+	if ( s == (*vvi)->name )
 	    return *vvi;
 
     return NULL;
@@ -24706,7 +25148,7 @@ Variable *Method::findVariable(const madc::dis::istring &s)
 Variable *Method::findParameter(const madc::dis::istring &s)
 {
     for ( variable_vec_iter vvi = parameters.begin(); vvi != parameters.end(); ++vvi )
-	if ( !s.compare((*vvi)->name) )
+	if ( s == (*vvi)->name )
 	    return *vvi;
 
     return NULL;
@@ -24846,7 +25288,6 @@ Program::Program(MadcCompileGroup *group)
       script_argc(0),
       script_argv(NULL),
       _include_iostream(false),
-      _include_stdio(false),
       _include_string(false),
       _strpool_owner(group ? group->strpool
 		     : std::make_shared<madc::dis::intern_table>()),
@@ -24887,7 +25328,6 @@ Program::Program(MadcEngine *eng, MadcCompileGroup *group)
       script_argc(0),
       script_argv(NULL),
       _include_iostream(false),
-      _include_stdio(false),
       _include_string(false),
       _strpool_owner(group ? group->strpool
 		     : std::make_shared<madc::dis::intern_table>()),
@@ -24921,6 +25361,9 @@ struct LanguageStdRow {
 	bool canonical;
 	char family;
 	int year;	// the year the standard names (0 for the dialect)
+	bool gnu;	// an alias row naming the GNU dialect (the bare family
+			// spellings: gcc's and g++'s defaults, which the pack
+			// precompiles — owner 2026-10-18); false for every other row
 };
 const LanguageStdRow kLanguageStdTable[] = {
 	{ "madc",  Program::STD_MADC,  true,  'm', 0 },
@@ -24933,8 +25376,8 @@ const LanguageStdRow kLanguageStdTable[] = {
 	{ "c95",   Program::STD_C95,   true,  'c', 1995 },
 	{ "c99",   Program::STD_C99,   true,  'c', 1999 },
 	{ "c11",   Program::STD_C11,   true,  'c', 2011 },
-	{ "c",     Program::STD_C11,   false, 'c', 2011 },	// alias of c11
 	{ "c17",   Program::STD_C17,   true,  'c', 2017 },
+	{ "c",     Program::STD_C17,   false, 'c', 2017, true },	// alias of gnu17
 	{ "c23",   Program::STD_C23,   true,  'c', 2023 },
 	{ "c++98", Program::STD_CPP98, true,  'p', 1998 },
 	{ "cpp98", Program::STD_CPP98, false, 'p', 1998 },
@@ -24942,12 +25385,12 @@ const LanguageStdRow kLanguageStdTable[] = {
 	{ "cpp03", Program::STD_CPP03, false, 'p', 2003 },
 	{ "c++11", Program::STD_CPP11, true,  'p', 2011 },
 	{ "cpp11", Program::STD_CPP11, false, 'p', 2011 },
-	{ "c++",   Program::STD_CPP11, false, 'p', 2011 },	// alias of c++11
-	{ "cpp",   Program::STD_CPP11, false, 'p', 2011 },
 	{ "c++14", Program::STD_CPP14, true,  'p', 2014 },
 	{ "cpp14", Program::STD_CPP14, false, 'p', 2014 },
 	{ "c++17", Program::STD_CPP17, true,  'p', 2017 },
 	{ "cpp17", Program::STD_CPP17, false, 'p', 2017 },
+	{ "c++",   Program::STD_CPP17, false, 'p', 2017, true },	// alias of gnu++17
+	{ "cpp",   Program::STD_CPP17, false, 'p', 2017, true },
 	{ "c++20", Program::STD_CPP20, true,  'p', 2020 },
 	{ "cpp20", Program::STD_CPP20, false, 'p', 2020 },
 	{ "c++23", Program::STD_CPP23, true,  'p', 2023 },
@@ -25052,7 +25495,7 @@ bool Program::standard_of_spelling(const madc::dis::istring &spelling,
 	if ( spelling == row.name )
 	{
 	    std = row.std;
-	    gnu = false;
+	    gnu = row.gnu;
 	    return true;
 	}
     return false;
@@ -25077,14 +25520,6 @@ bool Program::set_language_standard(const madc::dis::istring &standard)
     language_std = std;
     gnu_dialect = gnu;
     return true;
-}
-
-bool Program::set_language_standard_option(const madc::dis::istring &arg)
-{
-    const madc::dis::istring prefix("--std=");
-    if ( arg.compare(0, prefix.size(), prefix) != 0 )
-	return false;
-    return set_language_standard(arg.substr(prefix.size()));
 }
 
 bool Program::adopt_file_standard(int64_t kind)
@@ -26043,14 +26478,12 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("putf",	 datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
     builtin_registry.add_core_function("putchar", datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
-    builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{ptr_of(ddCHAR), DataType::dtINT}, (fVOIDFUNC)NULL);
-    // The lexer rewrites `__builtin_frame_address` -> `__madc_builtin_frame_address`
-    // (the real va_helpers symbol, returning void*) via define_map, so the parser
-    // only ever sees the renamed name. Register THAT name too with its real void*
-    // return; otherwise the call is an unknown function defaulting to a `long`
-    // return, and the emitted `extern long __madc_builtin_frame_address()` assigns
-    // a long to a pointer ("using integer without cast for pointer type parameter").
-    builtin_registry.add_core_function("__madc_builtin_frame_address", datatype_vec_t{ptr_of(ddVOID), DataType::dtINT}, (fVOIDFUNC)NULL);
+    // __builtin_frame_address / __builtin_return_address (unsigned level):
+    // c2mir builtins (MIR_FRAME_ADDR / MIR_RET_ADDR, each target's ABI value),
+    // no real symbol -- registered with a NULL pointer like __builtin_va_start
+    // so the call parses and reaches c2mir as N_CALL.
+    builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{ptr_of(ddVOID), DataType::dtUINT32}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__builtin_return_address", datatype_vec_t{ptr_of(ddVOID), DataType::dtUINT32}, (fVOIDFUNC)NULL);
     // The GCC __atomic_* family (include/atomic_builtins.h): gcc/clang-inlined,
     // no real symbols. ZERO declared params (variadic convention) so each
     // operand reaches the CIR call with its own type; an object-yielding call
@@ -26289,14 +26722,58 @@ void Program::add_iostream()
 {
 }
 
-void Program::add_stdio()
+// The madc dialect's stdio streams, hard-coded as println is (owner
+// 2026-10-17): no header and no include flag — a dialect program or fragment
+// naming stdin / stdout / stderr pulls no <stdio.h> (the auto-include table
+// has no row for them). The names and the stream each one IS: the one table
+// (find_stdio_stream, madc.h).
+namespace {
+struct StdioStreamName { const char *name; StdioStream stream; };
+const StdioStreamName stdio_stream_names[] = {
+    { "stdin",  StdioStream::In  },
+    { "stdout", StdioStream::Out },
+    { "stderr", StdioStream::Err },
+};
+} // namespace
+
+StdioStream find_stdio_stream(const char *name)
 {
-    // printf family available via dlsym fallback (libc is always loaded).
-    // Register stdin/stdout/stderr for lazy resolution — each becomes an
-    // int64 global whose data holds libc's current FILE* value.
-    lazy_map["stdin"]  = {LAZY_STDIO, Program::lkVariable};
-    lazy_map["stdout"] = {LAZY_STDIO, Program::lkVariable};
-    lazy_map["stderr"] = {LAZY_STDIO, Program::lkVariable};
+    for ( const StdioStreamName &s : stdio_stream_names )
+	if ( name && strcmp(name, s.name) == 0 )
+	    return s.stream;
+    return StdioStream::None;
+}
+
+// Registered with the madc dialect's intrinsics (add_namespaces, beside
+// add_format_intrinsics); each resolves on its first use that no declaration
+// answers (lazy_resolve's stream arm, stdio_stream_stand_in). A program whose
+// <stdio.h> declares the name first never reaches the stand-in.
+void Program::add_stdio_streams()
+{
+    for ( const StdioStreamName &s : stdio_stream_names )
+	lazy_map[s.name] = {LAZY_STDIO, Program::lkVariable};
+}
+
+// The stream a use of `name` stands for while no declaration names it: a
+// FILE-SCOPE extern object of type void * (FILE is <stdio.h>'s; the dialect
+// declares none), whatever namespace the use sits in, marked with its stream
+// (Variable::stdio_stream) — so the CIR builder lowers a use to the
+// runtime's stream (CirBuilder::stdio_stream_value), never to a spelling of
+// the target libc's backing symbol. A later declaration of the name (the
+// program's own #include <stdio.h>) adopts it: declare_object. Never tapped
+// into a pack's decl index: no header declares it.
+// Thread contract: per Program (its tkProgram); mutation single-threaded,
+// as every registration.
+Variable *Program::stdio_stream_stand_in(const madc::dis::istring &name)
+{
+    const StdioStream stream = find_stdio_stream(name.c_str());
+    if ( stream == StdioStream::None )
+	return NULL;
+    Variable *var = new Variable(name, ddVOIDptr, 1, NULL, false);
+    var->flags |= vfEXTERN;
+    var->stdio_stream = stream;
+    tkProgram->variables.push_back(var);
+    return var;
 }
 
 // on-demand variable/function registration — called from parseExpression()
@@ -26304,6 +26781,11 @@ Variable *Program::lazy_resolve(const madc::dis::istring &name)
 {
     if ( Variable *forest_var = activate_forest_func(name) )
 	return forest_var;
+    // A dialect name's bare twin (an unscoped enumerator, a namespace object
+    // — the dialect is builtin, R4c): registered as it is first used.
+    if ( dialect_demand_bare(name) )
+	if ( Variable *dialect_var = tkProgram->findVariable(strpool, name) )
+	    return dialect_var;
     std::map<madc::dis::istring, LazyEntry>::iterator it = lazy_map.find(name);
     if ( it == lazy_map.end() )
 	return NULL;
@@ -26315,23 +26797,7 @@ Variable *Program::lazy_resolve(const madc::dis::istring &name)
     lazy_map.erase(it);
 
     if ( header == LAZY_STDIO )
-    {
-	// dlsym the libc symbol and copy the current FILE* value into our
-	// backing slot. Note: dlsym("stderr") returns the address of the
-	// libc `FILE *stderr;` variable — one deref yields the FILE*.
-	// Type them as void* (FILE is `void` in madc), NOT int64 — otherwise
-	// `fp == stdin` warns "comparison of integer with a pointer" and passing
-	// stdin to a FILE* parameter mismatches.
-	void **sym = NULL;
-	if ( name == "stdin" || name == "stdout" || name == "stderr" )
-	    sym = (void **)madcdl_sym_default(name.c_str());
-	if ( sym )
-	{
-	    var = addGlobal(ddVOIDptr, name, 1, NULL);
-	    if ( var && var->data )
-		*(void **)var->data = *sym;
-	}
-    }
+	var = stdio_stream_stand_in(name);
 
     DBG(if (var) std::cout << "lazy_resolve(" << name << ") registered" << std::endl);
     return var;
@@ -26340,6 +26806,17 @@ Variable *Program::lazy_resolve(const madc::dis::istring &name)
 // on-demand type/struct registration — called from type lookup paths
 DataDef *Program::lazy_resolve_type(const madc::dis::istring &name)
 {
+    // A global-scope dialect type — a namespaced one's bare twin (`SysInfo`):
+    // registered as the name is first used (the dialect is builtin, R4c).
+    if ( dialect_demand_bare(name) )
+    {
+	datadef_map_citer dmi = struct_map.find(name);
+	if ( dmi != struct_map.end() )
+	    return dmi->second;
+	flat_datatype_map_iter bmi = datatype_map.find(name);
+	if ( bmi != datatype_map.end() )
+	    return &(*bmi)->definition;
+    }
     std::map<madc::dis::istring, LazyEntry>::iterator it = lazy_map.find(name);
     if ( it == lazy_map.end() )
 	return NULL;
@@ -27160,7 +27637,77 @@ static bool restored_aggregate_yields_bare_tag(Program &pgm,
 	&& prior_sd->canonical_cpp_spelling() != sdd->canonical_cpp_spelling();
 }
 
+void Program::forest_restore_decls(ForestSide &s)
+{
+    if ( s.forest )
+	forest_restore_side(s, *s.forest);
+}
+
 void Program::forest_restore_decls(CirFrozenForest &forest)
+{
+    forest_restore_side(forest_system, forest);
+}
+
+// The bound forest's restore against its chain, filter and registration state.
+// K2d: a name a bound unit declares only inside a taken frozen arm a walk
+// skipped (ForestSide::withdrawn_arms) — its decl-index entries whose token
+// slice lies in the arm — is not that unit's here: a live parse that skips
+// the arm declares nothing there (CirMaterializeFilter::withdrawn).
+static void forest_withdrawn_declarers(CirFrozenForest &forest, const Program::ForestSide &s,
+				       CirMaterializeFilter &nf)
+{
+    if ( s.withdrawn_arms.empty() )
+	return;
+    typedef Program::ForestSide::WithdrawnArm WithdrawnArm;
+    std::map<uint32_t, std::vector<WithdrawnArm> > arms_of;
+    for ( const WithdrawnArm &a : s.withdrawn_arms )
+	if ( a.tok_begin < a.tok_end && nf.binds(a.unit) )
+	    arms_of[a.unit].push_back(a);
+    std::vector<cir_forest_decl_entry> ents;
+    for ( const auto &ua : arms_of )
+    {
+	if ( !forest.unit_decl_index(ua.first, ents) )
+	    continue;
+	std::set<uint32_t> inside, outside;	// name pool ids
+	for ( const cir_forest_decl_entry &e : ents )
+	{
+	    bool in = false;
+	    for ( const WithdrawnArm &a : ua.second )
+		if ( e.slice_begin >= a.tok_begin && e.slice_end <= a.tok_end )
+		{
+		    in = true;
+		    break;
+		}
+	    (in ? inside : outside).insert(e.name_id);
+	}
+	for ( const uint32_t id : inside )
+	{
+	    const char *nm = outside.count(id) ? NULL : forest.pool_str(id);
+	    if ( !nm )
+		continue;
+	    std::vector<madc::dis::istring> &w = nf.withdrawn[ua.first];
+	    const madc::dis::istring name(nm);
+	    if ( std::find(w.begin(), w.end(), name) == w.end() )
+		w.push_back(name);
+	    DBG(std::cout << "forest restore: unit " << forest.unit_name(ua.first)
+		<< " withdraws '" << nm << "' (declared in an arm the walk skipped)" << std::endl);
+	}
+    }
+}
+
+// K2d: a program-scope name some bound unit's skipped arm withdrew (the
+// restore filter forest_withdrawn_declarers built).
+static bool forest_name_withdrawn(const Program::ForestSide &s, const char *nm)
+{
+    if ( !s.restore_filter || !nm )
+	return false;
+    for ( const auto &uw : s.restore_filter->withdrawn )
+	if ( CirMaterializeFilter::withdraws(uw.second, NULL, nm) )
+	    return true;
+    return false;
+}
+
+void Program::forest_restore_side(ForestSide &s, CirFrozenForest &forest)
 {
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     double _t_restore0 = forest_restore_now();
@@ -27179,7 +27726,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // Item 5 (lazy defrost) + rung 2a: the TU's demand filter, built BEFORE
     // materialization. The decl index is the demand key: a name DECLARED by
     // some unit (source-level export; qualified + bare forms are both indexed)
-    // is kept iff one of its declaring units is in forest_chain_set — exactly
+    // is kept iff one of its declaring units is in the side's chain_set — exactly
     // the surface a live parse of the TU's includes would declare. A name in
     // NO unit's index is a DERIVED entity (instantiation product, __oN
     // overload symbol, madc-internal — the forest_index_oracle allowlist
@@ -27198,22 +27745,28 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // the same verdict a live parse's td.file would produce. A tmp/-grove
     // bind (the forest_bind_gate corpora) stays non-system → root → whole
     // surface, exactly like live.
-    const bool forest_closure_filter = !forest_chain_set.empty();
-    CirMaterializeFilter mf;
-    double _t_declidx0 = forest_restore_now();
-    if ( forest_closure_filter )
+    const bool forest_closure_filter = !s.chain_set.empty();
     {
-	mf.active = true;
-	for ( std::set<uint32_t>::const_iterator it = forest_chain_set.begin();
-	      it != forest_chain_set.end(); ++it )
+	std::shared_ptr<CirMaterializeFilter> built(new CirMaterializeFilter);
+	CirMaterializeFilter &nf = *built;
+	double _t_declidx0 = forest_restore_now();
+	if ( forest_closure_filter )
 	{
-	    mf.bound_units.insert(*it);
-	    const char *upath = forest.unit_name(*it);
-	    if ( upath && is_system_header_path(upath) )
-		mf.system_units.insert(*it);
+	    nf.active = true;
+	    for ( std::set<uint32_t>::const_iterator it = s.chain_set.begin();
+		  it != s.chain_set.end(); ++it )
+	    {
+		nf.bound_units.insert(*it);
+		const char *upath = forest.unit_name(*it);
+		if ( upath && is_system_header_path(upath) )
+		    nf.system_units.insert(*it);
+	    }
+	    forest_withdrawn_declarers(forest, s, nf);
 	}
+	s.restore_filter = built;
+	_forest_declidx_seconds += forest_restore_now() - _t_declidx0;
     }
-    _forest_declidx_seconds += forest_restore_now() - _t_declidx0;
+    const CirMaterializeFilter &mf = *s.restore_filter;
     // Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
     // declared-name index entries with their unit + bound verdict.
     {
@@ -27230,7 +27783,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		if ( nm && strstr(nm, dip) )
 		    fprintf(stderr, "DECLIDX %s unit=%s bound=%d\n",
 			    nm, upath ? upath : "?",
-			    (int)(forest_chain_set.count(u) != 0));
+			    (int)(s.chain_set.count(u) != 0));
 	    }
 	}
     }
@@ -27264,7 +27817,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // A name an EARLIER restore registered (an interactive session's entry
     // before this one) holds: the session already resolved against it, so a
     // record a wider closure surfaced later never displaces it.
-    forest_type_registered.resize(types.size(), 0);
+    s.type_registered.resize(types.size(), 0);
     std::map<madc::dis::istring, size_t> last_tag, last_alias;
     for ( size_t i = 0; i < types.size(); ++i )
     {
@@ -27276,7 +27829,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    types[i].kind == CIR_TYPEK_TYPEDEF ? last_alias : last_tag;
 	std::pair<std::map<madc::dis::istring, size_t>::iterator, bool> at =
 	    fam.insert(std::make_pair(k, i));
-	if ( !at.second && !forest_type_registered[at.first->second] )
+	if ( !at.second && !s.type_registered[at.first->second] )
 	    at.first->second = i;
     }
 
@@ -27341,7 +27894,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	const CirRestoredType &rt = types[i];
 	if ( !rt.name || !*rt.name )
 	    continue;
-	unsigned char &registered = forest_type_registered[i];
+	unsigned char &registered = s.type_registered[i];
 	if ( registered & FOREST_TYPE_NS )
 	    continue;			// an earlier restore registered both surfaces
 	madc::dis::istring name(rt.name);
@@ -27658,15 +28211,15 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // then emit them exactly as a live parse would. No initializer is kept: the
     // default ctor is synthesized from the class's restored ctor set (Phase 6 v12).
     const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
-    forest_global_registered.resize(globals.size(), false);
+    s.global_registered.resize(globals.size(), false);
     for ( size_t i = 0; i < globals.size(); ++i )
     {
 	const CirRestoredGlobal &rg = globals[i];
-	if ( forest_global_registered[i] || !rg.name || !rg.type )
+	if ( s.global_registered[i] || !rg.name || !rg.type )
 	    continue;
 	if ( !forest_name_permitted(rg.name, rg.ns) )
 	    continue;			// declared only by unbound units
-	forest_global_registered[i] = true;
+	s.global_registered[i] = true;
 	PendingForestGlobal pg;
 	pg.name       = rg.name;
 	pg.ns         = rg.ns ? rg.ns : "";	// v22: defining namespace
@@ -27681,6 +28234,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	pg.ctor_file  = rg.ctor_file;
 	pg.def_unit   = rg.def_unit;	// v66: CIR_GLOBALF_FROZEN_DEF
 	pg.def_idx    = rg.def_idx;
+	pg.def_forest = &forest;	// B3: the forest that holds them
 	pg.init_locs  = rg.init_locs;
 	pg.system     = declared_system(rg.ns, pg.name);
 	forest_pending_globals.push_back(pg);
@@ -27694,10 +28248,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // the dlsym implicit-variadic fallback (a signed-int return read as a 64-bit
     // long is a real miscompile — the bsearch_skill_exact class of bug).
     const std::vector<CirRestoredFunc> &funcs = forest.restored_funcs();
-    forest_func_registered.resize(funcs.size(), false);
+    s.func_registered.resize(funcs.size(), false);
     for ( size_t i = 0; i < funcs.size(); ++i )
     {
-	if ( forest_func_registered[i] || !funcs[i].name || !*funcs[i].name
+	if ( s.func_registered[i] || !funcs[i].name || !*funcs[i].name
 	  || !funcs[i].fd )
 	    continue;
 	// Closure filter: the funcdef_map key ("printf") is what the index
@@ -27712,7 +28266,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 					  ffd->namespace_name.c_str());
 	if ( verdict < 0 )
 	    continue;
-	forest_func_registered[i] = true;
+	s.func_registered[i] = true;
 	PendingForestFunc pf;
 	pf.name = funcs[i].name;
 	pf.fd   = ffd;
@@ -27760,10 +28314,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // attribution — matches a live capture (the .madh record form keeps
     // line/column per token; the file rides the run descriptor).
     CirRestoredTemplateList &tmpls = forest.restored_templates();
-    forest_tmpl_registered.resize(tmpls.size(), false);
+    s.tmpl_registered.resize(tmpls.size(), false);
     for ( size_t i = 0; i < tmpls.size(); ++i )
     {
-	if ( forest_tmpl_registered[i] )
+	if ( s.tmpl_registered[i] )
 	    continue;
 	CirRestoredTemplate &rt = tmpls[i];
 	madc::dis::istring key(rt.key);
@@ -27799,7 +28353,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	// the eager kinds, at first content read for the lazy ones.
 	if ( !lazy_kind && !forest.hydrate_restored_template(rt) )
 	    continue;
-	forest_tmpl_registered[i] = true;
+	s.tmpl_registered[i] = true;
 	switch ( rt.kind )
 	{
 	case CIR_TMPLK_CLASS:
@@ -27857,7 +28411,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	{
 	    FnTemplateDef fd;
 	    fd.ns = rt.ns ? rt.ns : "";
-	    fd.inline_builtin_kind = rt.extra ? rt.extra : "";
+	    fd.inline_builtin_kind = builtin_kind_named(rt.extra);
 	    fd.owner_class = rt.owner;
 	    fd.instance_method = (rt.flags & CIR_TMPLF_INSTANCE_METHOD) != 0;
 	    fd.frozen_src = &rt;
@@ -27970,17 +28524,43 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     _forest_restore_seconds += forest_restore_now() - _t_restore0;
 }
 
+// One bound forest's progress (ForestBindMark::Side), saved and restored.
+static void forest_side_mark(const Program::ForestSide &s, Program::ForestBindMark::Side &m)
+{
+    m.chain_size = s.chain.size();
+    m.restored_chain_size = s.restored_chain_size;
+    m.live_present = s.live_present;
+    m.macro_differs = s.macro_differs;
+    m.withdrawn_arms = s.withdrawn_arms.size();
+    m.bind_stopped = s.bind_stopped;
+    m.type_registered = s.type_registered;
+    m.global_registered = s.global_registered;
+    m.func_registered = s.func_registered;
+    m.tmpl_registered = s.tmpl_registered;
+}
+
+static void forest_side_rewind(Program::ForestSide &s, const Program::ForestBindMark::Side &m)
+{
+    while ( s.chain.size() > m.chain_size )
+    {
+	s.chain_set.erase(s.chain.back());
+	s.chain.pop_back();
+    }
+    s.restored_chain_size = m.restored_chain_size;
+    s.live_present = m.live_present;
+    s.macro_differs = m.macro_differs;
+    s.withdrawn_arms.resize(std::min(s.withdrawn_arms.size(), m.withdrawn_arms));
+    s.bind_stopped = m.bind_stopped;
+    s.type_registered = m.type_registered;
+    s.global_registered = m.global_registered;
+    s.func_registered = m.func_registered;
+    s.tmpl_registered = m.tmpl_registered;
+}
+
 Program::ForestBindMark Program::forest_bind_mark() const
 {
     ForestBindMark m;
-    m.chain_size = forest_chain.size();
-    m.restored_chain_size = forest_restored_chain_size;
-    m.live_present = forest_live_present;
-    m.husk_live_pending = forest_husk_live_pending;
-    m.type_registered = forest_type_registered;
-    m.global_registered = forest_global_registered;
-    m.func_registered = forest_func_registered;
-    m.tmpl_registered = forest_tmpl_registered;
+    forest_side_mark(forest_system, m.system);
     m.overload_recaptures = forest_pending_overload_recaptures.size();
     return m;
 }
@@ -27989,22 +28569,36 @@ Program::ForestBindMark Program::forest_bind_mark() const
 // unit admits is judged unregistered again at the next restore).
 void Program::forest_bind_rewind(const ForestBindMark &mark)
 {
-    while ( forest_chain.size() > mark.chain_size )
-    {
-	forest_chain_set.erase(forest_chain.back());
-	forest_chain.pop_back();
-    }
-    forest_restored_chain_size = mark.restored_chain_size;
-    forest_live_present = mark.live_present;
-    forest_husk_live_pending = mark.husk_live_pending;
-    forest_type_registered = mark.type_registered;
-    forest_global_registered = mark.global_registered;
-    forest_func_registered = mark.func_registered;
-    forest_tmpl_registered = mark.tmpl_registered;
+    forest_side_rewind(forest_system, mark.system);
     if ( forest_pending_overload_recaptures.size() > mark.overload_recaptures )
 	forest_pending_overload_recaptures.erase(
 	    forest_pending_overload_recaptures.begin() + mark.overload_recaptures,
 	    forest_pending_overload_recaptures.end());
+}
+
+cir_node *Program::forest_body_node(const FuncDef *fd)
+{
+    return fd && fd->has_forest_body && fd->forest_body_src
+	? fd->forest_body_src->node_for(fd->forest_body_unit, fd->forest_body_idx)
+	: NULL;
+}
+
+const char *Program::forest_body_unit_name(const FuncDef *fd) const
+{
+    return fd && fd->forest_body_src ? fd->forest_body_src->unit_name(fd->forest_body_unit)
+				     : NULL;
+}
+
+bool Program::forest_extern_node(const madc::dis::istring &sym, cir_node *&node)
+{
+    node = NULL;
+    uint32_t xu = 0, xi = 0;
+    if ( forest_system.forest && forest_system.forest->extern_loc_for(sym, xu, xi) )
+    {
+	node = forest_system.forest->node_for(xu, xi);
+	return true;
+    }
+    return false;
 }
 
 // v21: the flush hydrates a verbatim-restored member-template placeholder with
@@ -28188,7 +28782,14 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
     }
     else
     {
-	fv = addVariable(NULL, *pf.fd, pf.name);
+	// The program-scope Variable addVariable makes at the flush — where
+	// no namespace is open, no instantiation runs and no extern
+	// declaration is being parsed — made without reading that parse
+	// state: a deferred function registers mid-parse (activate_forest_func), and the
+	// enclosing parse's namespace binding, instantiation-product flag or
+	// extern flag is not this declaration's.
+	fv = new Variable(pf.name, *pf.fd, 1, NULL, true);
+	tkProgram->variables.push_back(fv);
 	Method *fm = new Method(*fv);
 	fv->data = (void *)fm;
 	// C++ SYMBOL MANGLING phase 4: a restored bodied function carrying its
@@ -28201,7 +28802,6 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 	// (body_symbol_keys); this registrar is the other and records it too.
 	if ( pf.fd->has_forest_body && !pf.fd->emit_symbol.empty() )
 	    body_symbol_keys[pf.fd->emit_symbol] = pf.name;
-	forest_stamp_lazy_module_prototype(pf.fd, pf.name);
 	DBG(std::cout << "register_forest_func: " << pf.name
 		      << " emit=" << pf.fd->emit_symbol
 		      << " alias=" << fv->storage_alias_name
@@ -28369,7 +28969,7 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     // ensure_bind_forest, the source carrier directly (both memoized).
     if ( !f || !f->may_adopt_function(fname) )
 	return NULL;
-    if ( f == _bind_directory ? !ensure_bind_forest()
+    if ( f == forest_system.directory ? !ensure_bind_forest()
 			      : !f->complete_open(/*c2m=*/NULL) )
 	return NULL;
 
@@ -28447,6 +29047,7 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
 	pfd->has_forest_body = false;
 	pfd->forest_body_unit = 0;
 	pfd->forest_body_idx = 0;
+	pfd->forest_body_src = NULL;
 	pfd->emit_symbol.clear();
 	fd = pfd;
     }
@@ -28509,9 +29110,71 @@ Variable *Program::activate_forest_func(const madc::dis::istring &name)
     return var;
 }
 
-void Program::activate_forest_function_family(const madc::dis::istring &ns,
-					       const madc::dis::istring &display_name)
+bool Program::bind_forest_ns_import(const madc::dis::istring &ns, const madc::dis::istring &name,
+				    const madc::dis::istring &key, bool ov_member)
 {
+    Variable *v = findVariable(key);
+    if ( !v || !v->type || !v->type->is_function() )
+	return false;
+    variable_map_t &m = namespace_variables_for_write(ns);
+    if ( m.find(name) == m.end() )
+    {
+	m[name] = v;
+	DBG(std::cout << "forest ns import " << ns << "::" << name << " -> " << key << std::endl);
+    }
+    // [namespace.udecl] twin of the live using-arm (TokenUSING::parse): a
+    // FLAGGED record's import ALSO joins the target's overload set — the SAME
+    // two registrations a declaration written in that namespace gets, join
+    // unconditional even when the map binding already exists. Without it a
+    // bound consumer ranks against a SMALLER set than the freezing parse and
+    // mints a DIFFERENT instantiation identity (LOADED == parsed violation;
+    // stl_vector.h:428 "conversion of non-scalar value requested" in the
+    // release pack's verify). Bind-only records (the inline-ns mirror's
+    // redundant entries) must NOT join: the live mirror grows no sets.
+    if ( !ov_member )
+	return true;
+    std::vector<NamespaceFnOverload> &ovset = namespace_fn_overload_sets[ns + "::" + name];
+    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+	if ( ovset[oi].var == v )
+	    return true;
+    NamespaceFnOverload e;
+    e.var = v;
+    ovset.push_back(e);
+    return true;
+}
+
+void Program::activate_forest_member(const madc::dis::istring &ns,
+				     const madc::dis::istring &display_name)
+{
+    dialect_demand(ns, display_name);
+    if ( !forest_deferred_ns_imports.empty() )
+    {
+	// K2d: a deferred using-declaration import of ns::name, or of a member
+	// of ns's inline namespace set (find_namespace_member reads both).
+	std::vector<madc::dis::istring> scopes(1, ns);
+	const std::vector<madc::dis::istring> inl = inline_namespace_descendants(ns);
+	scopes.insert(scopes.end(), inl.begin(), inl.end());
+	for ( size_t si = 0; si < scopes.size(); ++si )
+	{
+	    std::map<madc::dis::istring, std::vector<ForestDeferredNsImport> >::iterator di =
+		forest_deferred_ns_imports.find(scopes[si] + "::" + display_name);
+	    if ( di == forest_deferred_ns_imports.end() )
+		continue;
+	    std::vector<ForestDeferredNsImport> &pending = di->second;
+	    for ( size_t k = 0; k < pending.size(); )
+	    {
+		const ForestDeferredNsImport &d = pending[k];
+		if ( bind_forest_ns_import(d.ns, d.name, d.key, d.ov_member) )
+		    pending.erase(pending.begin() + k);
+		else
+		    ++k;
+	    }
+	    if ( pending.empty() )
+		forest_deferred_ns_imports.erase(di);
+	}
+    }
+    if ( forest_deferred_func_families.empty() )
+	return;
     madc::dis::istring family = ns + "::" + display_name;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> >::iterator fi =
 	forest_deferred_func_families.find(family);
@@ -28526,6 +29189,9 @@ void Program::activate_forest_function_family(const madc::dis::istring &ns,
 
 void Program::activate_forest_function_display(const madc::dis::istring &display_name)
 {
+    // The dialect's free operators: every named dialect namespace's.
+    for ( size_t i = 0; i < dialect_named.size(); ++i )
+	dialect_demand(dialect_named[i], display_name);
     const madc::dis::istring suffix = "::" + display_name;
     std::vector<madc::dis::istring> families;
     for ( std::map<madc::dis::istring, std::vector<madc::dis::istring> >::const_iterator it =
@@ -28540,7 +29206,7 @@ void Program::activate_forest_function_display(const madc::dis::istring &display
     for ( size_t i = 0; i < families.size(); ++i )
     {
 	size_t sep = families[i].size() - suffix.size();
-	activate_forest_function_family(families[i].substr(0, sep), display_name);
+	activate_forest_member(families[i].substr(0, sep), display_name);
     }
 }
 
@@ -28551,38 +29217,47 @@ void Program::flush_forest_pending_globals()
 {
     if ( !tkProgram )
 	return;
+    forest_restore_if_grown();
+    forest_apply_pending();
+}
 
+// The flush's first half.
+void Program::forest_restore_if_grown()
+{
     // Item 5 (lazy defrost): the decl-record restore runs HERE — the first
-    // point after tokenize where forest_chain_set is COMPLETE (every #include
-    // has bound its unit closure) — so forest_restore_decls can filter
-    // registration to the TU's actual bound-include closure instead of
+    // point after tokenize where the bound chains are COMPLETE (every
+    // #include has bound its unit closure) — so forest_restore_decls can
+    // filter registration to the TU's actual bound-include closure instead of
     // defrosting the whole container's surface. It STAGES the pending
     // datatypes/globals/funcs this flush then applies below. An interactive
     // session's entry that bound more units restores again, registering what
-    // the wider closure admits (see forest_restored_chain_size).
-    if ( bind_forest && forest_chain.size() > forest_restored_chain_size )
-    {
-	forest_restore_decls(*bind_forest);
-	forest_restored_chain_size = forest_chain.size();
-	// The pack's layout recorder (--forest-touch-log) binding a dialect
-	// fragment reads ALL of it: every template a dialect program could
-	// hydrate is hydrated here, so the relayout stores those reads raw too
-	// (pack-slices design §7: the dialect surface is never decompressed).
-	if ( !forest_touch_log.empty() )
-	    for ( size_t i = 0; i < forest_chain.size(); ++i )
-	    {
-		const char *un = bind_forest->unit_name(forest_chain[i]);
-		if ( un && embedded_dialect_fragment_p(un) )
-		{
-		    thaw_all_frozen_templates();
-		    break;
-		}
-	    }
-    }
+    // the wider closure admits (see ForestSide::restored_chain_size).
+    ForestSide &s = forest_system;
+    if ( !s.forest || s.chain.size() <= s.restored_chain_size )
+	return;
+    forest_restore_decls(s);
+    s.restored_chain_size = s.chain.size();
+}
 
+// The flush's second half: register what a restore staged.
+void Program::forest_apply_pending()
+{
+    if ( !tkProgram )
+	return;
     if ( forest_pending_globals.empty() && forest_pending_funcs.empty()
       && forest_pending_datatypes.empty() )
 	return;
+    // Taken off the staging lists before any of it applies: an apply re-parses
+    // (default and constructor arguments), and a re-parse may register more —
+    // never into a list being walked here.
+    std::vector<std::pair<madc::dis::istring, TokenDataType *> > pending_datatypes;
+    std::vector<PendingForestFunc> pending_funcs;
+    std::vector<PendingForestMemberTmpl> pending_member_tmpls;
+    std::vector<PendingForestGlobal> pending_globals;
+    pending_datatypes.swap(forest_pending_datatypes);
+    pending_funcs.swap(forest_pending_funcs);
+    pending_member_tmpls.swap(forest_pending_member_tmpls);
+    pending_globals.swap(forest_pending_globals);
 
     // Staged FLAT datatype_map registrations FIRST (typedef/enum/class names
     // from the bound headers): tokenize is over, so the writes can no longer
@@ -28592,28 +29267,26 @@ void Program::flush_forest_pending_globals()
     // names against the complete map exactly as the eager write provided.
     // Applied in restore order — a later same-named alias wins, the live
     // registration semantics.
-    for ( size_t i = 0; i < forest_pending_datatypes.size(); ++i )
+    for ( size_t i = 0; i < pending_datatypes.size(); ++i )
     {
-	datatype_map[forest_pending_datatypes[i].first] =
-	    forest_pending_datatypes[i].second;
+	datatype_map[pending_datatypes[i].first] =
+	    pending_datatypes[i].second;
 	// v40 (task #57): PERSISTENT provenance — the main parse's typedef
 	// arm lets a live re-declaration overwrite a shape-divergent
 	// RESTORED alias (the frozen twin encodes the freeze's include
 	// order, not this TU's), but must still throw on a genuine live
 	// conflict. forest_pending_datatype_names clears below; this set
 	// survives the whole TU.
-	forest_restored_datatype_names.insert(forest_pending_datatypes[i].first);
+	forest_restored_datatype_names.insert(pending_datatypes[i].first);
     }
-    forest_pending_datatypes.clear();
     forest_pending_datatype_names.clear();
 
     // RC2 + #23: source-declared functions and class methods stay eager so the
     // consumer starts with the same lookup surface as a live header parse.
     // Verdict-0 derived free functions were indexed separately above and
     // promote through this SAME owner only when demanded.
-    for ( size_t i = 0; i < forest_pending_funcs.size(); ++i )
-	register_forest_func(forest_pending_funcs[i]);
-    forest_pending_funcs.clear();
+    for ( size_t i = 0; i < pending_funcs.size(); ++i )
+	register_forest_func(pending_funcs[i]);
     // v21: restored MEMBER function templates. The placeholder FuncDef itself
     // restored VERBATIM from its methodrec (its saved __oN rank — registered
     // by the pending-funcs flush above), so the normal path DEFERS: attach the
@@ -28626,9 +29299,9 @@ void Program::flush_forest_pending_globals()
     // that path needs live parse machinery (class_scope_stack, addFunction) a
     // mid-parse thaw must not touch (fresh-surface robustness — same one
     // production path).
-    for ( size_t i = 0; i < forest_pending_member_tmpls.size(); ++i )
+    for ( size_t i = 0; i < pending_member_tmpls.size(); ++i )
     {
-	PendingForestMemberTmpl &pm = forest_pending_member_tmpls[i];
+	PendingForestMemberTmpl &pm = pending_member_tmpls[i];
 	if ( !pm.owner || !pm.rt || !pm.forest )
 	    continue;
 	funcdef_map_iter fit = pm.key.empty() ? funcdef_map.end()
@@ -28803,10 +29476,9 @@ void Program::flush_forest_pending_globals()
 	    << pm.owner->name << " (" << typeparams.size()
 	    << " param(s), " << tokens.size() << " tokens)" << std::endl);
     }
-    forest_pending_member_tmpls.clear();
-    for ( size_t i = 0; i < forest_pending_globals.size(); ++i )
+    for ( size_t i = 0; i < pending_globals.size(); ++i )
     {
-	const PendingForestGlobal &pg = forest_pending_globals[i];
+	const PendingForestGlobal &pg = pending_globals[i];
 	// Live's identity (addVariable): a member of a named namespace is a
 	// redeclaration only of THAT namespace's member — ui::NONE and a C
 	// enum's NONE are two entities; at global scope it is the program's.
@@ -28933,6 +29605,7 @@ void Program::flush_forest_pending_globals()
 	    ftd.forest_system = pg.system;
 	    top_decls.push_back(ftd);
 	    ForestFrozenGlobalDef &fz = forest_frozen_global_defs[fv];
+	    fz.forest    = pg.def_forest;
 	    fz.def_unit  = pg.def_unit;
 	    fz.def_idx   = pg.def_idx;
 	    fz.init_locs = pg.init_locs;
@@ -29069,7 +29742,6 @@ void Program::flush_forest_pending_globals()
 	DBG(std::cout << "flush_forest_pending_globals: global " << pg.name
 	    << " (" << pg.type->name << ")" << std::endl);
     }
-    forest_pending_globals.clear();
 
     // A bound class's STATIC DATA MEMBER storage needs no fix-up here: the
     // vfEXTERN Variable the extern-ref arm above rebuilds now carries the
@@ -29080,58 +29752,39 @@ void Program::flush_forest_pending_globals()
 
     // v25: restored NAMESPACE-SURFACE state — after every fn/global above is
     // registered, so the bindings resolve their targets.
-    if ( bind_forest )
+    if ( CirFrozenForest *bound = forest_system.forest )
     {
+	CirFrozenForest &forest = *bound;
 	// Using-declaration fn imports (`namespace std { using ::abort; }`):
 	// rebind namespace_map[ns][name] to the restored fn's program-scope
-	// Variable — the exact registration the live using-decl performs. A
-	// fenced/unrestored target cleanly lacks; first-wins matches live.
-	const std::vector<CirRestoredNsBind> &binds = bind_forest->restored_nsbinds();
+	// Variable — the exact registration the live using-decl performs
+	// (bind_forest_ns_import). K2d: a target no function names yet may be
+	// a live arm's declaration, parsed after this flush (mingw's
+	// <process.h> arm declaring abort, whose <stdlib.h> twin the walk
+	// withdrew): the namespace is the frozen code's, and the import binds
+	// at the member's first lookup (activate_forest_member).
+	const std::vector<CirRestoredNsBind> &binds = forest.restored_nsbinds();
 	for ( size_t i = 0; i < binds.size(); ++i )
 	{
 	    const CirRestoredNsBind &b = binds[i];
-	    Variable *v = findVariable(b.key);
-	    if ( !v || !v->type || !v->type->is_function() )
+	    if ( bind_forest_ns_import(b.ns, b.name, b.key, b.ov_member) )
 		continue;
-	    variable_map_t &m = namespace_variables_for_write(b.ns);
-	    if ( m.find(b.name) == m.end() )
-	    {
-		m[b.name] = v;
-		DBG(std::cout << "flush_forest_pending_globals: ns import "
-		    << b.ns << "::" << b.name << " -> " << b.key << std::endl);
-	    }
-	    // [namespace.udecl] twin of the live using-arm (TokenUSING::parse):
-	    // a FLAGGED record's import ALSO joins the target's overload set —
-	    // the SAME two registrations a declaration written in that
-	    // namespace gets, join unconditional even when the map binding
-	    // already exists. Without it a bound consumer ranks against a
-	    // SMALLER set than the freezing parse and mints a DIFFERENT
-	    // instantiation identity (LOADED == parsed violation;
-	    // stl_vector.h:428 "conversion of non-scalar value requested" in
-	    // the release pack's verify). Bind-only records (the inline-ns
-	    // mirror's redundant entries) must NOT join: the live mirror
-	    // grows no sets.
-	    if ( !b.ov_member )
-		continue;
-	    std::vector<NamespaceFnOverload> &ovset =
-		namespace_fn_overload_sets[std::string(b.ns) + "::" + b.name];
-	    bool known = false;
-	    for ( size_t oi = 0; oi < ovset.size(); ++oi )
-		if ( ovset[oi].var == v )
-		    known = true;
-	    if ( !known )
-	    {
-		NamespaceFnOverload e;
-		e.var = v;
-		ovset.push_back(e);
-	    }
+	    const bool withdrawn = forest_name_withdrawn(forest_system, b.key);
+	    DBG(std::cout << "forest ns import " << b.ns << "::" << b.name << " -> " << b.key
+		<< (withdrawn ? ": deferred, a live arm declares it" : ": lacks (fenced)")
+		<< std::endl);
+	    if ( !withdrawn )
+		continue;	// a fenced target cleanly lacks
+	    namespace_variables_for_write(b.ns);
+	    const ForestDeferredNsImport d = { b.ns, b.name, b.key, b.ov_member };
+	    forest_deferred_ns_imports[madc::dis::istring(b.ns) + "::" + b.name].push_back(d);
 	}
 	// Inline-namespace links: restore inline_namespace_children VERBATIM,
 	// then RE-RUN the one live derivation (mirror_inline_namespace_into_
 	// parent) deepest-child-first — std::__cxx11's members (stod,
 	// to_string) become members of std, exactly as each live block close
 	// leaves them. Idempotent: the mirror inserts first-wins.
-	const std::vector<CirRestoredNsLink> &links = bind_forest->restored_nslinks();
+	const std::vector<CirRestoredNsLink> &links = forest.restored_nslinks();
 	std::vector<std::pair<madc::dis::istring, madc::dis::istring> > mirror_order;
 	for ( size_t i = 0; i < links.size(); ++i )
 	{
@@ -29170,7 +29823,7 @@ void Program::flush_forest_pending_globals()
 	// v27: restored NAMESPACE ALIASES — the map entries verbatim (an entry
 	// the live parse already made for the same alias wins: re-declaring an
 	// alias to the same namespace is the [namespace.alias] no-op).
-	const std::vector<CirRestoredNsAlias> &nsa = bind_forest->restored_nsaliases();
+	const std::vector<CirRestoredNsAlias> &nsa = forest.restored_nsaliases();
 	for ( size_t i = 0; i < nsa.size(); ++i )
 	    if ( nsa[i].alias && *nsa[i].alias && nsa[i].target && *nsa[i].target
 	      && !namespace_aliases.count(nsa[i].alias) )
@@ -29182,7 +29835,7 @@ void Program::flush_forest_pending_globals()
 	// derivation (parse_deferred_lazy_body) on first ODR-use. A body
 	// whose method did not restore cleanly lacks.
 	const std::vector<CirRestoredDeferredBody> &dbs =
-	    bind_forest->restored_defbodies();
+	    forest.restored_defbodies();
 	for ( size_t i = 0; i < dbs.size(); ++i )
 	{
 	    const CirRestoredDeferredBody &db = dbs[i];
@@ -29266,10 +29919,11 @@ void Program::flush_forest_pending_globals()
     // already registered. A run that fails to deserialize cleanly lacks; a
     // parse error stays LOUD (loaded state failing to re-derive live state is
     // a fidelity bug, never masked).
-    if ( bind_forest )
+    if ( CirFrozenForest *bound = forest_system.forest )
     {
+	CirFrozenForest &forest = *bound;
 	const std::vector<CirRestoredFuncDefaults> &fdefs =
-	    bind_forest->restored_param_defaults();
+	    forest.restored_param_defaults();
 	for ( size_t i = 0; i < fdefs.size(); ++i )
 	{
 	    const CirRestoredFuncDefaults &rd = fdefs[i];
@@ -29295,7 +29949,7 @@ void Program::flush_forest_pending_globals()
 	    // function registers (forest_settle_param_defaults).
 	    else if ( !forest_registered_funcs.count(rd.fd) )
 	    {
-		forest_unsettled_defaults[rd.fd] = i;
+		forest_unsettled_defaults[rd.fd] = std::make_pair(&forest, i);
 		continue;
 	    }
 	    rebuild_forest_param_defaults(rd);
@@ -29409,16 +30063,17 @@ void Program::rebuild_forest_param_defaults(const CirRestoredFuncDefaults &rd)
 // re-derive now, with its declaration — the flush left them unsettled.
 void Program::forest_settle_param_defaults(const FuncDef *fd)
 {
-    std::map<const FuncDef *, size_t>::iterator it =
+    std::map<const FuncDef *, std::pair<CirFrozenForest *, size_t> >::iterator it =
 	forest_unsettled_defaults.find(fd);
     if ( it == forest_unsettled_defaults.end() )
 	return;
-    size_t ix = it->second;
+    CirFrozenForest *forest = it->second.first;
+    size_t ix = it->second.second;
     forest_unsettled_defaults.erase(it);
-    if ( !bind_forest )
+    if ( !forest )
 	return;
     const std::vector<CirRestoredFuncDefaults> &fdefs =
-	bind_forest->restored_param_defaults();
+	forest->restored_param_defaults();
     if ( ix < fdefs.size() && fdefs[ix].fd == fd
       && fdefs[ix].fd->param_defaults.empty() )
 	rebuild_forest_param_defaults(fdefs[ix]);
@@ -29427,14 +30082,17 @@ void Program::forest_settle_param_defaults(const FuncDef *fd)
 void Program::add_namespaces()
 {
     namespace_variables_for_write("std");
-    if ( auto_includes_enabled() )
+    if ( dialect_surface_enabled() )
+    {
 	add_format_intrinsics();
+	add_stdio_streams();
+    }
 }
 
 static const FormatIntrinsic format_intrinsics[] = {
-    { "format",  "std_format",  true  },
-    { "print",   "std_print",   false },
-    { "println", "std_println", false },
+    { "format",  BuiltinKind::StdFormat,  true  },
+    { "print",   BuiltinKind::StdPrint,   false },
+    { "println", BuiltinKind::StdPrintln, false },
 };
 static const size_t format_intrinsic_count =
     sizeof(format_intrinsics) / sizeof(format_intrinsics[0]);
@@ -29509,8 +30167,8 @@ void Program::add_madc_namespace()
 
     // register the general carrier as madc::value — the SAME DataDef as
     // madc::array (one tagged carrier; array is its array-flavored
-    // spelling). Unconditional like array: explicit madc:: qualification
-    // is an opt-in even outside the madc dialect.
+    // spelling). Registered under --std=madc only (the namespace
+    // registry asks is_namespace_registration_enabled).
     id = "__madc_value";
     var = new Variable(id, ddARRAY, 1, NULL, false);
     var->flags |= vfSTATIC;
@@ -30093,6 +30751,16 @@ void Program::_parser_init()
     // populate lazy_map for included headers (actual registration deferred to first use)
     register_included_lazy_surfaces();
     register_namespace_specs();
+    // The TU's `import NAME;` modules (lexed before this), every one again:
+    // this init reset the maps they registered into.
+    for ( size_t m = 0; m < imported_modules.size(); ++m )
+	imported_modules[m].registered = false;
+    register_imported_modules();
+    // The dialect namespaces the TU named (its lex recorded them); their
+    // names build as lookups touch them (dialect_demand), into the maps this
+    // init reset — so every builder runs again.
+    dialect_built.clear();
+    register_dialect_namespaces();
     // clang's __make_integer_seq builtin template: a marker registration so
     // every template-id head lookup (type AND expression lanes) recognizes
     // the name and funnels to instantiate_template_use, whose native arm
@@ -30154,19 +30822,21 @@ void Program::_parser_init()
 void Program::register_included_lazy_surfaces()
 {
     if ( _include_iostream ) add_iostream();
-    if ( _include_stdio )   add_stdio();
 }
 
 bool Program::is_namespace_registration_enabled(const madc::dis::istring &name) const
 {
     if ( name == "std" ) return registration_policy.enable_std_namespace;
-    if ( name == "madc" ) return registration_policy.enable_madc_namespace;
-    if ( name == "php" ) return registration_policy.enable_php_namespace;
-    if ( name == "perl" ) return registration_policy.enable_perl_namespace;
-    if ( name == "python" ) return registration_policy.enable_python_namespace;
-    if ( name == "ruby" ) return registration_policy.enable_ruby_namespace;
-    if ( name == "js" ) return registration_policy.enable_js_namespace;
-    if ( name == "rust" ) return registration_policy.enable_rust_namespace;
+    // The dialect namespaces exist only under --std=madc; an embedder's
+    // switch can turn one off there, never on anywhere else.
+    const bool dialect = dialect_surface_enabled();
+    if ( name == "madc" ) return dialect && registration_policy.enable_madc_namespace;
+    if ( name == "php" ) return dialect && registration_policy.enable_php_namespace;
+    if ( name == "perl" ) return dialect && registration_policy.enable_perl_namespace;
+    if ( name == "python" ) return dialect && registration_policy.enable_python_namespace;
+    if ( name == "ruby" ) return dialect && registration_policy.enable_ruby_namespace;
+    if ( name == "js" ) return dialect && registration_policy.enable_js_namespace;
+    if ( name == "rust" ) return dialect && registration_policy.enable_rust_namespace;
     return true;
 }
 
@@ -30431,40 +31101,16 @@ Variable *Program::runtime_eval_scope_target(Variable *var) const
     if ( !var )
 	return var;
 
-    if ( is_runtime_eval_source_helper_name(var->name)
-      && !is_runtime_eval_source_scope_access_enabled() )
+    const RuntimeEvalHelperRow *row = runtime_eval_helper_row(var->name);
+    if ( !row || row->kind == RuntimeEvalHelper::Ctx )
 	return var;
 
-    if ( is_runtime_eval_expression_helper_name(var->name)
-      && !is_runtime_eval_expression_scope_access_enabled() )
+    if ( row->kind == RuntimeEvalHelper::Source
+	? !is_runtime_eval_source_scope_access_enabled()
+	: !is_runtime_eval_expression_scope_access_enabled() )
 	return var;
 
-    madc::dis::istring target_name;
-    if ( var->name == "__madc_eval_runtime" )
-	target_name = "__madc_eval_ctx_runtime";
-    else if ( var->name == "__madc_eval_bool_runtime" )
-	target_name = "__madc_eval_bool_ctx_runtime";
-    else if ( var->name == "__madc_eval_int_runtime" )
-	target_name = "__madc_eval_int_ctx_runtime";
-    else if ( var->name == "__madc_eval_double_runtime" )
-	target_name = "__madc_eval_double_ctx_runtime";
-    else if ( var->name == "__madc_eval_string_runtime" )
-	target_name = "__madc_eval_string_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_runtime" )
-	target_name = "__madc_eval_expression_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_bool_runtime" )
-	target_name = "__madc_eval_expression_bool_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_int_runtime" )
-	target_name = "__madc_eval_expression_int_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_double_runtime" )
-	target_name = "__madc_eval_expression_double_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_string_runtime" )
-	target_name = "__madc_eval_expression_string_ctx_runtime";
-    else
-	return var;
-
-    madc::dis::istring lookup = target_name;
-    Variable *mapped = tkProgram ? tkProgram->findVariable(strpool, lookup) : NULL;
+    Variable *mapped = tkProgram ? tkProgram->findVariable(strpool, row->ctx) : NULL;
     return mapped ? mapped : var;
 }
 
@@ -30708,7 +31354,7 @@ madc::dis::istring Program::declaring_inline_set_namespace(const madc::dis::istr
 Variable *Program::find_namespace_member(const madc::dis::istring &ns_name, const madc::dis::istring &member_name,
 					 TokenBase *diag)
 {
-    activate_forest_function_family(ns_name, member_name);
+    activate_forest_member(ns_name, member_name);
     // [namespace.qual]: the members of N include the members of N's inline
     // namespace set, TRANSITIVELY — and they are visible while the inline
     // namespace block is still OPEN, not only after
@@ -30793,8 +31439,18 @@ Variable *Program::resolve_module_member(const madc::dis::istring &ns_name,
 	return NULL;
     }
     madc::dis::istring func_id = "__dl_" + ns_name + "_" + member_name;
-    Variable *var = addFunction(func_id, datatype_vec_t{DataType::dtINT64},
-				(fVOIDFUNC)sym);
+    // The export's declaration is the one an undeclared bare call of the
+    // same name takes (parseExpression's dlsym fallback) — the symbol `sqrt`
+    // libm exports IS the function C declares (one external namespace), so
+    // `math::sqrt(2.0)` returns a double: the pack's REAL prototype first,
+    // else dynamic_symbol_fallback_signature (the libc return types and the
+    // <math.h> parameter shapes; the int64 K&R convention for the rest).
+    Variable *var = NULL;
+    if ( Variable *proto = forest_adopt_declared_function(member_name) )
+	var = typed_module_member(func_id, proto);
+    if ( !var )
+	var = addFunction(func_id, dynamic_symbol_fallback_signature(member_name),
+			  (fVOIDFUNC)sym);
     if ( !var )
     {
 	if ( diag )
@@ -30836,6 +31492,16 @@ madc::dis::istring Program::canonical_nested_namespace(const madc::dis::istring 
 	for ( size_t pi = 0; pi < descendants.size() && found.empty(); ++pi )
 	{
 	    cand = descendants[pi] + "::" + comp;
+	    if ( namespace_map.find(cand) != namespace_map.end()
+	      || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
+		found = cand;
+	}
+	// A dialect enum's or class's scope (`madc::project_kind::gui`): the
+	// first touch of its name registers it (the dialect is builtin, R4c) —
+	// an enum's enumerators make its pseudo-namespace.
+	if ( found.empty() && dialect_demand(parent, comp) )
+	{
+	    cand = parent.empty() ? comp : madc::dis::istring(parent + "::" + comp);
 	    if ( namespace_map.find(cand) != namespace_map.end()
 	      || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
 		found = cand;
@@ -31188,7 +31854,7 @@ Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expre
     };
     const std::vector<madc::dis::istring> &pref_order =
 	!namespace_preference.empty() ? namespace_preference
-	: auto_includes_enabled()     ? madc_default_preference
+	: dialect_surface_enabled()     ? madc_default_preference
 				      : namespace_preference;
     if ( pref_order.empty() )
 	return resolve_c_identifier(ident_tb, expression_head);
@@ -31673,7 +32339,15 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const madc::di
 	    // value does (CirJitSession::destroy_redefined).
 	    const bool session_redefinition = is_definition
 					      && session_redefines_object(prior);
-	    if ( object_redeclaration_conflicts(prior, &type, dims, object_cv) )
+	    // The dialect's stdio stream stand-in (stdio_stream_stand_in) is
+	    // the compiler's until a declaration names the object: this one
+	    // (the program's <stdio.h>, included after the first use) adopts
+	    // it — one stderr, of the declaration's type (addVariable's extern
+	    // arm retypes it) — rather than conflicting with its void *.
+	    const bool adopts_stdio_stream = prior->stdio_stream != StdioStream::None;
+	    prior->stdio_stream = StdioStream::None;
+	    if ( !adopts_stdio_stream
+	      && object_redeclaration_conflicts(prior, &type, dims, object_cv) )
 	    {
 		if ( session_redefinition )
 		    Throw(where) << "'" << id << "' changes type: a redefinition"
@@ -31967,53 +32641,22 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
     return next;
 }
 
-// add a function definition
-// import (alias form): mark a freshly registered namespace member as a
-// dynamic-module member so the CIR builder lowers its calls to the
-// runtime-resolved shape ((long (*)())(slot ?: __madc_dl_member(LIB, MEMBER)))
-// in every lane. The library spelling is the one the binder recorded for the
-// namespace (dl_library_spelling); the parse-time dlsym above stays the early
-// diagnostic ("is this member exported at all"), never the bound address.
-// A prototype declared while a LAZY module row's interface is being served
-// (`#pragma madc module_begin(...)` .. `module_end`, the import directive's
-// wrap): the function has no symbol of its own in this program — every call
-// lowers to the first-call slot (CirBuilder::dyn_module_callee) against the
-// row's spelling, through a pointer of the DECLARED type (dyn_module_typed).
-// Free functions only: a class member is never a module export.
-void Program::stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name,
-					  DataDefCLASS *owner_class,
-					  const TokenBase *proto_end)
+// A function that lives in a module: every call lowers to the first-call
+// slot (CirBuilder::dyn_module_callee — (T (*)(P...))(slot ?:
+// __madc_dl_member(LIB, MEMBER)), the member's declared type) in every lane.
+// LIB is a madc module's reference or a library's spelling.
+void Program::stamp_module_member(FuncDef *fd, const madc::dis::istring &library,
+				  const madc::dis::istring &name)
 {
-    if ( !fd || owner_class || !proto_end || _lazy_module_tokens.empty() )
-	return;
-    std::unordered_map<const TokenBase *, madc::dis::istring>::const_iterator it =
-	_lazy_module_tokens.find(proto_end);
-    if ( it == _lazy_module_tokens.end() )
-	return;
-    stamp_lazy_module_member(fd, it->second, name);
-}
-
-// The stamp itself — the live prototype's (above) and a restored one's
-// (forest_stamp_lazy_module_prototype).
-void Program::stamp_lazy_module_member(FuncDef *fd, const madc::dis::istring &spelling,
-				       const madc::dis::istring &name)
-{
-    fd->dyn_module_library = spelling;
+    fd->dyn_module_library = library;
     fd->dyn_module_member = name;
-    fd->dyn_module_typed = true;
 }
 
-// A bound unit's prototype restored from the pack: one its replayed lazy
-// import served (forest_note_lazy_module_interface) gets the stamp a live
-// prototype lexed between the import's module markers gets.
-void Program::forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name)
-{
-    std::map<madc::dis::istring, madc::dis::istring>::const_iterator it =
-	forest_lazy_module_protos.find(name);
-    if ( fd && it != forest_lazy_module_protos.end() )
-	stamp_lazy_module_member(fd, it->second, name);
-}
-
+// import (alias form): a freshly registered namespace member is a
+// dynamic-module member against the library spelling the binder recorded
+// for the namespace (dl_library_spelling); the parse-time dlsym stays the
+// early diagnostic ("is this member exported at all"), never the bound
+// address.
 void Program::stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
 					  const madc::dis::istring &member)
 {
@@ -32021,8 +32664,41 @@ void Program::stamp_dynamic_module_member(Variable *var, const madc::dis::istrin
     if ( !fd )
 	return;
     std::map<madc::dis::istring, madc::dis::istring>::const_iterator it = dl_library_spelling.find(ns);
-    fd->dyn_module_library = it != dl_library_spelling.end() ? it->second : ns;
-    fd->dyn_module_member = member;
+    stamp_module_member(fd, it != dl_library_spelling.end() ? it->second : ns, member);
+}
+
+// The member as a COPY of the export's prototype under its own id — the
+// declaration the program adopted stays its own (a bare `sqrt` is still the
+// program's symbol), the copy carries the module identity
+// (stamp_dynamic_module_member) and calls through a pointer of the declared
+// type (CirBuilder::dyn_module_callee). Bodyless and
+// symbol-less, as forest_adopt_declared_function's prototype-only copy;
+// registered by the one restored-function registrar, as
+// register_builtin_twin_alias registers its copy. NULL: not a function.
+Variable *Program::typed_module_member(const madc::dis::istring &func_id, Variable *proto)
+{
+    FuncDef *pfd = proto ? dynamic_cast<FuncDef *>(proto->type) : NULL;
+    if ( !pfd )
+	return NULL;
+    FuncDef *mfd = new FuncDef(*pfd);
+    mfd->declaration_only = true;
+    mfd->has_forest_body = false;
+    mfd->forest_body_unit = 0;
+    mfd->forest_body_idx = 0;
+    mfd->forest_body_src = NULL;
+    mfd->emit_symbol.clear();
+    mfd->function_display_name.clear();
+    mfd->namespace_name.clear();
+    PendingForestFunc pf;
+    pf.name = func_id;
+    pf.fd = mfd;
+    pf.mvar = NULL;
+    if ( Method *pm = static_cast<Method *>(proto->data) )
+	for ( size_t i = 0; i < pm->parameters.size(); ++i )
+	    if ( pm->parameters[i] && pm->parameters[i]->type )
+		pf.mparams.push_back(std::make_pair(
+		    pm->parameters[i]->name.c_str(), pm->parameters[i]->type));
+    return register_forest_func(pf);
 }
 
 Variable *Program::addFunction(madc::dis::istring id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration, const madc::dis::istring &emit_symbol)
@@ -32297,7 +32973,7 @@ void Program::unwind_block_typedef_shadows(size_t depth, const char *site)
     }
 }
 
-void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exStack)
+void Program::popOperator(token_stack_t &opStack, token_stack_t &exStack)
 {
     DBG(cout << "popOperator() size: " << opStack.size() << " TOP" << endl);
     TokenOperator *to;
@@ -33066,8 +33742,8 @@ madc::dis::istring Program::parseOperatorId(TokenBase *operator_tok,
 	}
 	return name;
     }
-    if ( dynamic_cast<TokenMultiOp *>(op_tok) )
-	return "operator" + ((TokenMultiOp *)op_tok)->str;
+    if ( TokenMultiOp *mo = op_tok->as_multiop_tok() )
+	return "operator" + mo->str;
     if ( op_tok->type() == TokenType::ttString )
     {
 	TokenStr *lit = static_cast<TokenStr *>(op_tok);
@@ -33152,9 +33828,9 @@ void Program::delimStepStream(TokenBase *t, DelimDepth &d,
 
 static bool is_named_cpp_cast(const madc::dis::istring &name)
 {
-    return name == "static_cast"
-	|| name == "reinterpret_cast"
-	|| name == "const_cast";
+    return name == MADC_ISTRING_LITERAL("static_cast")
+	|| name == MADC_ISTRING_LITERAL("reinterpret_cast")
+	|| name == MADC_ISTRING_LITERAL("const_cast");
 }
 
 // A named cast's spelling as the conversions it may perform — read once,
@@ -33465,12 +34141,12 @@ enum class QualifiedClassExprAction {
 
 static QualifiedClassExprAction resolve_class_qualified_expression(
 	Program &pgm, DataDefCLASS *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	Variable **var_out, TokenBase **tb_out,
 	DataDefCLASS **owner_out = NULL, madc::dis::istring *member_out = NULL);
 static QualifiedClassExprAction resolve_aggregate_qualified_expression(
 	Program &pgm, DataDefSTRUCT *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	TokenBase **tb_out);
 
 // `Scope::name` in an expression, Scope a class, struct or union: a class
@@ -33479,7 +34155,7 @@ static QualifiedClassExprAction resolve_aggregate_qualified_expression(
 // a scope before `::` asks here.
 static QualifiedClassExprAction resolve_qualified_scope_expression(
 	Program &pgm, DataDefSTRUCT *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	Variable **var_out, TokenBase **tb_out,
 	DataDefCLASS **owner_out = NULL, madc::dis::istring *member_out = NULL)
 {
@@ -33624,7 +34300,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	// the copy did cover.
 	if ( DataDefSTRUCT *scope = qscope.agg )
 	{
-	    std::stack<TokenBase *> qstack;
+	    token_stack_t qstack;
 	    Variable *qvar = NULL;
 	    TokenBase *qtb = NULL;
 	    DataDefCLASS *qowner = NULL;
@@ -33949,7 +34625,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    DataDef *mtype = member_access_type(sdd->m_type(mname),
 		is_arrow ? obj_type->cv_quals() : glvalue_cv(result));
 	    Variable *mvar = new Variable(mname, *mtype, 1, NULL, false);
-	    mvar->flags = var ? member_proxy_flags(var->flags) : 0;
+	    mvar->flags = var ? member_proxy_flags(var->flags, is_arrow) : 0;
 
 	    TokenMember *tm;
 	    if ( result->type() == TokenType::ttVariable )
@@ -35052,7 +35728,7 @@ static madc::dis::istring method_access_violation(DataDef *owner_type,
 static bool try_nested_type_construction(Program &pgm, DataDefCLASS *scope,
 					 const madc::dis::istring &member_name,
 					 TokenBase *member_tb,
-					 std::stack<TokenBase *> &exStack,
+					 token_stack_t &exStack,
 					 TokenBase **tb_out)
 {
     DataDef *nested_dd = resolve_class_type_alias(scope, member_name);
@@ -35095,7 +35771,7 @@ static TokenMember *qualified_member_without_object(DataDefSTRUCT *scope,
 // nothing to find in it.
 static QualifiedClassExprAction resolve_aggregate_qualified_expression(
 	Program &pgm, DataDefSTRUCT *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	TokenBase **tb_out)
 {
     pgm.nextToken(); // consume '::'
@@ -35116,7 +35792,7 @@ static QualifiedClassExprAction resolve_aggregate_qualified_expression(
 
 static QualifiedClassExprAction resolve_class_qualified_expression(
 	Program &pgm, DataDefCLASS *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	Variable **var_out, TokenBase **tb_out,
 	DataDefCLASS **owner_out /* = NULL */, madc::dis::istring *member_out /* = NULL */)
 {
@@ -37808,7 +38484,8 @@ class ClassPatternNormalizer
 	}
 	if ( fd->explicit_alignment || fd->has_captures
 	  || !fd->return_types.empty() || fd->no_instrument_function
-	  || fd->no_strict_aliasing || fd->weak_binding || fd->has_large_struct_retbuf
+	  || fd->no_strict_aliasing || fd->weak_binding || fd->noinline
+	  || fd->has_large_struct_retbuf
 	  || fd->ctor_trailing_self || fd->has_forest_body )
 	{
 	    DBG(std::cout << "ClassPattern normalize method "
@@ -37819,6 +38496,7 @@ class ClassPatternNormalizer
 		<< " noinst=" << fd->no_instrument_function
 		<< " noalias=" << fd->no_strict_aliasing
 		<< " weak=" << fd->weak_binding
+		<< " noinline=" << fd->noinline
 		<< " sret=" << fd->has_large_struct_retbuf
 		<< " trailing-self=" << fd->ctor_trailing_self
 		<< " forest-body=" << fd->has_forest_body << std::endl);
@@ -39733,7 +40411,8 @@ static bool eval_local_type_trait(Program &pgm,
     if ( i >= toks.size() || !toks[i] || !is_contextual_identifier_token(toks[i]) )
 	return false;
     madc::dis::istring nm = contextual_identifier_name(toks[i]);
-    int arity = type_trait_arity(nm);
+    int arity = 0;
+    const TypeTrait kind = type_trait_of(nm, &arity);
     if ( arity == 0 )
 	return false;
     if ( i + 1 >= toks.size() || !toks[i + 1]
@@ -39756,73 +40435,10 @@ static bool eval_local_type_trait(Program &pgm,
     if ( arity == TRAIT_ARITY_VARIADIC ? targs.empty()
 				       : (int)targs.size() != arity )
 	return false;
-    bool r;
-    if ( nm == "__has_trivial_destructor" ) r = trait_arg_is_reference(targs[0])
-					     || trait_has_trivial_destructor(targs[0].dd);
-    else if ( nm == "__is_trivial" )        r = !trait_arg_is_reference(targs[0])
-					     && trait_is_trivial(targs[0].dd);
-    else if ( nm == "__is_trivially_copyable" )
-					    r = !trait_arg_is_reference(targs[0])
-					     && trait_is_trivially_copyable(targs[0].dd);
-    else if ( nm == "__is_standard_layout" ) r = !trait_arg_is_reference(targs[0])
-					      && trait_is_standard_layout(targs[0].dd);
-    else if ( nm == "__is_pod" )            r = !trait_arg_is_reference(targs[0])
-					     && trait_is_pod(targs[0].dd);
-    else if ( nm == "__is_class" )          r = !trait_arg_is_reference(targs[0])
-					     && trait_is_class(targs[0].dd);
-    else if ( nm == "__is_union" )          r = !trait_arg_is_reference(targs[0])
-					     && trait_is_union(targs[0].dd);
-    else if ( nm == "__is_empty" )          r = !trait_arg_is_reference(targs[0])
-					     && trait_is_empty(targs[0].dd);
-    else if ( nm == "__is_final" )          r = !trait_arg_is_reference(targs[0])
-					     && trait_is_final(targs[0].dd);
-    else if ( nm == "__is_enum" )           r = !trait_arg_is_reference(targs[0])
-					     && trait_is_enum(targs[0].dd);
-    else if ( nm == "__is_same" )           r = targs[0].same_as(targs[1]);
-    else if ( nm == "__is_base_of" )        r = !trait_arg_is_reference(targs[0])
-					     && !trait_arg_is_reference(targs[1])
-					     && trait_is_base_of(targs[0].dd, targs[1].dd);
-    else if ( nm == "__is_destructible" )
-    {
-	int s = trait_is_destructible(targs[0]);
-	if ( s < 0 )
-	    return false;   // undetermined -> not a constant-foldable trait here
-	r = s != 0;
-    }
-    else if ( nm == "__is_assignable" )
-    {
-	int s = trait_is_assignable(targs[0], targs[1]);
-	if ( vri_debug_enabled() )
-	    fprintf(stderr, "[vriprobe] LOCAL __is_assignable to=%s l%d r%d c%d "
-		    "from=%s l%d r%d c%d -> %d\n",
-		    targs[0].dd ? targs[0].dd->name.c_str() : "?",
-		    (int)targs[0].is_lref, (int)targs[0].is_rref,
-		    (int)targs[0].referent_const,
-		    targs[1].dd ? targs[1].dd->name.c_str() : "?",
-		    (int)targs[1].is_lref, (int)targs[1].is_rref,
-		    (int)targs[1].referent_const, s);
-	if ( s < 0 )
-	    return false;   // undetermined -> not a constant-foldable trait here
-	r = s != 0;
-    }
-    else if ( nm == "__is_constructible" || nm == "__is_nothrow_constructible" )
-    {
-	std::vector<TraitTypeArg> ctor_args(targs.begin() + 1, targs.end());
-	int s = trait_is_constructible(targs[0], ctor_args,
-				       nm == "__is_nothrow_constructible", 0);
-	if ( s < 0 )
-	    return false;   // undetermined -> not a constant-foldable trait here
-	r = s != 0;
-    }
-    else if ( nm == "__is_convertible_to" || nm == "__is_convertible" )
-    {
-	int s = trait_is_convertible(targs[0], targs[1]);
-	if ( s < 0 )
-	    return false;   // undetermined -> not a constant-foldable trait here
-	r = s != 0;
-    }
-    else return false;
-    out = r ? 1 : 0;
+    const int s = eval_type_trait(kind, targs, "LOCAL");
+    if ( s < 0 )
+	return false;   // undetermined -> not a constant-foldable trait here
+    out = s;
     i = j;
     return true;
 }
@@ -40910,8 +41526,8 @@ Program::TemplateDef *Program::match_partial_specialization(
 // contract). Extracted verbatim so parseExpression's shunting-yard loop owns
 // only dispatch + stack drain; this owns the type-name-in-expression cases.
 Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
-				 std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack,
+				 token_stack_t &exStack,
+				 token_stack_t &opStack,
 				 TokenCpnd *code)
 {
     TokenDataType *bt = (TokenDataType *)tb;
@@ -41084,8 +41700,8 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 // ttSymbol switch-arm of parseExpression (see madc.h for the ExprStep
 // contract). Expression terminators (`;`) and the C comma operator.
 Program::ExprStep Program::parseExpr_symbolArm(TokenBase *tb,
-				 std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack,
+				 token_stack_t &exStack,
+				 token_stack_t &opStack,
 				 int brackets, bool push_back_comma)
 {
     bool done = false;
@@ -41253,7 +41869,7 @@ static bool fn_template_decl_arity_window(const std::vector<TokenBase *> &decl,
 // host (testufcscall, D4 measurements #3/#4, both arches).
 static bool free_callee_arity_inviable(Program &pgm, Variable *var, size_t argc)
 {
-    FuncDef *fd = var ? dynamic_cast<FuncDef *>(var->type) : NULL;
+    FuncDef *fd = var && var->type ? var->type->as_funcdef_dd() : NULL;
     if ( !fd || fd->function_display_name.empty() )
 	return false;
     madc::dis::istring key = fd->namespace_name + "::" + fd->function_display_name;
@@ -41282,7 +41898,7 @@ static bool free_callee_arity_inviable(Program &pgm, Variable *var, size_t argc)
 	for ( size_t ei = 0; ei < osi->second.size(); ++ei )
 	{
 	    Variable *ov = osi->second[ei].var;
-	    FuncDef *ofd = ov ? dynamic_cast<FuncDef *>(ov->type) : NULL;
+	    FuncDef *ofd = ov && ov->type ? ov->type->as_funcdef_dd() : NULL;
 	    if ( !ofd )
 		continue;
 	    ++candidates;
@@ -41331,8 +41947,8 @@ bool Program::ufcs_attempts_here(bool operator_id)
 
 bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 				bool operator_id,
-				std::stack<TokenBase *> &exStack,
-				std::stack<TokenBase *> &opStack,
+				token_stack_t &exStack,
+				token_stack_t &opStack,
 				TokenBase *&tb, bool &done)
 {
     if ( !receiver || !ident_tb || !ufcs_attempts_here(operator_id) )
@@ -41397,7 +42013,7 @@ bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 // motivating shapes; a call whose first argument is a compound expression keeps
 // its old behaviour rather than guessing.
 bool Program::ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
-				 std::stack<TokenBase *> &opStack,
+				 token_stack_t &opStack,
 				 TokenBase *&tb, bool &done, TokenCpnd *code)
 {
     if ( !ident_tb || !ufcs_attempts_here(operator_id) )
@@ -41469,9 +42085,28 @@ bool Program::ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
     return true;
 }
 
+// A bare function name beside one of these binary operators — on either
+// side — is its address (function-to-pointer decay), never a call:
+// `t->fn == do_cast`, `p->xCmp == cmp` (SQLite).
+static bool function_name_decays_beside(TokenID id)
+{
+    switch ( id )
+    {
+	case TokenID::tkEquals: case TokenID::tkNotEq:
+	case TokenID::tkLT:     case TokenID::tkLE:
+	case TokenID::tkGT:     case TokenID::tkGE:
+	case TokenID::tkLand:   case TokenID::tkLor:
+	case TokenID::tkBand:   case TokenID::tkBor:
+	case TokenID::tkXor:
+	    return true;
+	default:
+	    return false;
+    }
+}
+
 Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
-				 std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack, TokenCpnd *code)
+				 token_stack_t &exStack,
+				 token_stack_t &opStack, TokenCpnd *code)
 {
     Variable *var = NULL;
     bool done = false;
@@ -41481,14 +42116,23 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
     // Declared before any `goto ns_resolved` so the jumps don't skip an init.
     DataDefCLASS *qstatic_owner = NULL;
     madc::dis::istring qstatic_member;
-		madc::dis::istring contextual_name = contextual_identifier_name(tb);
-		TokenIdent contextual_ident(contextual_name);
+		// The arm's NAME, read once: an identifier's is the pool's memo
+		// (spelling_name), so every lookup and compare below takes it
+		// without re-interning the text; the spelling tests are identity
+		// compares against interned literals. A contextual keyword gets an
+		// identifier stand-in, built only for it.
+		const madc::dis::istring ident_name = contextual_identifier_name(tb);
+		std::unique_ptr<TokenIdent> contextual_ident;
 		TokenIdent *ident_tb = tb->type() == TokenType::ttIdentifier
-		    ? (TokenIdent *)tb
-		    : &contextual_ident;
+		    ? (TokenIdent *)tb : NULL;
+		if ( !ident_tb )
+		{
+		    contextual_ident.reset(new TokenIdent(ident_name));
+		    ident_tb = contextual_ident.get();
+		}
 		bool expression_head = exStack.empty() && opStack.empty();
 		bool parsed_operator_name = false;
-		madc::dis::istring member_lookup_name = ident_tb->spelling();
+		madc::dis::istring member_lookup_name = ident_name;
 		// An `operator` head names an operator-function-id when the
 		// unqualified lookup can land on the enclosing class, OR in
 		// member-access position (`__p.operator->()`, [expr.ref]/2 —
@@ -41501,7 +42145,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// be remembered HERE for the dot/arrow arms' entry tests.
 		bool operator_id_after_dot = false;
 		bool operator_id_after_arrow = false;
-		if ( ident_tb->spelling_is("operator")
+		if ( ident_name == MADC_ISTRING_LITERAL("operator")
 		  && ((code && code->method && code->method->owner_class)
 		   || (presents_as_cpp() && isMemberAccessPosition())) )
 		{
@@ -41512,15 +42156,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    member_lookup_name = parseOperatorId(tb);
 		    parsed_operator_name = true;
 		}
-		if ( ident_tb->spelling_is("__FUNCTION__") || ident_tb->spelling_is("__func__")
-		  || ident_tb->spelling_is("__PRETTY_FUNCTION__") )
+		if ( ident_name == MADC_ISTRING_LITERAL("__FUNCTION__") || ident_name == MADC_ISTRING_LITERAL("__func__")
+		  || ident_name == MADC_ISTRING_LITERAL("__PRETTY_FUNCTION__") )
 		{
 		    var = addLiteral(cur_func_name);
 		    exStack.push(new TokenVar(*var));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		bool bool_value = false;
-		if ( is_bool_literal_identifier(ident_tb->spelling(), bool_value) )
+		if ( is_bool_literal_identifier(ident_name, bool_value) )
 		{
 		    TokenInt *ti = new TokenInt(bool_value ? 1 : 0);
 		    ti->setDataType(&ddBOOL);
@@ -41538,8 +42182,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// order-free here — both operands are pure predicates.)
 		TokenID tid_follow = TokenID::tkBase;
 		if ( peekToken() && peekToken()->id() == TokenID::tkLT
-		  && (find_template(ident_tb->spelling())
-		   || find_template_alias(ident_tb->spelling()))
+		  && (find_template(ident_name)
+		   || find_template_alias(ident_name))
 		  && template_id_is_type_expression_context(*this, &tid_follow) )
 		{
 		    // `Tmpl<args>::member` read: a COMPLETENESS demand (the member
@@ -41555,7 +42199,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( tid_follow == TokenID::tkNS )
 			allow_variadic_real_inst = true;
 		    TokenDataType *inst =
-			    instantiate_template_id(ident_tb->spelling(), ident_tb);
+			    instantiate_template_id(ident_name, ident_tb);
 		    allow_variadic_real_inst = saved_vri;
 		    if ( inst )
 		    {
@@ -41563,13 +42207,20 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return ExprStep::Redo;
 		    }
 		}
-		bool ordinary_call_name =
-		    find_variable_for_contextual_type_name(ident_tb->spelling()) != NULL;
-		if ( !ordinary_call_name
-		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		// The ordinary-call-name lookups are read ONLY by the functional-
+		// construction test below (`name (` / `name {` outside member-access
+		// position): ask them only where that test can hold.
+		bool construction_follows = peekToken()
+		  && (peekToken()->id() == TokenID::tkOpBrk
+		   || peekToken()->id() == TokenID::tkOpBrc)
+		  && !isMemberAccessPosition();
+		bool ordinary_call_name = construction_follows
+		  && find_variable_for_contextual_type_name(ident_name) != NULL;
+		if ( construction_follows && !ordinary_call_name
+		  && peekToken()->id() == TokenID::tkOpBrk
 		  && is_dynamic_symbol_fallback_enabled()
-		  && is_dynamic_symbol_allowed(ident_tb->spelling())
-		  && madcdl_sym_default(ident_tb->spelling()) )
+		  && is_dynamic_symbol_allowed(ident_name)
+		  && madcdl_sym_default(ident_name.c_str()) )
 		    ordinary_call_name = true;
 		// A name in MEMBER-ACCESS position is a member, never a type
 		// ([basic.lookup.classref]/1: the class's scope is searched
@@ -41585,9 +42236,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// unambiguous — a declaration always has a declarator name
 		// before its brace — and covers plain structs via
 		// parse_functional_type_expression's compound-literal arm.
-		if ( peekToken() && (peekToken()->id() == TokenID::tkOpBrk
-				  || peekToken()->id() == TokenID::tkOpBrc)
-		  && !ordinary_call_name && !isMemberAccessPosition() )
+		if ( construction_follows && !ordinary_call_name )
 		{
 		    if ( TokenDataType *resolved_type =
 			    resolve_declared_type_token(tb, false, true) )
@@ -41658,23 +42307,23 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		}
-		if ( is_realpart_identifier(ident_tb->spelling())
-		  || is_imagpart_identifier(ident_tb->spelling()) )
+		if ( is_realpart_identifier(ident_name)
+		  || is_imagpart_identifier(ident_name) )
 		{
-		    bool want_imag = is_imagpart_identifier(ident_tb->spelling());
+		    bool want_imag = is_imagpart_identifier(ident_name);
 		    exStack.push(parse_complex_component_operand(want_imag, tb));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// type-trait builtins (__is_class, __is_base_of, …) — fold to a
 		// bool constant at parse time (monomorphized args are concrete).
-		if ( is_type_trait_builtin(ident_tb->spelling()) )
+		if ( is_type_trait_builtin(ident_name) )
 		{
-		    exStack.push(evaluate_type_trait(tb, ident_tb->spelling()));
+		    exStack.push(evaluate_type_trait(tb, ident_name));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// noexcept(expr) ([expr.unary.noexcept]) — folds to a bool
 		// constant at parse time, like sizeof/alignof below.
-		if ( ident_tb->spelling_is("noexcept") )
+		if ( ident_name == MADC_ISTRING_LITERAL("noexcept") )
 		{
 		    TokenInt *ti = new TokenInt(
 			(int64_t)evaluate_noexcept_operator(tb));
@@ -41686,14 +42335,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// sizeof / alignof — resolve to integer constant at parse time.
-		if ( is_type_query_identifier(ident_tb->spelling()) )
+		if ( is_type_query_identifier(ident_name) )
 		{
 		    TokenBase *deferred = NULL;
-		    if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(tb, ident_tb->spelling()) )
+		    if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(tb, ident_name) )
 			exStack.push(vla_tb);
 		    else
 		    {
-			size_t query_value = evaluate_type_query(tb, ident_tb->spelling(), &deferred);
+			size_t query_value = evaluate_type_query(tb, ident_name, &deferred);
 			if ( deferred )
 			{
 			    exStack.push(deferred);
@@ -41710,18 +42359,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		}
 		// _Generic — C11 generic selection, resolved at parse time
 		// (Tier-1 lowering: the selected association IS the result).
-		if ( ident_tb->spelling_is("_Generic") )
+		if ( ident_name == MADC_ISTRING_LITERAL("_Generic") )
 		{
 		    exStack.push(parse_generic_selection(tb));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-		if ( is_named_cpp_cast(ident_tb->spelling()) )
+		if ( is_named_cpp_cast(ident_name) )
 		{
-		    exStack.push(parse_named_cpp_cast(tb, ident_tb->spelling()));
+		    exStack.push(parse_named_cpp_cast(tb, ident_name));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// dynamic_cast < TYPE * > ( EXPR )   (S5c)
-		if ( ident_tb->spelling_is("dynamic_cast") )
+		if ( ident_name == MADC_ISTRING_LITERAL("dynamic_cast") )
 		{
 		    skip_expression_whitespace();
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
@@ -41769,7 +42418,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// typeid ( EXPR | TYPE )   (S5d)
-		if ( ident_tb->spelling_is("typeid") )
+		if ( ident_name == MADC_ISTRING_LITERAL("typeid") )
 		{
 		    skip_expression_whitespace();
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
@@ -41822,7 +42471,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(ttd);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-		if ( is_nullptr_identifier(ident_tb->spelling()) )
+		if ( is_nullptr_identifier(ident_name) )
 		{
 		    TokenNullptr *tnp = new TokenNullptr();
 		    tnp->file = tb->file;
@@ -41837,7 +42486,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(parse_vector_builtin(tb, vector_kind));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-		if ( ident_tb->spelling_is("__builtin_types_compatible_p") )
+		if ( ident_name == MADC_ISTRING_LITERAL("__builtin_types_compatible_p") )
 		{
 		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after __builtin_types_compatible_p" << flush;
@@ -41878,7 +42527,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// class) made every classify-gated branch lie (gcc-torture
 		// 20040709-* left long doubles unset because the real-class
 		// branch never fired).
-		if ( ident_tb->spelling_is("__builtin_classify_type") )
+		if ( ident_name == MADC_ISTRING_LITERAL("__builtin_classify_type") )
 		{
 		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after __builtin_classify_type" << flush;
@@ -41918,7 +42567,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// this arm); TokenBase::is_constant() is the existing owner of "is
 		// this token a literal" — already true for char / int / real /
 		// string tokens and false for everything else.
-		if ( ident_tb->spelling_is("__builtin_constant_p") )
+		if ( ident_name == MADC_ISTRING_LITERAL("__builtin_constant_p") )
 		{
 		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after __builtin_constant_p" << flush;
@@ -41972,7 +42621,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// va_arg(ap, type) — compiler intrinsic for reading variadic args
-		if ( ident_tb->spelling_is("va_arg") )
+		if ( ident_name == MADC_ISTRING_LITERAL("va_arg") )
 		{
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after va_arg" << flush;
@@ -42514,7 +43163,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			((DataDefSTRUCT *)struct_type)->m_type(id), glvalue_cv(lhs_dot));
 		    // create new variable
 		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = member_proxy_flags(tv_var->flags);
+		    var->flags = member_proxy_flags(tv_var->flags, false);
 		    if ( tv_var->data )
 			var->data = (void *)((char *)tv_var->data + ofs);
 		    // remove LHS from exStack
@@ -42675,8 +43324,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( !fixed_array_arrow && !obj_type->is_pointer() )
 			Throw(tb) << "expression before '->' must be a pointer" << flush;
 
-		    // get the pointed-to type
-		    DataDef *base = obj_type;
+		    // get the pointed-to type. A const array's element (`const
+		    // struct S a[1]; a->n`) is read through the unqualified layout
+		    // like a const pointee below — the hard DataDefSTRUCT casts
+		    // must never see the DataDefQUAL wrapper (they walked garbage).
+		    DataDef *base = obj_type->unqualified();
 		    unsigned arrow_object_cv = fixed_array_arrow ? glvalue_cv(lhs) : cvNONE;
 		    if ( !fixed_array_arrow )
 		    {
@@ -42705,7 +43357,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference type '" << base->name
 			    << "' is not a structure or union (member '"
-			    << ident_tb->spelling() << "')" << flush;
+			    << ident_name << "')" << flush;
 		    }
 
 		    // member_lookup_name, not the raw spelling: an
@@ -42895,7 +43547,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 
 		    // create variable for the member
 		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = member_proxy_flags(obj_var->flags);
+		    var->flags = member_proxy_flags(obj_var->flags, !fixed_array_arrow);
 
 		    // remove LHS from exStack
 		    exStack.pop();
@@ -42920,7 +43572,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// namespace resolution: identifier :: member
 		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		{
-		    madc::dis::istring ns_name = ident_tb->spelling();
+		    madc::dis::istring ns_name = ident_name;
 		    // One classify policy — classify_qualifier_before_scope
 		    // (this arm previously checked class BEFORE namespace while
 		    // its two siblings checked namespace first; the shared
@@ -42995,6 +43647,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			else
 			    Throw(member_tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
 		    }
+		    // A dialect name's first touch, ahead of the template and type
+		    // probes below (find_namespace_member's own touch follows).
+		    if ( dialect_from_table() )
+			activate_forest_member(ns_name, member_name);
 
 		    DataDef *member_dd = NULL;
 		    // A FUNCTION template (`std::get<0>(t)`) must NOT be treated as a
@@ -43200,7 +43856,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// EXISTING pointer-member-access path, and `this` as a value (e.g.
 		// `return this;`) be the pointer itself. Outside a method it stays
 		// unresolved -> the usual "undeclared identifier" error.
-	if ( !var && ident_tb->spelling_is("this")
+	if ( !var && ident_name == MADC_ISTRING_LITERAL("this")
 	     && code )
 	    var = code->findVariableLocal(strpool, "__this");
 		// class method: resolve unqualified member name through __this
@@ -43302,7 +43958,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    Throw(tb) << "use of undeclared member '" << member_lookup_name << '\'' << flush;
 		// lazy-load check: symbol registered by #include but not yet created
 		if ( !var )
-		    var = lazy_resolve(ident_tb->spelling());
+		    var = lazy_resolve(ident_name);
 		if ( !var )
 		{
 		    TokenBase *ctx_value = resolve_expression_context_identifier(ident_tb);
@@ -43320,8 +43976,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// `arg0.f(rest)` BEFORE the unresolved-symbol guesses below
 		// (dlsym, C89 implicit int) — the owner's order is viable
 		// declared free -> member -> existing unresolved-symbol
-		// behaviour, and tests/testufcscall.mad pins it.
-		if ( (!var
+		// behaviour, and tests/testufcscall.mad pins it. Where UFCS
+		// cannot apply (ufcs_attempts_here: outside --std=madc), the
+		// argument count and the arity test are never asked.
+		if ( ufcs_attempts_here(parsed_operator_name)
+		  && (!var
 		      || free_callee_arity_inviable(*this, var,
 						    count_queued_call_arguments()))
 		  && ufcs_call_fallback(ident_tb, parsed_operator_name,
@@ -43329,7 +43988,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{
-		    madc::dis::istring fname = ident_tb->spelling();
+		    madc::dis::istring fname = ident_name;
 		    // dlsym fallback: resolve known libc/system functions early.
 		    // If that fails, C89 still permits an implicit `int f()`
 		    // declaration for calls to functions defined later in the file.
@@ -43438,11 +44097,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // handling. Guarded on a known template name so a stray `x < y`
 		    // on an undeclared `x` still reports the undeclared identifier.
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
-		      && (find_template(ident_tb->spelling())
-		       || find_template_alias(ident_tb->spelling())) )
+		      && (find_template(ident_name)
+		       || find_template_alias(ident_name)) )
 		    {
 			if ( TokenDataType *inst =
-				instantiate_template_id(ident_tb->spelling(), ident_tb) )
+				instantiate_template_id(ident_name, ident_tb) )
 			{
 			    tb = inst;
 			    return ExprStep::Redo;
@@ -43463,7 +44122,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // the same shape as the template-id branch above.
 		    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		    {
-			flat_datatype_map_iter dmi = datatype_map.find(ident_tb->spelling());
+			flat_datatype_map_iter dmi = datatype_map.find(ident_name);
 			if ( dmi != datatype_map.end() )
 			{
 			    TokenDataType *use =
@@ -43481,7 +44140,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // `typename _Alloc_traits::is_always_equal{}`). Resolve
 		    // the qualified type and Redo through the dataType arm,
 		    // which owns functional construction.
-		    if ( ident_tb->spelling_is("typename") && peekToken() )
+		    if ( ident_name == MADC_ISTRING_LITERAL("typename") && peekToken() )
 		    {
 			if ( TokenDataType *tdt = resolve_typename_type_token(
 				nextToken(), true, ident_tb) )
@@ -43528,12 +44187,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			{
 			    if ( !*si )
 				continue;
-			    Variable *mvar = (*si)->findMethod(ident_tb->spelling());
+			    Variable *mvar = (*si)->findMethod(ident_name);
 			    if ( mvar && (mvar->flags & vfSTATIC) )
 			    {
 				var = mvar;
 				qstatic_owner = *si;
-				qstatic_member = ident_tb->spelling();
+				qstatic_member = ident_name;
 				goto ns_resolved;
 			    }
 			}
@@ -43544,10 +44203,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 		    {
 			VarTemplateDef *vti =
-			    var_template_map.find(ident_tb->spelling());
+			    var_template_map.find(ident_name);
 			if ( vti == var_template_map.end() && !current_namespace().empty() )
 			    vti = var_template_map.find(
-				current_namespace() + "::" + ident_tb->spelling());
+				current_namespace() + "::" + ident_name);
 			if ( vti != var_template_map.end() && !vti->init.empty() )
 			{
 			    std::vector<DataDef *> targs = capture_call_template_args();
@@ -43574,14 +44233,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // layer extracts the receive target (parseExprStmt) and
 		    // the CIR builder refuses any other position loud.
 		    if ( go_statement_enabled()
-		      && ident_tb->spelling_is("await") )
+		      && ident_name == MADC_ISTRING_LITERAL("await") )
 		    {
 			exStack.push(make_await_token(ident_tb, NULL));
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
-		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_tb->spelling() << endl);
+		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_name << endl);
 		    { debug_deref_fail(*this, 14255, ident_tb, NULL);
-		    Throw(tb) << "use of undeclared identifier '" << ident_tb->spelling() << '\'' << flush;
+		    Throw(tb) << "use of undeclared identifier '" << ident_name << '\'' << flush;
 		    }
 		}
 		ns_resolved:
@@ -43622,8 +44281,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // Unqualified call bound to a GLOBAL whose arity rejects it:
 		    // consult active using-directive namespaces (C++
 		    // [namespace.udir] — `getline(inf, line)` is std::getline,
-		    // not POSIX ::getline(char**, size_t*, FILE*)).
-		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    // not POSIX ::getline(char**, size_t*, FILE*)). With no
+		    // directive active the fallback answers `var` whatever the
+		    // count, so the argument run is counted only under one.
+		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		      && !active_using_namespaces.empty() )
 			var = using_namespace_call_fallback(var,
 				count_queued_call_arguments());
 		    // function pointer variable (DataDefFPTR) — different from regular functions
@@ -43687,12 +44349,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			 // like `t->fn == do_cast && tmp->...` where do_cast was
 			 // previously pushed as a TokenCallFunc, then the operator
 			 // was silently consumed and the next token mis-parsed.
-			 || peek_id == TokenID::tkEquals || peek_id == TokenID::tkNotEq
-			 || peek_id == TokenID::tkLT     || peek_id == TokenID::tkLE
-			 || peek_id == TokenID::tkGT     || peek_id == TokenID::tkGE
-			 || peek_id == TokenID::tkLand   || peek_id == TokenID::tkLor
-			 || peek_id == TokenID::tkBand   || peek_id == TokenID::tkBor
-			 || peek_id == TokenID::tkXor;
+			 // This is the LEFT side; the right is the pending
+			 // operator below.
+			 || function_name_decays_beside(peek_id);
+			bool right_of_decaying_operator = !opStack.empty()
+			    && function_name_decays_beside(opStack.top()->id());
 			bool in_assign_context = false;
 			if ( !opStack.empty() )
 			{
@@ -43705,7 +44366,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			      || opid == TokenID::tkBSLEq  || opid == TokenID::tkBSREq )
 				in_assign_context = true;
 			}
-			if ( !followed_by_paren && (in_assign_context || followed_by_value_end) )
+			// C has no parenless call: a function designator not
+			// followed by `(` is always its address (C11 6.3.2.1p4),
+			// whatever follows it (`!f`, `f ? a : b`, `if (f)`).
+			if ( !followed_by_paren && (is_c_mode() || in_assign_context
+						    || followed_by_value_end
+						    || right_of_decaying_operator) )
 			{
 			    DBG(cout << "Pushing function address (decay): " << var->name << " onto exStack" << endl);
 			    exStack.push(new TokenVar(*var));
@@ -43722,7 +44388,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    TokenCallFunc *tc = new TokenCallFunc(*call_var);
 		    tc->auto_scope_context = public_scope_rebind
 			|| (is_runtime_eval_scope_ctx_helper_name(call_var->name)
-			 && is_runtime_eval_scope_public_name(ident_tb->spelling()));
+			 && is_runtime_eval_scope_public_name(ident_name));
 		    tc->explicit_template_args = call_explicit_targs;
 		    tb = nextToken();
 		    tc->line = tb->line;
@@ -43844,7 +44510,7 @@ static bool dtor_ident_names_class(const char *spell, DataDefCLASS *cls)
 // arm-level break -> Break, `done = true` -> Done, the one arm-level
 // continue -> Continue.
 Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
-		 std::stack<TokenBase *> &exStack, std::stack<TokenBase *> &opStack,
+		 token_stack_t &exStack, token_stack_t &opStack,
 		 int &brackets, TokenCpnd *code, bool conditional, bool ternary_branch,
 		 bool stop_on_closing_paren, int initial_brackets, bool push_back_comma,
 		 bool cast_operand)
@@ -44305,7 +44971,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // call results, and other complex expressions.
 		    if ( !exStack.empty() )
 		    {
-			DataDef *dd = exStack.top()->datadef();
+			// The base's VALUE ([expr.sub]; operand_value_type, the one
+			// owner every operator reads an operand through): a
+			// reference-typed base (`rp()[i]` through `int *&rp()`)
+			// denotes its referent. Its datadef() is the reference, which
+			// answered is_pointer() and typed the element as the referent
+			// itself (`int *`: sizeof 8, an `auto` deduced as a pointer).
+			DataDef *rd = exStack.top()->datadef();
+			DataDef *dd = operand_value_type(exStack.top());
 			TokenComma *top_comma = dynamic_cast<TokenComma *>(exStack.top());
 			TokenVar *comma_fixed_array = NULL;
 			if ( top_comma )
@@ -44325,10 +44998,20 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			// element type is the operator's return value type — the one
 			// owner (subscript_operator_element_type); the CIR lowering
 			// dispatches the TokenSubscriptExpr through operator[].
-			DataDef *class_elem =
-			    TokenSubscript::subscript_operator_element_type(dd);
+			// ... or a carrier VALUE (`make(2)["rows"]`, a by-value `var`
+			// return): every carrier subscript types as the carrier — the
+			// slot model (madc_array_subscript_type), as the named and
+			// expression-base arms type it.
+			bool carrier_base = dd && dd->is_madc_array();
+			DataDef *class_elem = carrier_base ? NULL
+			    : TokenSubscript::subscript_operator_element_type(dd);
+			// ... or an ARRAY value (`ra()[1]` through `int (&ra())[3]`):
+			// the element is the array's own — its ROW for a
+			// multi-dimensional one — never the whole array.
+			DataDefCArray *array_value = dd ? dd->as_carray_dd() : NULL;
 			if ( dd && (dd->is_pointer() || dd->is_simd()
-			  || comma_returns_fixed_array || class_elem) )
+			  || comma_returns_fixed_array || class_elem || carrier_base
+			  || array_value) )
 			{
 			    TokenBase *base_expr = exStack.top();
 			    exStack.pop();
@@ -44339,8 +45022,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				Throw(tb) << "Expected ] in subscript expression" << flush;
 			    DataDef *elem_type = comma_returns_fixed_array
 				? comma_fixed_array->var.type : dd;
-			    if ( class_elem && !comma_returns_fixed_array )
+			    if ( carrier_base && !comma_returns_fixed_array )
+				elem_type = madc_array_subscript_type();
+			    else if ( class_elem && !comma_returns_fixed_array )
 				elem_type = class_elem;
+			    else if ( array_value && !comma_returns_fixed_array )
+				elem_type = array_value->element_type
+				    ? array_value->element_type : &ddINT64;
 			    else if ( elem_type && elem_type->is_pointer() )
 			    {
 				DataDefPTR *pdd = pointer_dd_of(elem_type);
@@ -44348,7 +45036,12 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    }
 			    else if ( elem_type && elem_type->is_simd() )
 				elem_type = static_cast<DataDefSIMD *>(elem_type)->element_type;
-			    DBG(cout << "parseExpression: subscript on generic expression" << endl);
+			    DBG(cout << "parseExpression: subscript on generic expression"
+				     " base=" << dd->name.c_str() << " ref=" << rd->is_reference()
+				     << " ptr=" << dd->is_pointer() << " class_elem="
+				     << (class_elem ? class_elem->name.c_str() : "-")
+				     << " elem=" << (elem_type ? elem_type->name.c_str() : "-")
+				     << endl);
 			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
@@ -44774,26 +45467,21 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // `(string(...) + ...).c_str()`). Decline the cast BEFORE
 		    // consuming — the type re-dispatches to the dataTypeArm,
 		    // whose parse_functional_type_expression owns
-		    // construction. The function-pointer cast head
-		    // `(RET (*)(...))expr` keeps the cast route: its inner
-		    // group is exactly `(*)`. peek1 pointer-equality gates to
-		    // the NON-consuming detection branches only.
+		    // construction. A type-id head whose group is ptr-operators
+		    // alone — `(RET (*)(...))expr`, `(**)`, `(*const)`, an
+		    // attribute group's `(__attribute__((x)) *)` — keeps the
+		    // cast route: no expression has that shape
+		    // (ptr_operator_group_ahead). peek1 pointer-equality gates
+		    // to the NON-consuming detection branches only.
 		    if ( cast_dd && peekToken() == peek1
 		      && cpp_keyword_active(Program::STD_CPP98) )
 		    {
 			size_t after = 1 + cast_qualified_extra_tokens;
 			TokenBase *t1 = tokens.size() > after
 			    ? tokens[after] : NULL;
-			TokenBase *t2 = tokens.size() > after + 1
-			    ? tokens[after + 1] : NULL;
-			TokenBase *t3 = tokens.size() > after + 2
-			    ? tokens[after + 2] : NULL;
-			bool fnptr_cast_head = t1 && t1->id() == TokenID::tkOpBrk
-			    && t2 && t2->id() == TokenID::tkMul
-			    && t3 && t3->id() == TokenID::tkClBrk;
-			if ( !fnptr_cast_head && t1
-			  && (t1->id() == TokenID::tkOpBrk
-			   || t1->id() == TokenID::tkOpBrc) )
+			if ( t1 && (t1->id() == TokenID::tkOpBrc
+				 || (t1->id() == TokenID::tkOpBrk
+				     && !ptr_operator_group_ahead(after))) )
 			    cast_dd = NULL;
 		    }
 		    if ( !cast_dd )	// a splice: the consumed cv run goes back ahead of the operand
@@ -44810,8 +45498,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 			else if ( peekToken() && (peekToken()->type() == TokenType::ttDataType
 			       ||  (peekToken()->type() == TokenType::ttIdentifier
-				    && (datatype_map.count(((TokenIdent *)peekToken())->spelling())
-				     || resolve_current_class_type_alias(((TokenIdent *)peekToken())->spelling())))) )
+				    && unqualified_type_name_datadef(
+					((TokenIdent *)peekToken())->spelling()))) )
 			    nextToken();
 			// The cast's type-id is an ABSTRACT declarator over the resolved
 			// type — stars with their cv, `(*)(params)`, `(*)[N]`, `(&)[N]`,
@@ -44970,7 +45658,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    TokenMember *member_call_base = NULL;
 		    bool opstack_has_pending_op = false;
 		    {
-			std::stack<TokenBase *> tmp = opStack;
+			token_stack_t tmp = opStack;
 			while ( !tmp.empty() )
 			{
 			    TokenBase *t = tmp.top();
@@ -45244,10 +45932,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // Direct invocation through a function-pointer variable wrapped
 		    // in parens: `(*flfunc)(args)` and `(flfunc)(args)`. After the
 		    // inner expression resolved, exStack top is a TokenVar whose
-		    // type is DataDefFPTR. The `(` here begins the call args.
+		    // type is DataDefFPTR. The `(` begins the call args only when it
+		    // binds to that operand (paren_binds_to_receiver, as the member
+		    // arm asks): in `fp = ((T)-1)` the token before it is `=`, a
+		    // grouping paren, never a call through fp (SQLite's
+		    // SQLITE_TRANSIENT) — the pending-operator scan misses `=`.
 		    TokenVar *var_call_base = NULL;
 		    if ( !exStack.empty()
-		      && !opstack_has_pending_op
+		      && paren_binds_to_receiver
 		      && exStack.top()->type() == TokenType::ttVariable
 		      && (var_call_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
 		      && var_call_base->var.type
@@ -45472,7 +46164,16 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // parse_named_cpp_cast resumes the postfix chain via
 			    // parsePostfixChainFrom. Drives map/set iterator deref
 			    // `*static_cast<_Link_type>(_M_node)->_M_valptr()`.
-			    bool postfix_follows = !cast_operand && next
+			    // The `)` that brought brackets back to 0 from a
+			    // CALLER-opened paren (initial_brackets: an if / while
+			    // condition, a sizeof or decltype operand) closes the
+			    // caller's group, not a sub-expression: nothing after it
+			    // continues this expression — `if( fp ) (void)0;` is the
+			    // condition `fp` and the statement `(void)0`, never the
+			    // call `(fp)(void)` (SQLite's walEnableBlocking).
+			    bool closes_callers_paren = initial_brackets > 0;
+			    bool postfix_follows = !cast_operand && !closes_callers_paren
+			    && next
 			    && (next->id() == TokenID::tkDot
 			     || next->id() == TokenID::tkDeRef
 			     || next->id() == TokenID::tkOpSqr
@@ -45530,7 +46231,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    }
 		    else
 		    {
-			ternary->true_expr = parseExpression(texpr, true, true);
+			// The middle operand is a whole EXPRESSION, commas
+			// included, up to the matching `:` (C11 6.5.15).
+			ternary->true_expr = parse_comma_expression(texpr, true, true);
 			// after conditional parseExpression, expect : next
 			colon = nextToken();
 		    }
@@ -45901,8 +46604,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 // — the pending `=` bound the two juxtaposed operands and `r` was dropped,
 // exit 0). Adjacent string literals never reach here (lexer-level concat:
 // push_token_with_literal_concat).
-TokenBase *Program::finish_expression(std::stack<TokenBase *> &opStack,
-				      std::stack<TokenBase *> &exStack)
+TokenBase *Program::finish_expression(token_stack_t &opStack,
+				      token_stack_t &exStack)
 {
     if ( !opStack.empty() )
 	DBG(cout << "Emptying operator stack" << endl);
@@ -45951,8 +46654,8 @@ static const typename Stack::container_type &stack_items(const Stack &s)
 // unary nets zero, a binary operator awaiting its right operand minus one); a
 // grouping `(` / `[` marker counts nothing, and a call parked on the operator
 // stack counts as the operand it is.
-static bool stacks_hold_complete_operand(const std::stack<TokenBase *> &opStack,
-					 const std::stack<TokenBase *> &exStack)
+static bool stacks_hold_complete_operand(const token_stack_t &opStack,
+					 const token_stack_t &exStack)
 {
     long balance = (long)exStack.size();
     for ( TokenBase *t : stack_items(opStack) )
@@ -45981,8 +46684,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    bool unary_operand)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-    stack<TokenBase *> exStack;
-    stack<TokenBase *> opStack;
+    token_stack_t exStack;
+    token_stack_t opStack;
     Variable *var;
     bool done = false;
     int brackets = initial_brackets;
@@ -46799,6 +47502,9 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	madc::dis::istring ns_name = resolve_source_namespace(raw_ns_name);
 	if ( ns_name.empty() )
 	    pgm.Throw(tn) << "Unknown namespace '" << raw_ns_name << "'" << flush;
+	// The directive imports what the namespace holds: its dialect
+	// names register first (the dialect is builtin, R4c).
+	pgm.dialect_demand_namespace(ns_name);
 	// Each component's spelling records the namespace its prefix names.
 	for ( size_t i = 0; i < spelled.size(); ++i )
 	{
@@ -49659,18 +50365,7 @@ bool Program::consume_anonymous_aggregate_open(AggregateAttributes &attrs)
 {
     // Does a `{` follow the attribute groups? Asked on the stored stream first,
     // so a declaration that opens no anonymous aggregate keeps every token.
-    size_t i = 0;
-    while ( i < tokens.size() && is_attribute_identifier_token(tokens[i]) )
-    {
-	++i;
-	if ( i < tokens.size() && tokens[i] && tokens[i]->id() == TokenID::tkOpBrk )
-	{
-	    size_t close = balanced_group_close(tokens, i);
-	    if ( close == i )
-		return false;
-	    i = close + 1;
-	}
-    }
+    size_t i = attribute_specifiers_end(tokens, 0);
     if ( i >= tokens.size() || !tokens[i] || tokens[i]->id() != TokenID::tkOpBrc )
 	return false;
     consume_aggregate_attributes(attrs);
@@ -51868,13 +52563,20 @@ void Program::register_class_method_signature(DataDefCLASS *ddc, Variable *mvar,
 	    ddc->has_vtable = true;
 	}
     }
-    else if ( spec.kind == ClassMethodKind::Method
+    else if ( spec.kind == ClassMethodKind::Method && !spec.is_static
 	   && (spec.is_virtual || ddc->is_virtual_method(spec.display_name)) )
     {
-	ddc->virtual_methods[spec.display_name] = true;
-	if ( ddc->vtable_slot(spec.display_name) < 0 )
-	    ddc->vtable_slots.push_back(spec.display_name);
-	ddc->has_vtable = true;
+	// The slot is per SIGNATURE: a same-name member overrides only the
+	// inherited slot its key names; a non-virtual overload of a virtual
+	// name occupies none.
+	madc::dis::istring key = fd ? fd->virtual_slot_key() : spec.display_name;
+	if ( spec.is_virtual || ddc->vtable_slot(key) >= 0 )
+	{
+	    ddc->virtual_methods[spec.display_name] = true;
+	    if ( ddc->vtable_slot(key) < 0 )
+		ddc->vtable_slots.push_back(key);
+	    ddc->has_vtable = true;
+	}
     }
 }
 
@@ -51949,8 +52651,9 @@ TokenDataType *Program::declare_class_placeholder(TokenIdent *tag,
 	fwd->enclosing_class = nested_owner_class;
 	set_class_type_alias(nested_owner_class, class_source_name, fwd);
     }
-    else if ( !current_namespace().empty() )
-	fwd->set_canonical_spelling(current_namespace() + "::" + tag->spelling());
+    else if ( !current_namespace().empty() )	// the source name (see TokenCLASS::parse)
+	fwd->set_canonical_spelling(current_namespace() + "::"
+	    + (local_class_identity ? tag->spelling() : class_source_name));
     pack_tap_struct(tag->spelling());	// B4a tap (class fwd decl)
     pack_tap_type(tag->spelling());
     struct_map.set(tag->spelling(), fwd);
@@ -52695,8 +53398,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // enclosing aggregate's spelling qualifies this class ([class.nest]).
     else if ( !pgm.enclosing_aggregate_spelling.empty() )
 	ddc->set_canonical_spelling(pgm.enclosing_aggregate_spelling + "::" + class_source_name);
+    // A namespace-scope class is spelled by its SOURCE name: the sibling-
+    // namespace re-key above respelled the tag to its emitted identity
+    // (`std__exception` where a C `struct exception` holds the bare key —
+    // Apple's <math.h>), which is no part of the C++ name the Itanium
+    // encoders receive (_ZTVSt9exception). A function-local class keeps its
+    // hoisted identity.
     else if ( ddc->canonical_cpp_spelling().empty() && !pgm.current_namespace().empty() )
-	ddc->set_canonical_spelling(pgm.current_namespace() + "::" + tag->spelling());
+	ddc->set_canonical_spelling(pgm.current_namespace() + "::"
+	    + (has_local_class_identity ? tag->spelling() : class_source_name));
     // Record whether this class is being DEFINED from a system/toolchain header
     // (glibc / libstdc++): such a class's vtable/typeinfo/member symbols are
     // owned by that library's explicit instantiation, so madc defers to the real
@@ -53067,6 +53777,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	bool is_constexpr_member = false;
 	for (;;)
 	{
+	    // A GNU attribute group may stand among the specifiers too:
+	    // libc++'s `_LIBCPP_CONSTEXPR_SINCE_CXX20 _LIBCPP_NOINLINE void f(...)`
+	    // once __has_attribute(noinline) answers 1.
+	    skip_member_attributes();
+	    if ( !(tn = pgm.peekToken()) )
+		pgm.Throw(this) << "Unexpected end of input after member specifier" << flush;
 	    // [dcl.spec] leaves specifier order free: `inline friend bool
 	    // operator==(...)` reaches here with `friend` AFTER the consumed
 	    // specifiers. Friend decides the declaration kind — route to the
@@ -56577,20 +57293,28 @@ static bool member_pointer_owner_head(TokenBase *tb)
 // (g++.dg/cpp0x/variadic16). paren_starts_parameter_list is the complement.
 // ONE home for the shape consume_template_parameter_declarator spelled inline.
 // `at` reads the `(` that many tokens ahead (drop_redundant_declarator_parens
-// asks it of each level of a group before any of it is read).
+// asks it of each level of a group before any of it is read). Attribute
+// groups right after the `(` may begin either reading — the nested
+// declarator's (`int (__attribute__((aligned(8))) *p)`) or the first
+// parameter's — so the token after them decides, as in gcc
+// (c_parser_direct_declarator) and g++ (cp_parser_declarator's leading
+// attributes).
 bool Program::nested_declarator_opens(DeclaratorMode mode, size_t at)
 {
     if ( tokens.size() < at + 2 || !tokens[at]
-      || tokens[at]->id() != TokenID::tkOpBrk || !tokens[at + 1] )
+      || tokens[at]->id() != TokenID::tkOpBrk )
 	return false;
-    TokenBase *t1 = tokens[at + 1];
-    TokenBase *t2 = tokens.size() > at + 2 ? tokens[at + 2] : NULL;
+    size_t k = attribute_specifiers_end(tokens, at + 1);
+    if ( k >= tokens.size() || !tokens[k] )
+	return false;
+    TokenBase *t1 = tokens[k];
+    TokenBase *t2 = tokens.size() > k + 1 ? tokens[k + 1] : NULL;
     if ( t1->id() == TokenID::tkMul || t1->id() == TokenID::tkBand
       || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk
       || t1->id() == TokenID::tkOpSqr )	// `int ([4])`: a parenthesized abstract array declarator
 	return true;
     if ( t2 && (t2->id() == TokenID::tkNS || t2->id() == TokenID::tkLT)
-      && member_pointer_declarator_ahead(t1, at + 2) )
+      && member_pointer_declarator_ahead(t1, k + 1) )
 	return true;			// `(C::*`, `(T1::*` yes; `(std::string` no
     if ( !is_contextual_identifier_token(t1) )
 	return false;
@@ -56649,6 +57373,40 @@ bool Program::paren_starts_parameter_list()
 	return true;
     const madc::dis::istring nm = contextual_identifier_name(t1);
     return nm == "typename" || nm == "decltype";
+}
+
+// At a `(` `at` tokens ahead (unread): is the group ptr-operators alone —
+// `*` `&` `&&` with their cv-qualifiers and attribute groups — closed by `)`?
+// `(*)`, `(**)`, `(*const)`, `(&)`, `(__attribute__((aligned(8))) *)`. No
+// expression has that shape, so after a type name it is an abstract
+// declarator, never a functional cast's operand ([dcl.ambig.res]/2) — where
+// `(T(*p))` names its operand and stays the cast `T(*p)`.
+bool Program::ptr_operator_group_ahead(size_t at)
+{
+    if ( at >= tokens.size() || !tokens[at] || tokens[at]->id() != TokenID::tkOpBrk )
+	return false;
+    bool ptr_op = false;
+    for ( size_t i = at + 1; i < tokens.size(); )
+    {
+	size_t past = attribute_specifiers_end(tokens, i);
+	if ( past != i )
+	{
+	    i = past;
+	    continue;
+	}
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    return false;
+	if ( t->id() == TokenID::tkClBrk )
+	    return ptr_op;
+	if ( t->id() == TokenID::tkMul || t->id() == TokenID::tkBand
+	  || t->id() == TokenID::tkLand )
+	    ptr_op = true;
+	else if ( !is_cv_qualifier_token(t) )
+	    return false;
+	++i;
+    }
+    return false;
 }
 
 // The trailing qualifiers of a MEMBER signature after its parameter list —
@@ -58336,6 +59094,66 @@ TokenBase *TokenDEFER::parse(Program &pgm)
 }
 
 // try { ... } catch (type var) { ... }
+// The dispatch tag (rt_except.h MADC_EXCEPT_*) of a handler whose
+// exception-declaration has type `dd` — a reference handler is its
+// referent's: text (DataDef::is_cstr) takes a thrown string, any other
+// pointer and a class match by type name (MADC_EXCEPT_CLASS, the guard is
+// __madc_exception_match), a floating type takes the double payload (long
+// double narrows: the runtime carries one real width) and an integral one
+// the integer payload. The throw lowering asks the same questions.
+static int exception_declaration_tag(DataDef *dd)
+{
+    DataDef *object = TokenSubscript::referent_type(dd);
+    if ( !object )
+	return 99; // MADC_EXCEPT_ANY
+    if ( object->is_cstr() )
+	return 3; // MADC_EXCEPT_CSTR
+    if ( object->is_pointer() || object->unqualified()->as_class_dd() )
+	return 4; // MADC_EXCEPT_CLASS
+    if ( object->is_real() )
+	return 2; // MADC_EXCEPT_DOUBLE
+    if ( object->is_integer() )
+	return 1; // MADC_EXCEPT_INT
+    return 99;
+}
+
+// A named class (or pointer) handler binds the THROWN object. Its guard
+// writes `__madc_caught_<n>` — a pointer to the matched subobject, or the
+// adjusted pointer value — registered in the handler's scope `scope` (the
+// try lowering declares it ahead of the guard). The handler's variable is
+// then declared FROM the clause's own exception-declaration,
+// `<decl> = *__madc_caught_<n>;` (no `*` for a pointer), read as the first
+// statement of the handler body: the one declaration path binds a
+// reference, copy-constructs a by-value object and destroys it at the
+// handler's end. Returns the hidden pointer.
+static Variable *bind_class_handler_variable(Program &pgm,
+	TokenCpnd *scope, DataDef *decl_type,
+	const std::vector<TokenBase *> &decl_run, TokenBase *at)
+{
+    DataDef *object = TokenSubscript::referent_type(decl_type)->unqualified();
+    bool by_pointer = object->is_pointer();
+    DataDef *hidden_type = by_pointer ? object : pgm.getPointerType(object);
+    char hidden_name[32];
+    snprintf(hidden_name, sizeof(hidden_name), "__madc_caught_%u",
+	     pgm.catch_bind_serial++);
+    madc::dis::istring hidden(hidden_name);
+    Variable *hv = pgm.addVariable(scope, *hidden_type, hidden, 1, NULL, false);
+    std::vector<TokenBase *> run(decl_run);
+    std::vector<TokenBase *> tail;
+    tail.push_back(new TokenAssign());
+    if ( !by_pointer )
+	tail.push_back(new TokenMul());
+    tail.push_back(new TokenIdent(hidden.c_str()));
+    tail.push_back(new TokenSemi());
+    for ( TokenBase *t : tail )
+    {
+	copy_token_location(t, at);
+	run.push_back(t);
+    }
+    pgm.tokens.splice_front(0, run);
+    return hv;
+}
+
 TokenBase *TokenTRY::parse(Program &pgm)
 {
     DBG(std::cout << "TokenTRY::parse()" << std::endl);
@@ -58357,8 +59175,9 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	    pgm.Throw(tn ? tn : this) << "Expected '(' after 'catch'" << flush;
 
 	// Parse catch parameter: exception-declaration or (...)
-	TokenDataType *ctype = NULL;   // resolved caught type (class catches)
-	int ptr_depth = 0;             // trailing '*' count on the declarator
+	DataDef *decl_type = NULL;	// the exception-declaration's type
+	std::vector<TokenBase *> decl_run;	// its token run (a class handler's
+					// variable is declared from it)
 	tn = pgm.peekToken();
 	if ( tn && tn->id() == TokenID::tkDot )
 	{
@@ -58375,114 +59194,58 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	}
 	else
 	{
-	    // catch([cv] type [*|&|&&] [name]) — the exception-declaration
-	    // grammar. The type may be namespace-qualified or a template-id
-	    // (`__cxxabiv1::__forced_unwind&` in libstdc++ stream bodies);
+	    // The exception-declaration is a parameter declaration
+	    // ([except.pre]/1): its decl-specifiers, then the ONE declarator
+	    // reader in Parameter mode — the clause's real type, reference,
+	    // pointer and cv included, and its optional name. The type may be
+	    // namespace-qualified or a template-id (`__cxxabiv1::
+	    // __forced_unwind&` in libstdc++ stream bodies);
 	    // resolve_declared_type_token consumes the qualification suffix
-	    // from the stream, so the head token must be CONSUMED first — a
-	    // peeked head misaligns the suffix consume.
-	    while ( tn && (tn->id() == TokenID::tkCONST
-			|| tn->id() == TokenID::tkVOLATILE) )
-	    {
-		pgm.nextToken();
-		tn = pgm.peekToken();
-	    }
+	    // from the stream, so the head token must be CONSUMED first. The
+	    // run is captured first, non-destructively.
+	    pgm.capture_balanced_group_tokens(TokenID::tkClBrk, decl_run);
+	    unsigned lead_cv = pgm.skip_cv_qualifier_tokens();
 	    TokenBase *head = pgm.nextToken();
 	    if ( !head )
 		pgm.Throw(this) << "Expected type in catch parameter" << flush;
-	    ctype = pgm.resolve_declared_type_token(head, true, true);
+	    TokenDataType *ctype = pgm.resolve_declared_type_token(head, true, true);
 	    if ( !ctype )
 		pgm.Throw(head) << "Expected type in catch parameter" << flush;
-
-	    // Declarator: fold trailing '*' / '&' / '&&' and interleaved
-	    // cv-qualifiers. A catch reference binds to the thrown value; at
-	    // the runtime's fidelity (int/double/cstr) ref and value coincide.
-	    while ( (tn = pgm.peekToken()) )
-	    {
-		if ( tn->id() == TokenID::tkStar )
-		{
-		    ptr_depth++;
-		    pgm.nextToken();
-		    continue;
-		}
-		if ( tn->id() == TokenID::tkBand || tn->id() == TokenID::tkLand
-		  || tn->id() == TokenID::tkCONST
-		  || tn->id() == TokenID::tkVOLATILE )
-		{
-		    pgm.nextToken();
-		    continue;
-		}
-		break;
-	    }
-
-	    // Determine exception type tag. The runtime throws int / double /
-	    // cstr only (exception_runtime.cpp MADC_EXCEPT_*): a class- or
-	    // pointer-typed clause can never match a madc-thrown exception, so
-	    // it gets tag 4 — a value no throw produces — and the dispatch
-	    // guard is never taken (GCC canon: catch(T&) matches T only, so a
-	    // thrown int must fall through to a later catch(...) clause).
-	    int tag = 99; // default: any
-	    DataType dt = ctype->definition.rawtype();
-	    if ( dt == DataType::dtCHAR && ptr_depth > 0 )
-		tag = 3; // MADC_EXCEPT_CSTR
-	    else if ( ptr_depth > 0
-		   || dynamic_cast<DataDefCLASS *>(&ctype->definition) )
-		tag = 4; // MADC_EXCEPT_CLASS: unmatchable (see above)
-	    else if ( dt == DataType::dtINT || dt == DataType::dtINT32
-	      || dt == DataType::dtINT64 )
-		tag = 1; // MADC_EXCEPT_INT
-	    else if ( dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT
-	           || dt == DataType::dtLDOUBLE )
-		tag = 2; // MADC_EXCEPT_DOUBLE (long double narrows here, as it
-			 // did when it WAS a double — the exception runtime
-			 // carries one real payload width)
-	    else if ( dt == DataType::dtCHAR )
-		tag = 3; // MADC_EXCEPT_CSTR (char* conceptually)
-	    catch_types.push_back(tag);
-
-	    // Variable name
-	    tn = pgm.nextToken();
-	    if ( tn && tn->type() == TokenType::ttIdentifier )
-		catch_varnames.push_back(((TokenIdent *)tn)->spelling());
-	    else
-	    {
-		catch_varnames.push_back("");
-		if ( tn ) pgm.pushToken(tn);
-	    }
+	    Program::DeclaratorResult kd;
+	    decl_type = pgm.parse_declarator(&ctype->definition,
+					     Program::DeclaratorMode::Parameter,
+					     kd, NULL, lead_cv);
+	    catch_types.push_back(exception_declaration_tag(decl_type));
+	    catch_varnames.push_back(kd.name);
 	}
+	catch_decl_types.push_back(decl_type);
+	catch_bound_vars.push_back(NULL);
 
 	tn = pgm.nextToken();
 	if ( !tn || tn->id() != TokenID::tkClBrk )
 	    pgm.Throw(tn ? tn : this) << "Expected ')' after catch parameter" << flush;
 
-	// Parse catch body — create catch variable in scope first
-	tn = pgm.peekToken();
-	if ( !tn || tn->id() != TokenID::tkOpBrc )
-	    pgm.Throw(tn ? tn : this) << "Expected '{' after catch(...)" << flush;
+	// Parse catch body — the handler's variable is in its scope
+	TokenBase *open = pgm.peekToken();
+	if ( !open || open->id() != TokenID::tkOpBrc )
+	    pgm.Throw(open ? open : this) << "Expected '{' after catch(...)" << flush;
 	pgm.nextToken(); // consume '{'
 	pgm.pushCompound();
-	// Add catch variable to the catch body's scope
-	if ( !catch_varnames.back().empty() )
+	TokenCpnd *catch_scope = pgm.compounds.top();
+	if ( catch_types.back() == 4 && !catch_varnames.back().empty() )
+	    catch_bound_vars.back() = bind_class_handler_variable(pgm, catch_scope,
+								  decl_type, decl_run, open);
+	else if ( !catch_varnames.back().empty() )
 	{
-	    TokenCpnd *catch_scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
-	    DataDef *cv_type = &ddINT64; // default
-	    if ( catch_types.back() == 2 ) cv_type = &ddDOUBLE;
-	    else if ( catch_types.back() == 3 && ptr_depth > 0 )
-		// cstr catch (`catch (const char *m)`): the variable IS a
-		// char pointer — register the real type so typed consumers
-		// (the std::format classifier, cstr parameters) see text.
-		// As int64 it printed the POINTER BITS through std::println;
-		// printf %s only worked because varargs pass bits through.
+	    // A scalar handler's variable is bound from the payload: the
+	    // double, the text pointer (`catch (const char *m)` registers the
+	    // char pointer — typed consumers see text), or the integer.
+	    DataDef *cv_type = &ddINT64;
+	    if ( catch_types.back() == 2 )
+		cv_type = &ddDOUBLE;
+	    else if ( catch_types.back() == 3
+		      && TokenSubscript::referent_type(decl_type)->is_pointer() )
 		cv_type = &ddCHARptr;
-	    else if ( catch_types.back() == 4 && ctype )
-	    {
-		// class/pointer catch: register the REAL type so the handler
-		// body type-checks; the clause never matches (tag 4 above), so
-		// the variable is never bound from an exception value.
-		cv_type = &ctype->definition;
-		for ( int pd = 0; pd < ptr_depth; pd++ )
-		    cv_type = pgm.getPointerType(cv_type);
-	    }
 	    pgm.addVariable(catch_scope, *cv_type, catch_varnames.back(), 1, NULL, false);
 	}
 	catch_bodies.push_back(pgm.parseCompound());
@@ -58706,13 +59469,15 @@ TokenBase *TokenDELETE::parse(Program &pgm)
     if ( !expr )
 	pgm.Throw(tn) << "Failed to parse expression after 'delete'" << flush;
 
-    // Try to determine the class type from the expression's pointer type
+    // Try to determine the class type from the expression's pointer type.
+    // A cv-qualified pointee is still the class ([expr.delete]/6 runs its
+    // destructor): as_class_dd() reads through the qualifier.
     DataDef *dd = expr->datadef();
     if ( dd && dd->is_pointer() )
     {
 	DataDefPTR *ptr = pointer_dd_of(dd);
-	if ( ptr )
-	    del_class = dynamic_cast<DataDefCLASS *>(ptr->base_type);
+	if ( ptr && ptr->base_type )
+	    del_class = ptr->base_type->as_class_dd();
     }
 
     return this;
@@ -61421,7 +62186,7 @@ void Program::register_outofline_member_instantiations(
 	    for ( Variable *cand : ddc->methods )
 	    {
 		FuncDef *cfd = cand && cand->data
-		    ? dynamic_cast<FuncDef *>(cand->type) : NULL;
+		    && cand->type ? cand->type->as_funcdef_dd() : NULL;
 		if ( !cfd )
 		    continue;
 		if ( def_is_ctor )
@@ -61478,7 +62243,7 @@ void Program::register_outofline_member_instantiations(
 	for ( Variable *cand : ddc->methods )
 	{
 	    if ( !cand || !cand->data ) continue;
-	    FuncDef *cfd = dynamic_cast<FuncDef *>(cand->type);
+	    FuncDef *cfd = cand->type ? cand->type->as_funcdef_dd() : NULL;
 	    if ( !cfd ) continue;
 	    // Lazy member-template hydration: the matcher below reads decl
 	    // tokens + template params on each candidate.
@@ -61596,7 +62361,7 @@ void Program::register_outofline_member_instantiations(
 	// `<mangled>::` declarator qualifier.
 	if ( def.is_member_template )
 	{
-	    FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type);
+	    FuncDef *mfd = mvar->type ? mvar->type->as_funcdef_dd() : NULL;
 	    if ( !mfd || !mfd->member_template_decl.empty() )
 		continue;	// not a member, or already attached
 	    std::vector<TokenBase *> decl2;
@@ -61694,7 +62459,7 @@ void Program::register_outofline_member_instantiations(
 	// library to provide it). We now provide a LOCAL body, so clear that binding:
 	// the call site falls through to the member's own emit name (== mvar->name,
 	// the deferred-body key) and the materialized body is emitted under it.
-	if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
+	if ( FuncDef *mfd = mvar->type ? mvar->type->as_funcdef_dd() : NULL )
 	{
 	    mfd->emit_symbol.clear();
 	    mfd->declaration_only = false;
@@ -62492,7 +63257,7 @@ static bool skipped_template_body_returns_inline_addressof(
 	if ( !cv )
 	    continue;
 	FuncDef *fd = dynamic_cast<FuncDef *>(cv->type);
-	if ( fd && fd->inline_builtin_kind == "addressof" )
+	if ( fd && fd->inline_builtin_kind == BuiltinKind::Addressof )
 	    return true;
     }
     return false;
@@ -62685,11 +63450,11 @@ static bool retain_namespace_fn_template_body(
     ft.decl = tokens;
     ft.ns = pgm.current_namespace();
     if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
-	ft.inline_builtin_kind = "addressof";
+	ft.inline_builtin_kind = BuiltinKind::Addressof;
     else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
-	ft.inline_builtin_kind = "destroy";
+	ft.inline_builtin_kind = BuiltinKind::Destroy;
     else if ( skipped_template_body_is_inline_identity_refcast(tokens, name) )
-	ft.inline_builtin_kind = "forward";
+	ft.inline_builtin_kind = BuiltinKind::Forward;
     // A body-LESS declaration has no body to instantiate; keep it OUT of
     // fn_template_map (instantiation + arity-deferral) and record it in
     // fn_template_decl_map for return-TYPE resolution only.
@@ -62845,6 +63610,38 @@ static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
     return declarator_exception_spec_at(pgm, tokens, i, NULL);
 }
 
+// BuiltinKind's spellings: the forest's frozen records keep a kind as its
+// spelling (cir_arena builtin_kind_id, the template record's extra), so a
+// pack never depends on the enum's numbering. ONE table, indexed by the kind.
+static const char *const builtin_kind_spellings[] = {
+    "",			// None
+    "addressof", "destroy", "forward",
+    "madc_show", "madc_show_row",
+    "php_print_r", "php_var_dump",
+    "std_format", "std_print", "std_println"
+};
+static const size_t builtin_kind_count =
+    sizeof(builtin_kind_spellings) / sizeof(builtin_kind_spellings[0]);
+static_assert(sizeof(builtin_kind_spellings) / sizeof(builtin_kind_spellings[0])
+	      == (size_t)BuiltinKind::StdPrintln + 1,
+	      "builtin_kind_spellings has one row per BuiltinKind");
+
+const char *builtin_kind_spelling(BuiltinKind k)
+{
+    size_t i = (size_t)k;
+    return i < builtin_kind_count ? builtin_kind_spellings[i] : "";
+}
+
+BuiltinKind builtin_kind_named(const char *spelling)
+{
+    if ( !spelling || !*spelling )
+	return BuiltinKind::None;
+    for ( size_t i = 1; i < builtin_kind_count; ++i )
+	if ( strcmp(builtin_kind_spellings[i], spelling) == 0 )
+	    return (BuiltinKind)i;
+    return BuiltinKind::None;
+}
+
 // The COMPILER-IMPLEMENTED namespace templates, keyed by (namespace, name) —
 // the one place those spellings are compared. A declaration-only template whose
 // implementation IS the compiler carries an inline_builtin_kind exactly like
@@ -62854,14 +63651,14 @@ static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
 //
 // Unlike its siblings this cannot be a BODY-SHAPE test: these declarations have
 // no body anywhere, which is the point (docs/plans/2026-08-17-php-print-r-var-dump-plan.md).
-static const char *madc_namespace_template_builtin_kind(const madc::dis::istring &ns,
+static BuiltinKind madc_namespace_template_builtin_kind(const madc::dis::istring &ns,
 							const madc::dis::istring &name,
 							const char *decl_file)
 {
     if ( ns == "php" )
     {
-	if ( name == "print_r" )  return "php_print_r";
-	if ( name == "var_dump" ) return "php_var_dump";
+	if ( name == "print_r" )  return BuiltinKind::PhpPrintR;
+	if ( name == "var_dump" ) return BuiltinKind::PhpVarDump;
     }
     // The std:: intrinsics are additionally PROVENANCE-gated: only the
     // compiler-owned fragment's declarations are compiler-implemented. A
@@ -62876,7 +63673,7 @@ static const char *madc_namespace_template_builtin_kind(const madc::dis::istring
 	if ( const FormatIntrinsic *fi = find_format_intrinsic(name.c_str()) )
 	    return fi->builtin_kind;
     }
-    return NULL;
+    return BuiltinKind::None;
 }
 
 static void register_skipped_namespace_template_function(
@@ -62979,16 +63776,19 @@ static void register_skipped_namespace_template_function(
 	    fd->noexcept_spec =
 		skipped_template_function_noexcept_spec(pgm, tokens, name);
 	    if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
-		fd->inline_builtin_kind = "addressof";
+		fd->inline_builtin_kind = BuiltinKind::Addressof;
 	    else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
-		fd->inline_builtin_kind = "destroy";
+		fd->inline_builtin_kind = BuiltinKind::Destroy;
 	    else if ( skipped_template_body_is_inline_identity_refcast(tokens, name) )
-		fd->inline_builtin_kind = "forward";
-	    else if ( const char *bk = madc_namespace_template_builtin_kind(
-					   pgm.current_namespace(), name,
-					   tokens.empty() ? NULL
-							  : tokens[0]->file) )
-		fd->inline_builtin_kind = bk;
+		fd->inline_builtin_kind = BuiltinKind::Forward;
+	    else
+	    {
+		BuiltinKind bk = madc_namespace_template_builtin_kind(
+				     pgm.current_namespace(), name,
+				     tokens.empty() ? NULL : tokens[0]->file);
+		if ( bk != BuiltinKind::None )
+		    fd->inline_builtin_kind = bk;
+	    }
 	}
 	ns[name] = var;
 	ns.erase(parse_id);
@@ -63017,6 +63817,20 @@ static void register_skipped_namespace_template_function(
 	    ovset.push_back(e);
 	}
     }
+}
+
+void Program::register_namespace_function_template(const madc::dis::istring &ns,
+	const std::vector<TokenBase *> &decl,
+	const std::vector<madc::dis::istring> &typeparams,
+	const std::vector<bool> &typeparam_is_type,
+	const std::vector<bool> &typeparam_is_pack)
+{
+    Program::NamespaceScope guard(*this, ns);
+    const std::vector<std::vector<TokenBase *>> defaults(typeparams.size());
+    const std::vector<std::vector<TokenBase *>> constraints(typeparams.size());
+    register_skipped_namespace_template_function(*this, decl, typeparams, &defaults,
+						 &typeparam_is_type, &typeparam_is_pack,
+						 &constraints);
 }
 
 // v22 (iostream W2): the forest restore's twin of the capture trio above —
@@ -63512,23 +64326,25 @@ DataDef *Program::conditional_arithmetic_type(TokenBase *t, TokenBase *f)
 }
 
 // [temp.deduct.call]/3 needs the argument expression's value category for a
-// forwarding reference. TokenCallFunc and TokenCallMethod inherit TokenVar, so
-// test real calls before the named-variable arm: a value-returning call is a
-// prvalue, a `T&&`-returning call an xvalue, and any other reference-returning
-// call denotes its referent. Which kind a call returns is its RESOLVED
-// callee's (Program::argument_value_category) — the parse-bound callee may be
-// the template's placeholder, while the CIR ranks the bound instance.
+// forwarding reference: the one reader's, Program::argument_value_category
+// (a cast to `T&` is an lvalue, to `T&&` an xvalue — B144 deduced every cast
+// as an rvalue here). Where that reader answers Unknown: TokenCallFunc and
+// TokenCallMethod inherit TokenVar, so test real calls before the
+// named-variable arm — a value-returning call is a prvalue, a
+// reference-returning one not proven an xvalue denotes its referent; then a
+// named variable, then an addressable expression.
 static bool fn_template_call_arg_is_lvalue(TokenBase *expr, Program &pgm)
 {
     if ( !expr )
 	return false;
+    ArgValueCategory cat = pgm.argument_value_category(expr);
+    if ( cat != ArgValueCategory::Unknown )
+	return cat == ArgValueCategory::Lvalue;
     if ( expr->type() == TokenType::ttCallFunc
       || expr->type() == TokenType::ttCallMethod )
     {
 	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(expr);
-	if ( !call || !call->call_returns_reference() )
-	    return false;
-	return pgm.argument_value_category(call) != ArgValueCategory::Rvalue;
+	return call && call->call_returns_reference();
     }
     if ( dynamic_cast<TokenVar *>(expr) )
 	return true;
@@ -63648,8 +64464,8 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	FuncDef *fd = callee ? callee : resolved_call_funcdef(call);
 	FuncDef *raw = call->var.type ? call->var.type->as_funcdef_dd() : NULL;
 	if ( call->parameters.size() == 1 && call->parameters[0]
-	  && ((fd && fd->inline_builtin_kind == "forward")
-	      || (raw && raw->inline_builtin_kind == "forward")) )
+	  && ((fd && fd->inline_builtin_kind == BuiltinKind::Forward)
+	      || (raw && raw->inline_builtin_kind == BuiltinKind::Forward)) )
 	{
 	    if ( call->explicit_template_args.empty() )
 		return ArgValueCategory::Rvalue;
@@ -63679,7 +64495,7 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	    return ArgValueCategory::Rvalue;
 	return ArgValueCategory::Unknown;
     }
-    if ( TokenCast *tc = dynamic_cast<TokenCast *>(arg) )
+    if ( TokenCast *tc = arg->as_cast_tok() )
     {
 	// [expr.static.cast]/1,4 ([expr.cast] for the C-style form): a cast to
 	// a reference type yields an lvalue (`T&`) or an xvalue (`T&&`); a cast
@@ -63691,7 +64507,7 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	return tc->to_rvalue_ref ? ArgValueCategory::Rvalue
 				 : ArgValueCategory::Lvalue;
     }
-    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(arg) )
+    if ( TokenTerQ *tq = arg->as_terq_tok() )
     {
 	// [expr.cond]/4: two lvalue arms of ONE type are an lvalue; arms of
 	// different types convert to a prvalue (/7).
@@ -63708,18 +64524,18 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	return t;
     }
     if ( arg->id() == TokenID::tkComma )
-	if ( TokenOperator *co = dynamic_cast<TokenOperator *>(arg) )
+	if ( TokenOperator *co = arg->as_operator_tok() )
 	    return argument_value_category(co->right);
     if ( builtin_operator_yields_lvalue(arg) )
 	return ArgValueCategory::Lvalue;
-    if ( arg->as_objtemp_tok() || dynamic_cast<TokenAddrOf *>(arg)
-      || dynamic_cast<TokenTypeQuery *>(arg) || dynamic_cast<TokenInt *>(arg)
-      || dynamic_cast<TokenChar *>(arg) || dynamic_cast<TokenReal *>(arg)
+    if ( arg->as_objtemp_tok() || arg->as_addr_of_tok()
+      || arg->as_typequery_tok() || arg->as_int_tok()
+      || arg->type() == TokenType::ttChar || arg->as_real_tok()
       || builtin_operator_yields_prvalue(arg) )
 	return ArgValueCategory::Rvalue;
-    if ( arg->is_indirection() || dynamic_cast<TokenSubscript *>(arg)
-      || dynamic_cast<TokenSubscriptExpr *>(arg)
-      || dynamic_cast<TokenStr *>(arg) || dynamic_cast<TokenVar *>(arg) )
+    if ( arg->is_indirection() || arg->as_subscript_tok()
+      || arg->as_subscript_expr_tok()
+      || arg->as_str_tok() || arg->as_var_tok() )
 	return ArgValueCategory::Lvalue;
     return ArgValueCategory::Unknown;
 }
@@ -64364,11 +65180,11 @@ static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_cla
 	    return true;
 	if ( include_dependent_class )
 	{
-	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+	    DataDefCLASS *cls = dd->as_class_dd();
 	    if ( cls && cls->is_dependent_placeholder )
 		return true;
 	}
-	if ( DataDefQUAL *c = dynamic_cast<DataDefQUAL *>(dd) )
+	if ( DataDefQUAL *c = dd->as_qualified_dd() )
 	    { dd = c->base_type; continue; }
 	if ( DataDefPTR *p = pointer_dd_of(dd) )
 	    { dd = p->base_type; continue; }
@@ -64420,6 +65236,19 @@ static bool is_type_dependent(TokenBase *expr)
 	}
 	// General fall-through (pt.cc:30357): the node's own type is dependent.
 	return datadef_involves_placeholder(expr->datadef());
+}
+
+bool Program::type_dependent_expression(TokenBase *expr)
+{
+	return is_type_dependent(expr);
+}
+
+std::vector<bool> Program::forwarding_arg_lvalues(const std::vector<TokenBase *> &args)
+{
+	std::vector<bool> lvalues;
+	for ( TokenBase *a : args )
+		lvalues.push_back(fn_template_call_arg_is_lvalue(a, *this));
+	return lvalues;
 }
 
 // Is THIS call type-dependent (and so deferred during a dependent parse)? A thin
@@ -65446,8 +66275,8 @@ static bool instantiated_template_var_has_pending_body(Program &pgm,
 	return true;
     for ( TokenBase *pb : pgm.pending_funcs )
     {
-	TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
-	FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+	TokenFunc *tf = pb ? pb->as_func_tok() : NULL;
+	FuncDef *tfd = tf && tf->var.type ? tf->var.type->as_funcdef_dd() : NULL;
 	if ( !tf || !tfd || tfd->declaration_only )
 	    continue;
 	if ( &tf->var == v || tfd == fd )
@@ -67097,7 +67926,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	if ( ne )
 	{
 	    FuncDef *nfd = ne->funcdef();
-	    if ( nfd && !ft.inline_builtin_kind.empty() )
+	    if ( nfd && ft.inline_builtin_kind != BuiltinKind::None )
 		nfd->inline_builtin_kind = ft.inline_builtin_kind;
 	    instantiated_var = ne->var;
 	    // The product's bound template arguments as identity spellings —
@@ -67153,7 +67982,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		if ( tf->var.name != key
 		  && pfd->namespace_name + "::" + pfd->function_display_name != key )
 		    continue;
-		if ( !ft.inline_builtin_kind.empty() )
+		if ( ft.inline_builtin_kind != BuiltinKind::None )
 		    pfd->inline_builtin_kind = ft.inline_builtin_kind;
 		instantiated_var = &tf->var;
 		break;
@@ -67813,7 +68642,9 @@ TokenBase *Program::free_unary_operator_call(TokenBase *operand,
 
 TokenBase *Program::lower_free_unary_operator_to_call(TokenOperator *to)
 {
-    if ( !to )
+    // Operator functions exist only where the language presents as C++ (C
+    // has no `operator`): a C operator never has one to lower to.
+    if ( !to || !presents_as_cpp() )
 	return NULL;
     bool step = to->id() == TokenID::tkInc || to->id() == TokenID::tkDec;
     // A unary operator reads its right operand; ++/-- the one it has.
@@ -68427,6 +69258,148 @@ static bool tsubst_lt_opens_call_template_id(const std::vector<TokenBase *> &d,
     return !expect_name;
 }
 
+// Hybrid-B region boundary of a retained member-template declaration: tokens
+// before the returned index are the concrete SHELL (signature + ctor mem-
+// initializers, parsed per instantiation), the rest the BODY block.
+// member_template_decl ends exactly at the body's closing '}'
+// (member_template_decl_end), so the body opens at that brace's backward match
+// — robust against mem-init braces (`: first{...}`), which sit before it. A
+// declaration-only decl (no trailing '}') returns d.size() with *body_empty
+// false, i.e. the conservative whole-decl treatment.
+static size_t tsubst_body_open(const std::vector<TokenBase *> &d, bool *body_empty)
+{
+    size_t body_open = d.size();
+    *body_empty = false;
+    size_t last = d.size();
+    while ( last > 0 && !d[last - 1] )
+	--last;
+    if ( last > 0 && d[last - 1]->id() == TokenID::tkClBrc )
+    {
+	// The body's `{`: the opener balanced_group_open matches to the last `}`.
+	size_t open = balanced_group_open(d, last - 1);
+	if ( open != last - 1 )
+	    body_open = open;
+	if ( body_open < d.size() )
+	{
+	    *body_empty = true;
+	    for ( size_t j = body_open + 1; j + 1 < last; ++j )
+		if ( d[j] )
+		    { *body_empty = false; break; }
+	}
+    }
+    return body_open;
+}
+
+// The template's parameter packs, type and non-type.
+static size_t tsubst_pack_count(FuncDef *fd)
+{
+    size_t n = 0;
+    for ( size_t i = 0; i < fd->template_param_names.size(); ++i )
+	if ( i < fd->template_param_is_pack.size() && fd->template_param_is_pack[i] )
+	    ++n;
+    return n;
+}
+
+// The pack-expansion widening carve-out of the template-id rule: a single
+// TYPE-pack template whose `<`s are structurally covered by the CIR pack
+// fan-out. System-header template-id pack bodies are admitted only for the
+// placement-new constructor-argument shape (`new((void*)p) T(args...)`) and the
+// allocator-traits forwarding member-call shape (`obj.method(args...)`, or its
+// unqualified twin); broader destructor / nested-call surfaces stay on the
+// parsed-body fallback until covered deliberately.
+static bool tsubst_pack_template_ids_covered(const Program &pgm, FuncDef *fd,
+					     size_t pack_count)
+{
+    const std::vector<TokenBase *> &d = fd->member_template_decl;
+    if ( pack_count != 1 || !tsubst_range_has_pack_expansion(d, 0, d.size()) )
+	return false;
+    bool from_system_header = false;
+    for ( size_t i = 0; i < d.size(); ++i )
+	if ( d[i] && d[i]->id() == TokenID::tkLT )
+	{
+	    for ( size_t j = 0; j < d.size(); ++j )
+		if ( d[j] && d[j]->file )
+		{
+		    from_system_header = pgm.is_system_header_path(d[j]->file);
+		    break;
+		}
+	    break;
+	}
+    return !from_system_header
+	|| tsubst_has_placement_new_ctor_pack_expansion(fd)
+	|| tsubst_has_member_call_pack_expansion(fd)
+	|| tsubst_has_unqualified_call_pack_expansion(fd);
+}
+
+// The template-id rule of tsubst copy-safety, for token `i` of a region tsubst
+// COPIES. A `tkLT` only blocks when it actually OPENS A TEMPLATE-ID — the
+// `<...>` is balanced (a matching unparenthesized `>` closes it). A `<` with NO
+// balanced close is the less-than OPERATOR (`__len < __capacity` in
+// _M_construct) and is always safe to copy; `template_id_suffix_end` returns the
+// close index for a real template-id, or `i` unchanged when there is none. This
+// errs SAFELY: a comparison mis-read as a template-id only stays on the
+// fallback; a dependent template-id is never copied (the WIDE-gate failure). A
+// balanced template-id is copyable only when CONCRETE in the owner scope
+// (pname-free, non-nested span — casts, local typedefs, construction types), an
+// explicit-template-arg CALL (the Kind-1 copy-rewritable shape), or under the
+// pack-expansion carve-out.
+static bool tsubst_template_id_blocks_copy(const std::vector<TokenBase *> &d,
+	size_t i, const std::set<madc::dis::istring> &pnames, bool pack_covered)
+{
+    return d[i] && d[i]->id() == TokenID::tkLT
+	&& template_id_suffix_end(d, i) != i
+	&& !tsubst_lt_opens_concrete_template_id(d, i, pnames)
+	&& !tsubst_lt_opens_call_template_id(d, i)
+	&& !pack_covered;
+}
+
+// Where a retained constructor template's ctor-initializer begins: the top-level
+// `:` after the parameter list's `)` (past an exception specification or a
+// trailing requires-clause, whose template-ids are the shell's). `body_open`
+// when the declaration has none.
+static size_t tsubst_ctor_initializer_begin(const std::vector<TokenBase *> &d,
+					    size_t body_open)
+{
+    size_t ni = skipped_template_function_declarator_name_index(d, NULL);
+    size_t op = ni + 1;
+    while ( op < body_open && !(d[op] && d[op]->id() == TokenID::tkOpBrk) )
+	++op;
+    if ( op >= body_open )
+	return body_open;
+    DelimDepth depth;
+    size_t i = op;
+    do
+	i += delim_scan_step(d, i, depth);
+    while ( i < body_open && !depth.top() );
+    while ( i < body_open )
+    {
+	if ( depth.top() && d[i] && d[i]->id() == TokenID::tkColon )
+	    return i;
+	i += delim_scan_step(d, i, depth);
+    }
+    return body_open;
+}
+
+// A constructor pattern's mem-initializers are COPIED per instantiation (Phase-5
+// slice 1: the scalar shape's lowered pattern, the delegating and construct
+// shapes' parsed arguments), so their region obeys the body's template-id rule.
+// A region that fails is not captured; the per-instantiation shell parse
+// (hybrid B) supplies those mem-initializers, as for any other ctor.
+static bool tsubst_ctor_initializer_copyable(const Program &pgm, FuncDef *fd)
+{
+    const std::vector<TokenBase *> &d = fd->member_template_decl;
+    bool body_empty = false;
+    const size_t body_open = tsubst_body_open(d, &body_empty);
+    const std::set<madc::dis::istring> pnames(fd->template_param_names.begin(),
+					      fd->template_param_names.end());
+    const bool pack_covered =
+	tsubst_pack_template_ids_covered(pgm, fd, tsubst_pack_count(fd));
+    for ( size_t i = tsubst_ctor_initializer_begin(d, body_open); i < body_open; ++i )
+	if ( tsubst_template_id_blocks_copy(d, i, pnames, pack_covered) )
+	    return false;
+    return true;
+}
+
 bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 {
     // Record which clause rejected (surfaced in --show-stats); harmless no-op
@@ -68443,36 +69416,9 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
     size_t np = fd->template_param_names.size();
     if ( np < 1 )
 	return no("no type params");
-    // Hybrid-B region boundary: the concrete SHELL (signature + ctor mem-
-    // initializers) is parsed per instantiation on the normal path; tsubst copies
-    // only the BODY block. member_template_decl ends exactly at the body's closing
-    // '}' (member_template_decl_end), so the body opens at that brace's backward
-    // match — robust against mem-init braces (`: first{...}`), which sit before it.
-    // Tokens at index < body_open are shell-side. A declaration-only decl (no
-    // trailing '}') keeps body_open == d.size() with body_empty=false, i.e. the
-    // conservative whole-decl treatment.
-    const std::vector<TokenBase *> &dtoks = fd->member_template_decl;
-    size_t body_open = dtoks.size();
+    // Hybrid-B region boundary: tokens at index < body_open are shell-side.
     bool body_empty = false;
-    {
-	size_t last = dtoks.size();
-	while ( last > 0 && !dtoks[last - 1] )
-	    --last;
-	if ( last > 0 && dtoks[last - 1]->id() == TokenID::tkClBrc )
-	{
-	    // The body's `{`: the opener balanced_group_open matches to the last `}`.
-	    size_t open = balanced_group_open(dtoks, last - 1);
-	    if ( open != last - 1 )
-		body_open = open;
-	    if ( body_open < dtoks.size() )
-	    {
-		body_empty = true;
-		for ( size_t j = body_open + 1; j + 1 < last; ++j )
-		    if ( dtoks[j] )
-			{ body_empty = false; break; }
-	    }
-	}
-    }
+    const size_t body_open = tsubst_body_open(fd->member_template_decl, &body_empty);
     // Every parameter must be a TYPE param, with two EMPTY-BODY exceptions (an
     // empty body has nothing for tsubst to substitute — all dependence lives in
     // the shell, concrete under hybrid B; std::pair's piecewise + indexed ctors):
@@ -68481,16 +69427,14 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
     //     an empty-body copy). Non-type SCALARS still need value substitution and
     //     stay on the re-parse fallback.
     //   - more than one pack is admitted (no fan-out runs).
-    size_t pack_count = 0;
     for ( size_t i = 0; i < np; ++i )
     {
 	bool ip = i < fd->template_param_is_pack.size() && fd->template_param_is_pack[i];
 	if ( i < fd->template_param_is_type.size() && !fd->template_param_is_type[i]
 	  && !(ip && body_empty) )
 	    return no("non-type template param");
-	if ( ip )
-	    ++pack_count;
     }
+    const size_t pack_count = tsubst_pack_count(fd);
     if ( pack_count > 1 && !body_empty )
 	return no(">1 pack param");
     // Param-name membership (>=1 type param, e.g. <class A, class B>): the dependent
@@ -68533,79 +69477,25 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	      && pnames.count(contextual_identifier_name(
 				  fd->member_template_return_tokens[i])) )
 		return no("dependent return type (not T/T*)");
-    bool has_pack_expansion = false;
-    for ( size_t i = 0; i + 2 < fd->member_template_decl.size(); ++i )
-	if ( fd->member_template_decl[i]
-	  && fd->member_template_decl[i]->id() == TokenID::tkDot
-	  && fd->member_template_decl[i + 1]
-	  && fd->member_template_decl[i + 1]->id() == TokenID::tkDot
-	  && fd->member_template_decl[i + 2]
-	  && fd->member_template_decl[i + 2]->id() == TokenID::tkDot )
-	    { has_pack_expansion = true; break; }
-    bool template_pack_body_from_system_header = false;
-    if ( pack_count == 1 && has_pack_expansion )
-	for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
-	{
-	    TokenBase *t = fd->member_template_decl[i];
-	    if ( !t )
-		continue;
-	    if ( t->id() == TokenID::tkLT )
-	    {
-		for ( size_t j = 0; j < fd->member_template_decl.size(); ++j )
-		    if ( fd->member_template_decl[j]
-		      && fd->member_template_decl[j]->file )
-		    {
-			template_pack_body_from_system_header =
-			    is_system_header_path(fd->member_template_decl[j]->file);
-			break;
-		    }
-		break;
-	    }
-	}
-    bool covered_system_header_pack_template_id_body =
-	template_pack_body_from_system_header
-	&& (tsubst_has_placement_new_ctor_pack_expansion(fd)
-	    || tsubst_has_member_call_pack_expansion(fd)
-	    || tsubst_has_unqualified_call_pack_expansion(fd));
-    // Body/param scan: any template-id (`<`) or `P::` dependent lookup (P a param)
-    // disqualifies, except the current pack-expansion widening slice admits a
-    // single TYPE-pack body when it is already structurally covered by CIR pack
-    // fan-out. System-header template-id pack bodies are admitted only for the
-    // placement-new constructor-argument shape (`new((void*)p) T(args...)`) and
-    // the allocator-traits forwarding member-call shape (`obj.method(args...)`);
-    // broader destructor / nested-call surfaces stay on the parsed-body fallback
-    // until covered deliberately.
+    const bool pack_covered = tsubst_pack_template_ids_covered(*this, fd, pack_count);
+    // Body/param scan: a BODY template-id the copy cannot vet
+    // (tsubst_template_id_blocks_copy) or a `P::` dependent lookup (P a param)
+    // anywhere disqualifies.
+    // SHELL-side template-ids (params, exception specification, ctor mem-
+    // initializers; i < body_open) are concrete under hybrid B — the
+    // per-instantiation shell parse resolves them, so they never disqualify the
+    // BODY. A ctor's mem-initializers are copied only when their own region
+    // passes the same rule (tsubst_ctor_initializer_copyable, read by
+    // build_dependent_pattern); otherwise they stay on the shell. (The pattern
+    // parse still covers the shell with placeholders; a shape it cannot parse
+    // fails build_dependent_pattern and falls back cleanly — self-detecting.)
     const std::vector<TokenBase *> &d = fd->member_template_decl;
     for ( size_t i = 0; i < d.size(); ++i )
     {
 	TokenBase *t = d[i];
 	if ( !t )
 	    continue;
-	// A `tkLT` only disqualifies when it actually OPENS A TEMPLATE-ID — i.e. the
-	// `<...>` is balanced (a matching unparenthesized `>` closes it). A `<` with
-	// NO balanced close is the less-than OPERATOR (`__len < __capacity` in
-	// _M_construct) and is always safe to copy. `template_id_suffix_end` returns
-	// the close index for a real template-id, or `i` unchanged when there is none.
-	// This errs SAFELY: a comparison mis-read as a template-id only stays on the
-	// fallback; a dependent template-id is never admitted (the WIDE-gate failure).
-	// A balanced template-id is admitted only when CONCRETE in the owner scope
-	// (pname-free, non-nested span — casts, local typedefs, construction types),
-	// an explicit-template-arg CALL (the Kind-1 copy-rewritable shape), or the
-	// pre-existing pack-expansion carve-out.
-	// SHELL-side template-ids (params + ctor mem-initializers, i < body_open)
-	// are concrete under hybrid B — the per-instantiation shell parse resolves
-	// them; tsubst never copies that region. Only a BODY-region template-id
-	// needs dependent substitution and disqualifies. (The pattern parse still
-	// covers the shell with placeholders; a shape it cannot parse fails
-	// build_dependent_pattern and falls back cleanly — self-detecting.)
-	if ( t->id() == TokenID::tkLT
-	  && i >= body_open
-	  && template_id_suffix_end(d, i) != i
-	  && !tsubst_lt_opens_concrete_template_id(d, i, pnames)
-	  && !tsubst_lt_opens_call_template_id(d, i)
-	  && !(pack_count == 1 && has_pack_expansion
-	       && (!template_pack_body_from_system_header
-		   || covered_system_header_pack_template_id_body)) )
+	if ( i >= body_open && tsubst_template_id_blocks_copy(d, i, pnames, pack_covered) )
 	    return no("template-id '<' in body");
 	if ( pnames.count(contextual_identifier_name(t))
 	  && i + 1 < d.size() && d[i + 1] && d[i + 1]->id() == TokenID::tkNS )
@@ -68800,7 +69690,10 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     // Phase-5 slice 1: a CONSTRUCTOR pattern must parse its `: mem-init` span
     // into ctor_initializers instead of the skip loop discarding it (the
     // `__patN` rename defeats parseFunction's owner-prefix ctor gate).
-    // Ctor-ness comes from the class's ctor registry, not name surgery.
+    // Ctor-ness comes from the class's ctor registry, not name surgery. A span
+    // the copy cannot vet (a dependent template-id read: `is_x<U>::value`
+    // resolves against the placeholder here) is not captured — the shell
+    // parses it per instantiation.
     bool fd_is_ctor = false;
     for ( Variable *cv : owner->ctors )
 	if ( cv && cv->type == fd )
@@ -68809,7 +69702,8 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	    break;
 	}
     bool saved_pat_ctor_inits = dependent_pattern_ctor_inits;
-    dependent_pattern_ctor_inits = fd_is_ctor;
+    dependent_pattern_ctor_inits = fd_is_ctor
+	&& tsubst_ctor_initializer_copyable(*this, fd);
 
     SilentReplay quiet(*this);
     bool parsed_pattern = false;
@@ -69712,7 +70606,7 @@ bool Program::instantiate_member_ctor_template_candidate(
     const int nargs = (int)ctor_args.size();
     for ( Variable *cv : cdd->ctors )
     {
-	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+	FuncDef *cfd = cv && cv->type ? cv->type->as_funcdef_dd() : NULL;
 	// Lazy member-template hydration: the decl/param gates below are
 	// pattern-content reads on each ctor-template candidate.
 	if ( cfd )
@@ -69781,7 +70675,18 @@ bool Program::instantiate_member_ctor_template_candidate(
 	key += (adp ? adp->name : madc::dis::istring("?")) + ",";
     }
     key += ")";
-    if ( !member_ctor_inst_done.insert(key).second )
+    // The instance identity adds each argument's value category: a
+    // forwarding-reference parameter deduces A& from an lvalue and A from an
+    // rvalue ([temp.deduct.call]/3), two specializations of one value type.
+    // The memo keys on it too — keyed on the value types alone, `W w(a);
+    // W w2(std::move(a));` reused the A& instance for the rvalue. The symbol
+    // is keyed on it as well, so every TU names one construction shape's
+    // instance alike.
+    const std::vector<bool> arg_lvalues = forwarding_arg_lvalues(ctor_args);
+    std::string inst_identity = key;
+    for ( bool lv : arg_lvalues )
+	inst_identity += lv ? "@L" : "@R";
+    if ( !member_ctor_inst_done.insert(inst_identity).second )
 	return false;	// already instantiated (or instantiating) this candidate shape
 
     // Build the free-fn-template descriptor from the retained ctor decl, dropping
@@ -69846,12 +70751,6 @@ bool Program::instantiate_member_ctor_template_candidate(
 
     madc::dis::istring ctor_decl_name =
 	skipped_template_function_declarator_name(fd->member_template_decl);
-    // The instance's symbol is keyed on the memo key plus each argument's
-    // value category (a forwarding-reference parameter deduces A& from an
-    // lvalue), so every TU names one construction shape's instance alike.
-    std::string inst_identity = key;
-    for ( TokenBase *a : ctor_args )
-	inst_identity += fn_template_call_arg_is_lvalue(a, *this) ? "@L" : "@R";
     madc::dis::istring inst_name = instance_overload_symbol(cdd->name + "__" + cdd->name,
 						     inst_identity);
     for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
@@ -69959,6 +70858,7 @@ bool Program::instantiate_member_ctor_template_candidate(
 	if ( inst_fd->local_emit_name.empty() )
 	    inst_fd->local_emit_name = inst_name;
 	inst_fd->method_display_name = ctor_decl_name;
+	inst_fd->deduced_arg_lvalues = arg_lvalues;
 	{
 	    inst_fd->tsubst_source = fd;
 	    inst_fd->tsubst_type_args = concrete_type_args;
@@ -73549,10 +74449,12 @@ static bool defaulted_member_parses_empty(DataDefCLASS *owner,
 
 // Clone a FuncDef with a DIFFERENT return type. FuncDef::returns is a reference
 // (cannot be reseated), so a return-type change after the FuncDef exists must
-// rebuild it — used for an `auto`-return function whose real type is only known
-// from its trailing return type (`-> T`) once parameters are in scope. Copies
-// every FuncDef field except `returns` (the DataDef base is default-constructed
-// identically for both, as it is for every FuncDef).
+// rebuild it: an `auto`-return function whose real type is only known from its
+// trailing return type (`-> T`) once parameters are in scope, and parseFunction's
+// refreshes (a definition that changes its declaration's return type, or meets
+// an unprototyped C declaration). Copies every FuncDef field except `returns`
+// (the DataDef base is default-constructed identically for both, as it is for
+// every FuncDef). The ONE rebuild: gate scripts/check-one-funcdef-clone.sh.
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
 {
     // Lazy member-template hydration: the field copy below includes the
@@ -73617,9 +74519,11 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->ctor_initializers = src->ctor_initializers;
     f->is_varargs = src->is_varargs;
     f->is_void_params = src->is_void_params;
+    f->declared_unprototyped = src->declared_unprototyped;
     f->no_instrument_function = src->no_instrument_function;
     f->no_strict_aliasing = src->no_strict_aliasing;
     f->weak_binding = src->weak_binding;
+    f->noinline = src->noinline;
     f->has_large_struct_retbuf = src->has_large_struct_retbuf;
     f->declaration_only = src->declaration_only;
     f->is_explicit = src->is_explicit;
@@ -73636,6 +74540,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->is_volatile_method = src->is_volatile_method;
     f->vague_linkage = src->vague_linkage;
     f->internal_linkage = src->internal_linkage;
+    f->c_linkage = src->c_linkage;
     return f;
 }
 
@@ -73987,40 +74892,16 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	else if ( func->declaration_only
 	       && !func->is_void_params && func->parameters.empty() )
 	{
-	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref, return_rvalue_ref));
-	    fresh->return_types = func->return_types;
-	    fresh->multi_ret_struct = func->multi_ret_struct;
-	    fresh->return_typedef_name = func->return_typedef_name;
-	    fresh->is_constexpr = func->is_constexpr;
-	    fresh->constexpr_return_tokens = func->constexpr_return_tokens;
-	    fresh->param_typedef_names = func->param_typedef_names;
-	    fresh->param_template_param_spelled_directly =
-		func->param_template_param_spelled_directly;
-	    fresh->no_instrument_function = func->no_instrument_function;
-	    fresh->weak_binding = func->weak_binding;
-	    fresh->explicit_alignment = func->explicit_alignment;
-	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
-	    fresh->is_deleted = func->is_deleted;
-	    fresh->noexcept_spec = func->noexcept_spec;
-	    fresh->implicit_dtor_noexcept = func->implicit_dtor_noexcept;
-	    fresh->noexcept_condition_tokens = func->noexcept_condition_tokens;
-	    fresh->noexcept_parameters = func->noexcept_parameters;
-	    fresh->noexcept_owner = func->noexcept_owner;
-	    fresh->pure_virtual = func->pure_virtual;
-	    fresh->vague_linkage = func->vague_linkage;
-	    fresh->internal_linkage = func->internal_linkage;
-	    // The declaration's SYMBOL identity survives the rebuild: the name
-	    // its class registration bound (bind_declared_cpp_symbol —
+	    // The declaration survives the rebuild — its attributes, linkage
+	    // and SYMBOL identity (the name its class registration bound:
 	    // local_emit_name for madc's own body, emit_symbol for a library
-	    // definition), its member identity and const-ness. Dropping them
-	    // emitted a refreshed static member's body under its internal
-	    // registration key while every call imported the Itanium name.
-	    fresh->local_emit_name = func->local_emit_name; // allowed-exception: field copy (refresh), not symbol build
-	    fresh->emit_symbol = func->emit_symbol;
-	    fresh->method_display_name = func->method_display_name;
-	    fresh->is_const_method = func->is_const_method;
-	    fresh->is_volatile_method = func->is_volatile_method;
-	    fresh->is_member_template = func->is_member_template;
+	    // definition; dropping them emitted a refreshed static member's
+	    // body under its internal registration key while every call
+	    // imported the Itanium name). It declared no parameters, so this
+	    // declarator's bind as a new declaration's do.
+	    FuncDef *fresh = clone_funcdef_with_return(func,
+		returnDecl(dd, return_ref, return_rvalue_ref));
+	    fresh->declaration_only = false;
 	    fresh->declared_unprototyped = is_c_mode();
 	    funcdef_map[id] = fresh;
 	    func = fresh;
@@ -74033,47 +74914,12 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	if ( &func->return_value_type() != &dd )
 	{
 	    DBG(std::cout << "parseFunction() return type refresh: " << func->return_value_type().name << " → " << dd.name << " for " << id << std::endl);
-	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref, return_rvalue_ref));
-	    fresh->parameters   = func->parameters;
-	    fresh->is_varargs   = func->is_varargs;
-	    fresh->is_void_params = func->is_void_params;
-	    fresh->declared_unprototyped = func->declared_unprototyped;
-	    fresh->return_types = func->return_types;
-	    fresh->multi_ret_struct = func->multi_ret_struct;
-	    fresh->return_typedef_name = func->return_typedef_name;
-	    fresh->is_constexpr = func->is_constexpr;
-	    fresh->constexpr_return_tokens = func->constexpr_return_tokens;
-	    fresh->param_typedef_names = func->param_typedef_names;
-	    fresh->param_template_param_spelled_directly =
-		func->param_template_param_spelled_directly;
-	    fresh->no_instrument_function = func->no_instrument_function;
-	    fresh->weak_binding = func->weak_binding;
-	    fresh->explicit_alignment = func->explicit_alignment;
-	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
-	    fresh->is_deleted = func->is_deleted;
-	    fresh->noexcept_spec = func->noexcept_spec;
-	    fresh->implicit_dtor_noexcept = func->implicit_dtor_noexcept;
-	    fresh->noexcept_condition_tokens = func->noexcept_condition_tokens;
-	    fresh->noexcept_parameters = func->noexcept_parameters;
-	    fresh->noexcept_owner = func->noexcept_owner;
-	    fresh->pure_virtual = func->pure_virtual;
-	    fresh->vague_linkage = func->vague_linkage;
-	    fresh->internal_linkage = func->internal_linkage;
-	    // The refresh changes the RETURN type only; the declaration's
-	    // linkage, body status and captured parameter spellings carry over
-	    // (an extern "C" prototype refreshed by its definition stays a
-	    // C-linkage function, as in g++; its symbol needs the spellings
-	    // captured with the parameters it keeps).
-	    fresh->declaration_only = func->declaration_only;
-	    fresh->c_linkage = func->c_linkage;
-	    fresh->param_cpp_spellings = func->param_cpp_spellings;
-	    // ...and the declaration's symbol identity (see the refresh above).
-	    fresh->local_emit_name = func->local_emit_name; // allowed-exception: field copy (refresh), not symbol build
-	    fresh->emit_symbol = func->emit_symbol;
-	    fresh->method_display_name = func->method_display_name;
-	    fresh->is_const_method = func->is_const_method;
-	    fresh->is_volatile_method = func->is_volatile_method;
-	    fresh->is_member_template = func->is_member_template;
+	    // The refresh changes the RETURN type only: the declaration's
+	    // parameters, linkage (an extern "C" prototype refreshed by its
+	    // definition stays a C-linkage function, as in g++), body status and
+	    // symbol identity carry over.
+	    FuncDef *fresh = clone_funcdef_with_return(func,
+		returnDecl(dd, return_ref, return_rvalue_ref));
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	}
@@ -75106,6 +75952,11 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	    method = new Method(*var);
 	    var->data = (void *)method;
 	}
+	// A prototype's leading attribute groups are the function's; at a `,`
+	// they are the list's next declarator's too (the head clears them).
+	apply_pending_function_attributes(func);
+	if ( nt->id() == TokenID::tkSemi )
+	    clear_pending_function_attributes();
 	if ( !func_alias_name.empty() )
 	{
 	    var->asm_label = func_alias_name;
@@ -75132,7 +75983,6 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	if ( !func_already_declared || func->declaration_only )
 	    func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
-	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
 	if ( nt->id() == TokenID::tkComma )
 	{
@@ -75181,14 +76031,13 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	return;
     }
 
-    std::set<madc::dis::istring> func_attrs;
     size_t func_align = 0;
     // The alias TARGET out-param was NULL here, so a prototype carrying
     // __attribute__((alias("f"))) after its parameter list dropped the target
     // on the floor — the parseDeclaration path (the `__typeof` spelling MIR
     // uses) captured it, this one did not.
     madc::dis::istring func_alias_target;
-    nt = consume_gnu_attributes(nt, &func_attrs, &func_alias_target, &func_align);
+    nt = consume_gnu_attributes(nt, NULL, &func_alias_target, &func_align);
     if ( !func_alias_name.empty() )
     {
 	var->asm_label = func_alias_name;
@@ -75200,19 +76049,8 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	if ( var->storage_alias_name.empty() )
 	    var->storage_alias_name = func_alias_target;
     }
-    if ( func_attrs.count("no_instrument_function")
-      || func_attrs.count("__no_instrument_function__") )
-	func->no_instrument_function = true;
-    if ( pending_no_strict_aliasing )
-    {
-	func->no_strict_aliasing = true;
-	pending_no_strict_aliasing = false;
-    }
-    if ( pending_weak_binding )
-    {
-	func->weak_binding = true;
-	pending_weak_binding = false;
-    }
+    apply_pending_function_attributes(func);
+    clear_pending_function_attributes();
     if ( func_align > 0 )
 	func->explicit_alignment = func_align;
     // Check again for forward declaration after __attribute__
@@ -75227,7 +76065,6 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	if ( !func_already_declared || func->declaration_only )
 	    func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
-	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	pop_param_scope();
 	return;
     }
@@ -76143,8 +76980,8 @@ TokenBase *Program::parseLambda()
 // The call is built the same way the function-pointer paths build theirs
 // (TokenCallFunc + parseCallFunc, pushed on opStack): a lambda IS a function
 // pointer here, so it takes the same road rather than a private one.
-Program::ExprStep Program::parseLambdaExprStep(std::stack<TokenBase *> &exStack,
-					       std::stack<TokenBase *> &opStack,
+Program::ExprStep Program::parseLambdaExprStep(token_stack_t &exStack,
+					       token_stack_t &opStack,
 					       bool &done)
 {
     TokenBase *lambda = parseLambda();
@@ -78339,7 +79176,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// lambda: auto fn = [](params) { body };
 		nextToken(); // consume '['
 		rhs_node = parseLambda();
-		rhs_var = &(dynamic_cast<TokenVar *>(rhs_node)->var);
+		rhs_var = &(rhs_node->as_var_tok()->var);
 	    }
 	    else
 	    {
@@ -78828,7 +79665,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	// exactly like its unqualified type: every aggregate test below reads
 	// decl_type->unqualified(), while the variable keeps the qualified type.
     bool is_struct_init = arr_dims.empty()
-	    && dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified()) != NULL
+	    && decl_type->unqualified()->as_struct_dd() != NULL
 	    && decl_type->type() == DataType::dtRESERVED;
 	bool is_simd_init = arr_dims.empty() && decl_type && decl_type->is_simd();
 	if ( nt->id() == TokenID::tkAssign && !provisional_decl_var )
@@ -78962,7 +79799,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		auto nested_slot_type = [&](size_t slot_idx) -> DataDef * {
 		    if ( target_dd )
 		    {
-			DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(target_dd->unqualified());
+			DataDefSTRUCT *tsdd = target_dd->unqualified()->as_struct_dd();
 			if ( !tsdd )
 			    return NULL;
 			return aggregate_slot_member_type(tsdd,
@@ -79045,7 +79882,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// short and the construction owner (CIR class_array_list_init)
 		// value-initializes the absent slots.
 		if ( !arr_dims.empty() && depth < arr_dims.size()
-		  && !dynamic_cast<DataDefCLASS *>(decl_type ? decl_type->unqualified() : NULL) )
+		  && !(decl_type && decl_type->unqualified()->as_class_dd()) )
 		    while ( slit->inits.size() < arr_dims[depth] )
 			slit->inits.push_back(zero_array_initializer(depth));
 		return slit;
@@ -79056,7 +79893,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    auto top_slot_type = [&](size_t slot_idx) -> DataDef * {
 		if ( !arr_dims.empty() )
 		    return arr_dims.size() == 1 ? decl_type : NULL;
-		DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified());
+		DataDefSTRUCT *tsdd = decl_type->unqualified()->as_struct_dd();
 		if ( !tsdd )
 		    return NULL;
 		return aggregate_slot_member_type(tsdd,
@@ -79089,7 +79926,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    : InitializerCursor::Shape();
 		bool literal_clause = next_init->type() == TokenType::ttString;
 		DataDefSTRUCT *sdd = is_struct_init
-		    ? dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified()) : NULL;
+		    ? decl_type->unqualified()->as_struct_dd() : NULL;
 		size_t field_index = init_list.size();
 		if ( next_init->id() == TokenID::tkOpBrc )
 		{
@@ -79127,7 +79964,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    {
 		bool braced_clause = false, elided_clause = false;
 		for ( TokenBase *clause : init_list )
-		    (dynamic_cast<TokenStructLit *>(clause) ? braced_clause
+		    (clause && clause->as_struct_lit_tok() ? braced_clause
 							    : elided_clause) = true;
 		if ( braced_clause && elided_clause )
 		    cursor.elide_braces();
@@ -79138,7 +79975,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    {
 		bool has_nested_init = false;
 		for ( TokenBase *init : init_list )
-		    if ( dynamic_cast<TokenStructLit *>(init) != NULL )
+		    if ( init && init->as_struct_lit_tok() )
 			has_nested_init = true;
 
 		size_t tail_count = 1;
@@ -79309,11 +80146,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// 6.5.3.4p2). Constant dims (TokenInt) need no capture.
 		if ( code )
 		{
-		    if ( !dynamic_cast<TokenInt *>(vla_size_expr) )
+		    if ( !(vla_size_expr && vla_size_expr->as_int_tok()) )
 			if ( TokenBase *cap = materialize_vla_dim_capture(code, vla_size_expr, tb) )
 			    code->statements.push_back((TokenStmt *)cap);
 		    for ( size_t i = 1; i < arr_dim_exprs.size(); ++i )
-			if ( arr_dim_exprs[i] && !dynamic_cast<TokenInt *>(arr_dim_exprs[i]) )
+			if ( arr_dim_exprs[i] && !arr_dim_exprs[i]->as_int_tok() )
 			    if ( TokenBase *cap = materialize_vla_dim_capture(code, arr_dim_exprs[i], tb) )
 				code->statements.push_back((TokenStmt *)cap);
 		}
@@ -79497,8 +80334,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    decl_init_self = var;
 	    td->initialize = parseExpression(new TokenVar(*var), true);
 	    decl_init_self = saved_decl_init_self;
-	    TokenAssign *ta = dynamic_cast<TokenAssign *>(td->initialize);
-	    TokenVar *lhs_var = ta ? dynamic_cast<TokenVar *>(ta->left) : NULL;
+	    TokenAssign *ta = td->initialize ? td->initialize->as_assign_tok() : NULL;
+	    TokenVar *lhs_var = ta && ta->left ? ta->left->as_var_tok() : NULL;
 	    if ( !ta || !lhs_var || &lhs_var->var != var )
 	    {
 		TokenAssign *wrap = new TokenAssign();
@@ -79541,7 +80378,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    // a constant expression bakes nothing and the object reads as itself.
 	    if ( bakes_const_value && dependent_parse_in_progress )
 	    {
-		TokenAssign *cta = dynamic_cast<TokenAssign *>(td->initialize);
+		TokenAssign *cta = td->initialize ? td->initialize->as_assign_tok() : NULL;
 		const_init_folds = cta && cta->right
 		    && try_eval_known_integer(cta->right, const_init_value);
 	    }
@@ -79633,6 +80470,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     bool ns_reuses_declaration = false;	// the textual identity matched a declared member
     if ( namespace_function )
     {
+	// A dialect function of the same name registers first, as it did when
+	// the fragment's text declared it: a program's own declaration in that
+	// namespace then overloads or redeclares it.
+	if ( dialect_from_table() )
+	    activate_forest_member(current_namespace(), source_id);
 	parse_id = namespace_function_symbol(current_namespace(), source_id);
 	// C++ free-function overloading: each overload of ns::name gets its
 	// OWN Variable/FuncDef under a unique internal symbol; a
@@ -80081,19 +80923,19 @@ static madc::dis::istring token_before_phrase(TokenBase *t)
     }
 }
 
-TokenBase *Program::parseExprStmt(TokenBase *tb)
+// An EXPRESSION in the grammar's sense (C11 6.5.17, [expr.comma]): its
+// operands joined by the comma operator, left to right. parseExpression stops
+// at a top-level `,` (a call argument, a for clause and an initializer rely on
+// it), so a context whose operand is a whole expression reads it here: an
+// expression statement (`++p, ++i;`), and the middle operand of `?:`, which
+// runs to the matching `:` (C11 6.5.15; SQLite's getVarint32 is
+// `c ? (B = x), 1 : f()`). push_back_comma=true keeps each `,` in the stream
+// so the chain shows by peeking — without it parseExpression consumes the `,`
+// itself and the chain looks like a single expression.
+TokenBase *Program::parse_comma_expression(TokenBase *tb, bool conditional,
+					   bool ternary_branch)
 {
-    // A closer that opens nothing cannot start a statement ([stmt.expr]: an
-    // expression-statement begins an expression). The engine reads a head
-    // `)` as the end of an empty operand list and consumes it, so `);` was an
-    // empty statement (gcc: "expected statement before ')' token").
-    if ( tb && (tb->id() == TokenID::tkClBrk || tb->id() == TokenID::tkClSqr) )
-	Throw(tb) << "expected statement before " << token_before_phrase(tb) << flush;
-    // push_back_comma=true so we can detect the chain by peeking after
-    // each parseExpression — without it, parseExpression consumes the
-    // `,` itself and the chain looks like a single expression.
-    TokenBase *expr = parseExpression(tb, /*conditional=*/false,
-                                      /*ternary_branch=*/false,
+    TokenBase *expr = parseExpression(tb, conditional, ternary_branch,
                                       /*stop_on_closing_paren=*/false,
                                       /*initial_brackets=*/0,
                                       /*push_back_comma=*/true);
@@ -80103,8 +80945,8 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 	TokenBase *next_tb = nextToken();
 	if ( !next_tb )
 	    break;
-	TokenBase *right = parseExpression(next_tb, false, false, false, 0,
-	                                   /*push_back_comma=*/true);
+	TokenBase *right = parseExpression(next_tb, conditional, ternary_branch,
+	                                   false, 0, /*push_back_comma=*/true);
 	if ( !right )
 	    break;
 	TokenComma *seq = new TokenComma();
@@ -80115,6 +80957,19 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 	seq->column = expr->column;
 	expr = seq;
     }
+    return expr;
+}
+
+TokenBase *Program::parseExprStmt(TokenBase *tb)
+{
+    // A closer that opens nothing cannot start a statement ([stmt.expr]: an
+    // expression-statement begins an expression). The engine reads a head
+    // `)` as the end of an empty operand list and consumes it, so `);` was an
+    // empty statement (gcc: "expected statement before ')' token").
+    if ( tb && (tb->id() == TokenID::tkClBrk || tb->id() == TokenID::tkClSqr) )
+	Throw(tb) << "expected statement before " << token_before_phrase(tb) << flush;
+    TokenBase *expr = parse_comma_expression(tb, /*conditional=*/false,
+					     /*ternary_branch=*/false);
     // MT-5 `await` statement shapes (slice 1): `v = await ch;` folds the
     // assignment into the TokenAWAIT (the receive writes the target
     // in-place through THE one recv implementation — no value copy), and a
@@ -80550,9 +81405,10 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    return NULL;
     }
     size_t attr_vector_bytes = 0;
-    // A `weak` left pending by the previous declaration (an object, whose
-    // binding is not the function parse's) never reaches this one.
-    pending_weak_binding = false;
+    // A function attribute left pending by the previous declaration (an
+    // object's, whose binding is not the function parse's) never reaches
+    // this one.
+    clear_pending_function_attributes();
     // Attribute groups at the head are the declaration's: their alignment is
     // its declarators' (`AL static char g;`).
     if ( is_attribute_identifier_token(tb) )
@@ -82723,6 +83579,8 @@ bool Program::begin_interactive_session(const madc::dis::istring &display_name)
     const char *fname = intern_file(display_name.empty() ? "<session>" : display_name);
     forest_root_file = fname;
     source.fname(fname);
+    if ( !import_command_line_modules() )	// --import: the session's from its start
+	return false;
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;
     flush_forest_pending_globals();
@@ -82937,7 +83795,7 @@ void Program::show_entry_value(size_t decls_before)
     if ( !entry_show_var )
     {
 	FuncDef *fd = new FuncDef(returnDecl(ddVOID, false));
-	fd->inline_builtin_kind = "madc_show";
+	fd->inline_builtin_kind = BuiltinKind::MadcShow;
 	fd->declaration_only = true;
 	entry_show_var = new Variable("__madc_show", *fd, 1, NULL, false);
     }
@@ -82963,7 +83821,7 @@ void Program::show_entry_rows()
     if ( !entry_show_row_var )
     {
 	FuncDef *fd = new FuncDef(returnDecl(ddVOID, false));
-	fd->inline_builtin_kind = "madc_show_row";
+	fd->inline_builtin_kind = BuiltinKind::MadcShowRow;
 	fd->declaration_only = true;
 	entry_show_row_var = new Variable("__madc_show_row", *fd, 1, NULL, false);
     }
@@ -83251,11 +84109,18 @@ struct Program::EntryTransaction::State
     std::map<madc::dis::istring, madc::dis::istring> include_guard_by_file;
     std::set<madc::dis::istring> forest_live_tokenized;
     std::map<madc::dis::istring, LazyEntry> lazy_map;
-    std::map<madc::dis::istring, std::stack<madc::dis::istring> > macro_save_stack;
+    std::map<madc::dis::istring, std::stack<Program::PushedMacro> > macro_save_stack;
     std::vector<madc::dis::istring> active_using_namespaces;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> > inline_namespace_children;
-    bool include_iostream, include_stdio, include_string, include_ns_madc;
+    bool include_iostream, include_string, include_ns_madc;
     Program::ForestBindMark forest_bind;	// the pack binds the entry made
+    // The dialect table's serving, named namespaces and built names (R4c):
+    // a rolled-back entry's names build again when a later entry names them.
+    Program::DialectServing dialect_serving;
+    std::vector<madc::dis::istring> dialect_named;
+    std::set<madc::dis::istring> dialect_fragments;
+    std::vector<unsigned char> dialect_built;
+    size_t dialect_builds;
     // Entities changed in place, each saved (a copy) at its first change.
     // A saved Variable never owns its storage: the live one does.
     std::vector<std::pair<Variable *, Variable *> > variables;
@@ -83271,9 +84136,12 @@ struct Program::EntryTransaction::State
 	  lazy_map(p.lazy_map), macro_save_stack(p._macro_save_stack),
 	  active_using_namespaces(p.active_using_namespaces),
 	  inline_namespace_children(p.inline_namespace_children),
-	  include_iostream(p._include_iostream), include_stdio(p._include_stdio),
+	  include_iostream(p._include_iostream),
 	  include_string(p._include_string), include_ns_madc(p._include_ns_madc),
-	  forest_bind(p.forest_bind_mark())
+	  forest_bind(p.forest_bind_mark()),
+	  dialect_serving(p.dialect_serving), dialect_named(p.dialect_named),
+	  dialect_fragments(p.dialect_fragments), dialect_built(p.dialect_built),
+	  dialect_builds(p.dialect_builds)
     {
     }
 
@@ -83329,9 +84197,13 @@ struct Program::EntryTransaction::State
 	p.active_using_namespaces = active_using_namespaces;
 	p.inline_namespace_children = inline_namespace_children;
 	p._include_iostream = include_iostream;
-	p._include_stdio = include_stdio;
 	p._include_string = include_string;
 	p._include_ns_madc = include_ns_madc;
+	p.dialect_serving = dialect_serving;
+	p.dialect_named = dialect_named;
+	p.dialect_fragments = dialect_fragments;
+	p.dialect_built = dialect_built;
+	p.dialect_builds = dialect_builds;
     }
 };
 

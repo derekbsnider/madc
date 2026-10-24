@@ -1,6 +1,6 @@
 // A script-hosted ui target with NO display: a FAKE host records what the
 // engine pushes and answers canned page events. This is the seam the web
-// target rides (<ns_ui_web> registers the platform webview the same way) —
+// target rides (the ui_web module registers the platform webview the same way) —
 // proved here in every lane with no window and no webview:
 // ui::register_host / post_event / open / render / bind_keys / event /
 // rows / cols / pending / close. The engine composes the tree into DOM
@@ -156,11 +156,10 @@ int main()
     println("no-level host -> {}", ui::register_host("nolevel", ui::NONE, &fake_ops) ? "yes" : "no");
 
     long w = ui::world_new();
-    // A test's fake host is NAME-addressed: naming the web LEVEL (ui::WEB
-    // above) pulled <ns_ui_web>, whose initializer registered the real web
-    // host FIRST, so open(ui::WEB) would pick that one (the GUI lane covers
-    // open-by-level; this lane has no display). level_of answers the level
-    // the fake declared.
+    // A test's fake host is NAME-addressed: a program that imports ui_web
+    // has the real web host registered FIRST, so open(ui::WEB) picks that
+    // one (the GUI lane covers open-by-level; this lane has no display).
+    // level_of answers the level the fake declared.
     long t = ui::open("fake");
     println("open -> {}", t > 0 ? "yes" : "no");
     println("level -> {}", ui::level_of(t) == ui::WEB ? "web" : "other");

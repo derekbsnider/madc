@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage the per-target MINIMAL static libgit2 the madcgit module links
+# Stage the per-target MINIMAL static libgit2 the git module links
 # (docs/plans/2026-09-15-madcgit-cross-targets-plan.md).
 #
 #   bash scripts/stage_libgit2.sh <host|x86-64-windows|arm64-macos|x86-64-macos>
@@ -7,12 +7,12 @@
 #
 # ONE recipe for every target, the scripts/stage_darwin_zstd.sh shape:
 # libgit2 is a BUILD-TIME REQUIREMENT, never part of our distribution. Its
-# object code is STATICALLY linked into OUR libmadcgit.{so,dll,dylib};
+# object code is STATICALLY linked into OUR git module (git.{so,dll,dylib});
 # nothing named libgit2 ships (owner framing 2026-09-15), and no package
 # depends on a system libgit2. `host` is the Linux build host's own target
 # (x86-64-linux, aarch64-linux): Ubuntu 24.04's system libgit2 is 1.7.2,
 # below the floor (owner 2026-10-04: 1.8.7 / 1.9.7 or newer), so Linux links
-# the staged archive as the bundles do. The pin is src/madcgit.mk's
+# the staged archive as the bundles do. The pin is src/git.mk's
 # LIBGIT2_TAG, read through make, and every path below carries it — a bump
 # stages afresh and never mistakes an older tag's archive for the pin.
 #
@@ -49,11 +49,11 @@ target="${1:?$usage}"
 target=$(bash "$(dirname "$0")/stage_cmake_args.sh" --target "$target") || exit 2
 cd "$(dirname "$0")/.."
 
-# The pin and the stage directory: src/madcgit.mk's, never a second copy.
+# The pin and the stage directory: src/git.mk's, never a second copy.
 export LIBGIT2_DIR="${LIBGIT2_DIR:-/workspace/libgit2}"
 LIBGIT2_TAG=$(make -C src -s print-LIBGIT2_TAG)
 STAGE=$(make -C src -s print-LIBGIT2_STAGE)
-[ -n "$LIBGIT2_TAG" ] && [ -n "$STAGE" ] || { echo "stage_libgit2: could not read LIBGIT2_TAG/LIBGIT2_STAGE from src/madcgit.mk" >&2; exit 1; }
+[ -n "$LIBGIT2_TAG" ] && [ -n "$STAGE" ] || { echo "stage_libgit2: could not read LIBGIT2_TAG/LIBGIT2_STAGE from src/git.mk" >&2; exit 1; }
 SRC="$STAGE/src"
 BUILD="$STAGE/build-$target"
 OUT="$STAGE/libgit2-$target.a"
@@ -92,7 +92,7 @@ while IFS= read -r arg; do TOOLCHAIN+=("$arg"); done <<< "$toolchain"	# bash 3.2
 # (deps/zlib/zutil.c vs _stdio.h). Windows has no guaranteed system zlib, so
 # there we bundle it (the archive stays fully self-contained). macOS ships zlib
 # as a SYSTEM library (always present at runtime), so there we compile against
-# the SDK's zlib.h and let libmadcgit.dylib resolve -lz at its own link — the
+# the SDK's zlib.h and let git.dylib resolve -lz at its own link — the
 # static libgit2.a carries no zlib objects, only unresolved zlib symbols. The
 # SDK is the hosted MODE's (print-MACOS_SDK: the container's staged SDK on a
 # cross build, Xcode's on a native darwin host). The host target links the

@@ -1,0 +1,52 @@
+// gcc's command line on the artifact lanes (-c / -shared / -r / -o): options
+// and the source interleave — `-c x.c -fPIC -D... -o x.o` — and -fPIC / -fpic
+// / -fPIE / -fpie are accepted (madc's objects and executables are
+// position-independent already). SQLite's build passes -fPIC ahead of the
+// source, and `-o $@ -c tclsqlite-ex.c -I...` with an -I after it.
+// Pins: every option after the source is applied (the -D is checked by an
+// #error in the unit, the -o names the object written); a second source on
+// the -c lane is still refused, never silently dropped; with no artifact
+// flag ahead of the source, what follows it stays the PROGRAM's argv.
+// Before the fix -fPIC was read as the source file ("-fPIC:0:0: error:
+// Failed to open file") and every option after the source was refused
+// ("unconsumed arguments after 'x.c' in AOT mode").
+// Oracle: gcc 13 and clang 18 `-fPIC -c x.c -fpic -fPIE -fpie -DVAL=7 -o x.o`
+// write x.o, exit 0; `gcc -c x.c y.c -o x.o` refuses ("cannot specify '-o'
+// with '-c', '-S' or '-E' with multiple files").
+int main()
+{
+	var dir = "tmp/testaot_flags_after_source";
+	php::mkdir(dir.c_str());
+	var unit = format("{}/unit.c", dir);
+	var prog = format("{}/args.mad", dir);
+	var obj = format("{}/unit.o", dir);
+	php::file_put_contents(unit.c_str(),
+		"#if VAL != 7\n#error a -D after the source was not applied\n#endif\n"
+		"int unit_value(void) { return VAL; }\n");
+	php::file_put_contents(prog.c_str(),
+		"int main(int argc, char **argv)\n{\n"
+		"\tfor ( int i = 1; i < argc; i++ )\n"
+		"\t\tprintln(\"arg{}={}\", i, argv[i]);\n"
+		"\treturn 0;\n}\n");
+	var cp = madc::compiler_path();
+
+	long rc = system(format("{} --no-config -fPIC -c {} -fpic -fPIE -fpie -DVAL=7 -o {}",
+				cp, unit, obj));
+	println("after-source: rc={} object={}", rc, php::file_exists(obj.c_str()) ? 1 : 0);
+	php::unlink(obj.c_str());
+
+	long rc2 = system(format("{} --no-config -c {} -DVAL=7 {} -o {} 2>/dev/null",
+				 cp, unit, unit, obj));
+	println("second-source: refused={} object={}", rc2 != 0 ? 1 : 0,
+		php::file_exists(obj.c_str()) ? 1 : 0);
+	php::unlink(obj.c_str());
+
+	long rc3 = system(format("{} --no-config {} -c -o {}", cp, prog, obj));
+	println("script-argv: rc={} object={}", rc3, php::file_exists(obj.c_str()) ? 1 : 0);
+	php::unlink(obj.c_str());
+
+	php::unlink(unit.c_str());
+	php::unlink(prog.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

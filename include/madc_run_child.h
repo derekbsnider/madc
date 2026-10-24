@@ -9,8 +9,9 @@
  * verbs, so the request cannot ride the command line, which belongs to the
  * program: it rides the child's environment, MADC_RUN_CHILD, and every
  * image that can make the request serves it before its own main runs (the
- * CLI's main calls madc_serve_run_child first; <ns_madc> calls it from a
- * namespace-scope initializer, the <iostream> ios_base::Init idiom).
+ * CLI's main calls madc_serve_run_child first; a program that includes
+ * <ns_madc> calls it from its injected entry init, __madc_sys_init, before
+ * its dynamic initializers and its main).
  * Python's multiprocessing spawn of a frozen executable is the precedent.
  *
  * Thread contract: madc_run_child_process builds the caller's child (no

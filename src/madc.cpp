@@ -21,11 +21,11 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_builtin_registry.h"
 #include "madc_dl.h"
 #include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
 #include "madc_guards.h"	// the resource guards (install + the GUI lift)
@@ -38,6 +38,8 @@
 #include "madc_file_kinds.h"  // file_kind_of_path: the source's standard by extension
 #include "cir_emit_c.h"   // CirEmitLang
 #include "madc_capabilities.h" // --capabilities=json (source-free manifest)
+#include "madc_cli.h"	// madc's own command-line table
+#include "madc_sys_includes.h" // -dumpmachine: the toolchain target triple
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
 
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
@@ -88,7 +90,7 @@ double time_diff(struct timeval x , struct timeval y)
 
 // Resource guards: src/madc_guards.cpp (owner ruling 2026-09-07 — no guard
 // arms by default; knobs off|auto|N; an armed memory guard is a soft limit a
-// GUI module row lifts at run start).
+// GUI module lifts at run start).
 
 // Walk backwards from a line to include preceding comment block.
 static int find_comment_start(const std::vector<std::string> &lines, int func_line)
@@ -268,232 +270,6 @@ static int emit_function(Program &prog, const char *filepath, const char *funcna
     return emit_function_text(lines, funcname);
 }
 
-// Print the command-line help. madc has accreted gcc/clang-style options over
-// time; keep this in sync with the argument parser in main().
-static void print_usage(const char *prog)
-{
-    std::cout <<
-"Usage: " << (prog ? prog : "madc") << " [options] <source> [program-args...]\n"
-"\n"
-"madc — My Advanced Dialect of C. Parses a C/C++ dialect into a cir_node tree,\n"
-"lowers it through c2mir -> MIR, and JIT-executes it (or emits C / a PCH).\n"
-"\n"
-"Input / mode:\n"
-"  <file>                  compile and JIT-run a single source file\n"
-"  (no file)               the REPL when stdin is a terminal; otherwise\n"
-"                          compile and run stdin, as if named -\n"
-"  -                       read the program from stdin (gcc, python)\n"
-"  -i, --interactive       the REPL, even when stdin is not a terminal; with\n"
-"                          a <file>, run it first and keep its names (python -i).\n"
-"                          A line starting with : is an ex command on <file>'s\n"
-"                          buffer (vim's colon mode: :p :s :g :w :e ...; :q quits)\n"
-"  --lsp [<file>]          a Language Server Protocol server on stdin/stdout\n"
-"                          (Content-Length framed): diagnostics, symbols,\n"
-"                          definition, references, hover, semantic tokens\n"
-"                          for the documents a client opens; <file> is\n"
-"                          parsed before the client asks\n"
-"  --mcp <file>            a Model Context Protocol server on stdin/stdout\n"
-"                          (one JSON-RPC message per line): the code-graph\n"
-"                          tools over <file>, for the operator\n"
-"  --history-file=PATH|no  where the REPL keeps its history (default\n"
-"                          $MADC_HISTORY_FILE, else\n"
-"                          $XDG_STATE_HOME/madc/history); no keeps none\n"
-"  --project <prj.json>    build from a project manifest: compile each\n"
-"                          translation unit, link the modules, run the entry.\n"
-"                          Two shapes by top-level JSON kind: an OBJECT is the\n"
-"                          native manifest (tus/entry/output — what madcide\n"
-"                          writes), an ARRAY is a compile_commands.json import\n"
-"  <file.json>             a .json source is treated as a project manifest\n"
-"                          (implicit --project; gcc/clang-style by extension)\n"
-"  <file.o>...             execute madc-compiled relocatable objects (-c/-r\n"
-"                          output) as a precompiled cache: MIR's in-process\n"
-"                          loader maps and relocates them — no recompilation;\n"
-"                          several .o inputs merge first (multi-object link);\n"
-"                          with -o/-shared/-r they LINK into one artifact\n"
-"  -E                      preprocess only (print the expanded source)\n"
-"\n"
-"Language / preprocessor (gcc/clang-style):\n"
-"  --std=<std>             c89/c90/c99/c11/c17/c23 (c = c11), gnuNN, c++NN,\n"
-"                          gnu++NN, or madc (C++ keywords reserved). Without\n"
-"                          it the extension decides, as gcc/g++ do: .c gnu17,\n"
-"                          .cpp/.cc/.cxx gnu++17, .mad madc; else madc.ini's\n"
-"                          std, else madc. A --project TU alike.\n"
-"  -stdlib=<lib>           C++ standard library flavor (clang's spelling):\n"
-"                          libstdc++ / libc++, whichever this build could probe.\n"
-"                          REPLACES the C++ include search list, as clang does —\n"
-"                          it is not the same as putting the library first with -I.\n"
-"  -D<name>[=value]        define a preprocessor macro\n"
-"  -I<dir>                 add an include search directory\n"
-"  -l<name>                bind a library so its symbols resolve at link time\n"
-"                          (e.g. -lcrypt): a module or bare name spelled for the\n"
-"                          target by the module map (-lm = libm.so.6 /\n"
-"                          libSystem.B.dylib / ucrtbase.dll; lib<name>.<dso>\n"
-"                          otherwise; a path verbatim). The build-line form of\n"
-"                          the source's `import`. Works with or without --project.\n"
-"  --no-auto-load          do not act on `import` / #load library bindings (the\n"
-"                          library is linked, not loaded); link explicitly via\n"
-"                          -l. The namespace binds to the program's own scope.\n"
-"  --no-includes           do not process #include directives\n"
-"  --no-embedded-headers   disable baked-in headers; use real system headers\n"
-"  --no-posix-compat       disable Win64's additive POSIX header supplements\n"
-"\n"
-"Codegen:\n"
-"  -O, -O0 .. -O3          JIT optimization level (bare -O = -O1)\n"
-"  -fno-builtin-<name>     disable a specific builtin\n"
-"  --finstrument-functions emit __cyg_profile instrumentation hooks\n"
-"\n"
-"Output (no run):\n"
-"  --emit=c11|mc11         render the cir_node tree as C / MC11 source\n"
-"  --emit-pch              write a .madh precompiled header\n"
-"  --emit-function <name>  print one function's source\n"
-"  --dump-source           reconstruct full-fidelity source\n"
-"  --dump-cir | --dump-nodes | --dump-cir-checked   dump the cir_node tree\n"
-"\n"
-"Frozen forest (compile once, run without parsing):\n"
-"  --freeze=<file>         parse + translate, then freeze the module tree\n"
-"                          into a forest snapshot container (no run)\n"
-"  --freeze-append=<bin>   same, but append the container to an existing\n"
-"                          binary (found later from its EOF footer)\n"
-"  --freeze-mir-cache      also compile the frozen module and pack its MIR\n"
-"                          binary form as a cache segment (consumers skip\n"
-"                          node rebuild + c2mir; absent = normal fallback)\n"
-"  --freeze-ledger=<src>   also compile this C-lane runtime source into the\n"
-"                          container's AOT ledger segment, so -static-libmadc\n"
-"                          programs carry it (repeatable; the build's list is\n"
-"                          scripts/ledger_sources.txt)\n"
-"  --freeze-also-std=<std> label the frozen profile to serve compiles under\n"
-"                          this --std= too (repeatable; the release pack\n"
-"                          names the C++ modes that share madc's corpus)\n"
-"  --freeze-sources=<list> also pack the exact text of every file <list> names\n"
-"                          (one path per line) as source-only units, served to\n"
-"                          a compile with no headers on disk (repeatable; the\n"
-"                          release pack lists every system header)\n"
-"  --no-sysroot-includes   resolve <...> only from the toolchain's own roots\n"
-"                          (the C++ stdlib dirs + the compiler's builtin dir)\n"
-"                          and the embedded headers — never the host's C\n"
-"                          library / SDK dirs. The freezer's posture: a frozen\n"
-"                          forest is the header-less consumer's corpus\n"
-"  --run-frozen[=<file>]   thaw + compile + run a frozen container; with no\n"
-"                          value, load the blob appended to this executable.\n"
-"                          Remaining arguments become the program's argv\n"
-"  --freeze-run            freeze to a temp container, then re-exec this\n"
-"                          madc in a FRESH process to run it (round-trip)\n"
-"  --pack-forest=<file>    with -o/-shared: the emitted native image also\n"
-"                          carries this frozen container in its self-image\n"
-"                          carrier (ELF: appended trailer; Mach-O: a\n"
-"                          __MADC,__forest section signed at emit)\n"
-"  --dump-forest[=<file>]  print a container's directory + grove payloads\n"
-"                          (decl index, PP exports, edges, branch macros,\n"
-"                          canonical order); no value = this executable's blob\n"
-"  --forest-bind[=<file>]  bind grove-backed system #includes from a frozen\n"
-"                          container instead of live-parsing; no value = the\n"
-"                          discovery chain below. This is the DEFAULT for\n"
-"                          compiles (live fall-through when nothing is\n"
-"                          found); freeze modes live-parse unless it is\n"
-"                          passed explicitly.\n"
-"                          Discovery order (first usable container wins):\n"
-"                          1. this binary's own image (ELF trailer /\n"
-"                             Mach-O __MADC,__forest section),\n"
-"                          2. the libmadc image, when linked shared,\n"
-"                          3. <exe>.forest, then <lib>.forest (sidecars),\n"
-"                          4. the $MADC_FOREST path,\n"
-"                          5. the madc.ini `forest' key\n"
-"  --forest-touch-log=<file>  (pack step) record the frozen-table reads\n"
-"                          this compile's bind makes, for --forest-relayout\n"
-"  --forest-relayout=<image> <log>...  (pack step) lay the image's last\n"
-"                          forest container out by the recorded reads\n"
-"  --no-forest-bind        force live parse (overrides the default and an\n"
-"                          explicit --forest-bind; the A/B measurement lever)\n"
-"  --dump-registered       parse, then print the registered name maps\n"
-"                          (forest index-parity oracle input; no run)\n"
-"  -dM                     preprocess, then print the effective macro table\n"
-"                          (gcc -dM -E analogue; no parse, no run)\n"
-"\n"
-"Misc:\n"
-"  --show-stats            print input/token/timing stats (read, lex, parse,\n"
-"                          c2mir, execute) to stderr after the run\n"
-"  -g                      debug info: gdb can break/step/inspect the JIT'd\n"
-"                          program (forces -O0, no inlining, spill-all)\n"
-"  -w                      inhibit all warning messages (gcc -w)\n"
-"  -fdiagnostics-color[=WHEN]  colour diagnostics (gcc's spelling): WHEN is\n"
-"                          auto (the default: a terminal only, never with\n"
-"                          NO_COLOR set), always, or never; bare = always\n"
-"  -fno-diagnostics-color  never colour diagnostics\n"
-"  -v, --verbose           verbose / debug output\n"
-"  -h, -?, --help          show this help\n"
-"  -V, --version           print the madc version (and the cross target, if\n"
-"                          this artifact has one) and exit\n"
-"  --capabilities=json     print the build's machine-readable capability\n"
-"                          manifest (no source file required) and exit\n"
-"\n"
-"Configuration file (optional; CLI > environment > madc.ini > defaults):\n"
-"  --config=<file>         read this madc.ini instead of searching; a file\n"
-"                          that fails to load is an error, never ignored\n"
-"  --no-config             skip the search entirely (hermetic builds)\n"
-"  Searched in order, first existing file wins (never merged): ./madc.ini,\n"
-"  $XDG_CONFIG_HOME/madc/madc.ini (or ~/.config/madc/madc.ini), then the\n"
-"  system config dir. Keys — an unknown one is an error, not a warning:\n"
-"    std = c17            default dialect (a --std= on the CLI wins)\n"
-"    stdlib = libc++      default C++ stdlib flavor (a -stdlib= on the CLI wins)\n"
-"    forest = <file>      frozen forest container (discovery arm 5)\n"
-"    include = <dir>      extra include dir, repeatable, searched after -I\n"
-"    cpu-limit = off|auto|<secs>  MADC_CPU_LIMIT default (auto = off)\n"
-"    mem-limit = off|auto|<MB>    MADC_MEM_LIMIT default\n"
-"  Relative paths resolve against the config file's own directory; ~/ works.\n"
-"\n"
-"Environment:\n"
-"  MADC_CPU_LIMIT=off|auto|<secs>  RLIMIT_CPU guard (default off; auto is\n"
-"                          off too — madc also runs the program, so no finite\n"
-"                          default is safe; for embedding hosts and sandboxes)\n"
-"  MADC_MEM_LIMIT=off|auto|<MB>    address-space guard (RLIMIT_AS, a SOFT\n"
-"                          limit covering JIT mappings); default off; auto =\n"
-"                          4096 MB + 128 MB per --project TU (the test runner\n"
-"                          asks for auto). A program that imports a GUI module\n"
-"                          lifts it at run start. Trips name the knob.\n"
-"  MADC_FOREST=<file>      frozen forest container to bind when no earlier\n"
-"                          discovery arm (binary image, libmadc image,\n"
-"                          <exe>.forest / <lib>.forest sidecars) carries one;\n"
-"                          beats the madc.ini `forest' key, which is last\n"
-"  XDG_CONFIG_HOME=<dir>   where the madc.ini search looks for the user config\n"
-"                          (<dir>/madc/madc.ini; default ~/.config)\n"
-"\n"
-"AOT output (gcc vocabulary; do not run):\n"
-"  -c [-o file.o]          compile to a relocatable native object\n"
-"                          (default: <source-base>.o in the current dir;\n"
-"                          --project: one .o per TU, gcc semantics)\n"
-"  -r [-o file.o]          relocatable link output (gcc/ld -r): ONE .o\n"
-"                          carrying the whole input — with --project the\n"
-"                          whole-program capture (default name: a.out)\n"
-"  -o prog                 compile to a native executable — MIR assembles\n"
-"                          the ELF directly (no external toolchain); needs\n"
-"                          libmadc.so at run time (DT_RUNPATH is set);\n"
-"                          position-independent (PIE) by default, gcc parity\n"
-"  -static-libmadc         carry the madc runtime pieces the program needs\n"
-"                          INSIDE the emitted image (from this binary's AOT\n"
-"                          ledger), so it runs with no madc library at all;\n"
-"                          libc/libstdc++ stay dynamic. Covers the C lane\n"
-"                          (try/catch, VLA scope exit); a program needing the\n"
-"                          C++ script-lane runtime refuses, naming the\n"
-"                          symbols. -static is an alias (gcc -static-libgcc\n"
-"                          precedent)\n"
-"  -fno-eval-shims         leave the __madc_shim_* host-call adapters out of\n"
-"                          the artifact: it will not be called through the\n"
-"                          value ABI by a libmadc host. An executable emit\n"
-"                          implies this; pass it when compiling .o files you\n"
-"                          will link with -static-libmadc (the adapters need\n"
-"                          value-ABI accessors, which are not on the ledger)\n"
-"  -pie / -no-pie          keep / drop the PIE layout: -no-pie emits a\n"
-"                          fixed-base ET_EXEC instead of the ET_DYN PIE\n"
-"  -mwindows / -mconsole   Windows: the executable's subsystem — a windowed\n"
-"                          program (no console at start) / the default\n"
-"                          console; a --project build reads the manifest's\n"
-"                          \"kind\" (console | gui) instead\n"
-"  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
-"                          dlopen/import-consumable; PIC, no TEXTREL)\n"
-"  --emit-object/--emit-executable <path> are aliases of -c -o / -o.\n"
-"  -l<name> becomes a DT_NEEDED / load command / PE import in AOT mode (opened otherwise).\n";
-}
-
 #ifdef MADC_CROSS_TARGET
 // Cross build (gcc cross model): this binary EMITS native artifacts for
 // MADC_CROSS_TARGET and can never execute target code on this host. Every
@@ -507,6 +283,69 @@ static int cross_refuse_run(const char *lane)
     return 1;
 }
 #endif
+
+// gcc's -Wl,<list>: the comma-split options the linker would see. madc is
+// its own linker, so it reads what it implements — `-rpath <dir>` /
+// `-rpath=<dir>`, appended to `runpath` — and false with `refused` naming the
+// first option it does not, so an option is never dropped silently.
+static bool read_linker_options(const char *list, std::vector<std::string> &runpath,
+                                std::string &refused)
+{
+    std::vector<std::string> words;
+    std::string word;
+    for ( const char *p = list; ; p++ )
+    {
+        if ( *p == ',' || *p == '\0' )
+        {
+            words.push_back(word);
+            word.clear();
+            if ( *p == '\0' )
+                break;
+        }
+        else
+            word += *p;
+    }
+    for ( size_t i = 0; i < words.size(); i++ )
+    {
+        if ( words[i] == "-rpath" && i + 1 < words.size() && !words[i + 1].empty() )
+            runpath.push_back(words[++i]);
+        else if ( words[i].compare(0, 7, "-rpath=") == 0 && words[i].size() > 7 )
+            runpath.push_back(words[i].substr(7));
+        else
+        {
+            refused = words[i];
+            return false;
+        }
+    }
+    return true;
+}
+
+// The preprocess-only stop (-E / --dump-source, -dM): its text goes to the
+// file -o names, else stdout (gcc). -dM wins over -E, as in `gcc -dM -E`.
+static int write_preprocessed_output(Program &prog, bool macros, const char *path)
+{
+    FILE *out = path ? fopen(path, "w") : stdout;
+    if ( !out )
+    {
+        std::cerr << "madc: cannot open output file " << path << ": "
+                  << strerror(errno) << std::endl;
+        return 1;
+    }
+    if ( macros )
+        prog.dump_macros(out);
+    else
+    {
+        auto text = prog.reconstruct_source();
+        fwrite(text.data(), 1, text.size(), out);
+    }
+    if ( out != stdout && fclose(out) != 0 )
+    {
+        std::cerr << "madc: cannot write output file " << path << ": "
+                  << strerror(errno) << std::endl;
+        return 1;
+    }
+    return 0;
+}
 
 // The file lane's one read of its input (plan §41.5a): `-` names stdin, as
 // in gcc and python, read whole into the buffer lane; any other argument
@@ -627,12 +466,12 @@ static int run_lsp(std::unique_ptr<Program> prog, const char *file,
 // one message per line — the tools over FILE's document, for the lone local
 // client, the operator (the owner tier), the session's project memory
 // (memory-only: its events, proposals, records and test runs) and the tools
-// its loaded modules bring (-lmadcgit: the version history). The
+// its imported modules bring (--import=git: the version history). The
 // configured Program is the active runtime Program for the server's life, as
 // for --lsp.
 // The registry a madc --mcp server serves: the code-graph tools, the
-// session's project memory, and the tools the Program's loaded modules bring
-// (-lmadcgit: the version history, 1C.14).
+// session's project memory, and the tools the Program's imported modules
+// bring (--import=git: the version history, 1C.14).
 static int run_mcp(std::unique_ptr<Program> prog, const char *file)
 {
     madc::channel io("stdio://");
@@ -821,11 +660,12 @@ int main(int argc, char **argv)
 	Program::RegistrationPolicy::ForestPolicy::loud_fallback;
     // OWNER LAW: the standard core system headers come from libmadc, never a
     // system include dir (.claude/rules/embedded-headers.md, top section).
-    prog->registration_policy.system_headers_from_libmadc = true;
-    engine.registration_policy.system_headers_from_libmadc = true;
+    prog->registration_policy.system_header_source =
+	Program::RegistrationPolicy::SystemHeaderSource::libmadc;
+    engine.registration_policy.system_header_source =
+	Program::RegistrationPolicy::SystemHeaderSource::libmadc;
 #endif
 
-    int filearg = 1;
     const char *emit_object_path = NULL;
     const char *emit_executable_path = NULL;
     const char *generic_output_path = NULL;
@@ -833,7 +673,7 @@ int main(int argc, char **argv)
     bool emit_pch = false;
     bool dump_cir = false;        // --dump-cir: dump CIR tree before checking
     bool dump_nodes = false;      // --dump-nodes: dump cir_node tree via madc walker
-    bool dump_source = false;     // --dump-source: full-fidelity source reconstruction (trivia round-trip)
+    bool dump_source = false;     // --dump-source / -E: full-fidelity source reconstruction
     bool dump_checked = false;    // --dump-cir-checked: post-check tree dump (c2m -d stage)
     bool do_emit = false;         // --emit=c11|mc11: render cir_node tree as C, no run
     CirEmitLang emit_lang = celC11;
@@ -842,19 +682,27 @@ int main(int argc, char **argv)
     std::vector<std::string> cli_define_args;  // -D as given: likewise
     std::vector<std::string> link_libs;   // -l<name>: TARGET spellings (madc_modules) opened RTLD_GLOBAL
     std::vector<std::string> cc_link_args; // -l<name> → DT_NEEDED in AOT mode
+    MadcLinkPaths link_paths;             // -L<dir> (the -l search) and -Wl,-rpath,<dir> (DT_RUNPATH)
     bool compile_object = false;          // -c: emit a relocatable .o, no run
     bool emit_shared = false;             // -shared: emit an ET_DYN .so, no run
     bool no_pie = false;                  // -no-pie: fixed-base ET_EXEC (default = PIE, gcc parity)
     bool emit_relocatable = false;        // -r: relocatable link output — ONE .o (gcc/ld -r), no run
     bool show_help = false;               // --help / -h / -?
+    bool help_json = false;               // --help=json
+    bool show_completion = false;         // --completion=SHELL
+    madc::cli::shell completion_shell = madc::cli::shell::bash;
     bool show_version = false;            // --version / -V
+    bool show_machine = false;            // -dumpmachine
     bool show_capabilities = false;       // --capabilities=json
+    const char *builtin_registry_out = NULL; // --emit-builtin-registry=: the generated registration
+    const char *module_table_out = NULL;     // --emit-module-table=: a module's generated declarations
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
     bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
     std::vector<std::string> freeze_ledger_srcs;  // --freeze-ledger=: AOT ledger sources (S5)
     std::vector<madc::dis::istring> freeze_also_std;  // --freeze-also-std=: more standards the profile serves
+    bool freeze_raw = false;              // --freeze-raw: the profile is stored uncompressed
     std::vector<std::string> freeze_source_lists;  // --freeze-sources=: lists of files for the source arm
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
@@ -869,399 +717,413 @@ int main(int argc, char **argv)
     const char *config_path = NULL;       // --config=<file>: this madc.ini instead of the lookup chain
     bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
     bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
+    madc::dis::istring cli_std_option;    // that --std='s standard name: a command-line project's units compile under it
     bool interactive = false;             // -i / --interactive: the REPL, whatever stdin is (D20)
     bool lsp = false;                     // --lsp: the Language Server Protocol on stdio (split arc 1C.12)
     bool mcp = false;                     // --mcp: the Model Context Protocol on stdio (split arc 1C)
+    bool stdio_transport = false;         // --stdio: an LSP client names --lsp's transport
     std::string history_file;             // --history-file=PATH|no: the REPL's history (D23)
     bool history_file_given = false;
 
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
-            madc_verbose = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "-O", 2) == 0 && (argv[i][2] == '\0' ||
-                   (argv[i][2] >= '0' && argv[i][2] <= '3' && argv[i][3] == '\0'))) {
-            // -O / -O0..-O3 : codegen optimization level (bare -O == -O1).
-            madc_opt_level = (argv[i][2] == '\0') ? 1 : (argv[i][2] - '0');
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-g") == 0) {
+    // AOT (-c / -shared / -r / -o / --emit-*): compile through gen
+    // object-capture mode and write a native artifact instead of running.
+    // -o without -c or -shared means a linked executable (gcc semantics);
+    // --emit-pch keeps its own -o meaning (.madh output path).
+    // -E / -dM stop after preprocessing: -o names that text's file, not a
+    // native artifact.
+    auto preprocess_only = [&]() { return dump_source || dump_macro_table; };
+    auto native_artifact_requested = [&]() {
+        return compile_object || emit_shared || emit_relocatable
+            || emit_object_path || emit_executable_path
+            || (generic_output_path && !emit_pch && !preprocess_only());
+    };
+
+    // madc's command line, read by THE reader against madc's table
+    // (src/madc_cli.cpp: the spellings, the lane rule, @file); each option
+    // applies here, in command-line order. The values point into `parsed`,
+    // which lives until main() returns.
+    const madc::cli::result parsed =
+        madc::cli::parse(madc_cli_table(), std::vector<std::string>(argv + 1, argv + argc));
+    if ( !parsed.ok() )
+    {
+        std::cerr << "madc: error: " << parsed.message << std::endl;
+        return 1;
+    }
+    for ( size_t k = 0; k < parsed.options.size(); k++ )
+    {
+        const madc::cli::occurrence &o = parsed.options[k];
+        const char *value = o.value.c_str();
+        // An optional value's bare word (--run-frozen) is not its empty
+        // value (--run-frozen=).
+        const bool bare = o.spelled && o.word == o.spelled;
+        switch ( (cli_option)o.id )
+        {
+        case cli_option::none:
+            break;
+        case cli_option::verbose:
+            madc_set_verbose(true);
+            break;
+        case cli_option::opt_level:
+            // Bare -O == -O1; the row's choices admit 0..3.
+            madc_opt_level = o.value.empty() ? 1 : o.value[0] - '0';
+            break;
+        case cli_option::debug_info:
             madc_debug_info = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-w") == 0) {
-            // gcc vocabulary: inhibit all warning messages (c2mir's included).
-            madc_no_warnings = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-c") == 0) {
-            // gcc vocabulary: compile to a relocatable native .o, do not run.
+            break;
+        case cli_option::no_warnings:
+            madc_no_warnings = true;	// gcc -w: c2mir's warnings included
+            break;
+        case cli_option::compile_object:
             compile_object = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-shared") == 0) {
-            // gcc vocabulary: produce a MIR-assembled ET_DYN shared object.
+            break;
+        case cli_option::shared:
             emit_shared = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-r") == 0) {
-            // gcc/ld vocabulary: relocatable link output — combine the whole
-            // input set into ONE relocatable .o instead of an executable.
+            break;
+        case cli_option::relocatable:
             emit_relocatable = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-no-pie") == 0) {
-            // gcc vocabulary: fixed-base ET_EXEC executable instead of the
-            // default position-independent (PIE) one.
+            break;
+        case cli_option::no_pie:
             no_pie = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-pie") == 0) {
-            // gcc vocabulary: explicitly request the (default) PIE layout.
+            break;
+        case cli_option::pie:
             no_pie = false;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-mwindows") == 0) {
-            // mingw-gcc vocabulary: a windowed program — the PE gets the
-            // WINDOWS_GUI subsystem (no console at start). Emit-lane state
-            // like -static-libmadc; ELF / Mach-O emits ignore it. The
-            // --project lane takes the manifest's "kind" instead.
+            break;
+        case cli_option::gui_subsystem:
+            // Emit-lane state like -static-libmadc; ELF / Mach-O emits ignore
+            // it; the --project lane takes the manifest's "kind" instead.
             madc_gui_subsystem = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-mconsole") == 0) {
-            // mingw-gcc vocabulary: the (default) console subsystem.
+            break;
+        case cli_option::console_subsystem:
             madc_gui_subsystem = false;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--emit-object") == 0 && i + 1 < argc) {
-            // alias for -c -o <path>
-            emit_object_path = argv[++i];
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--emit-executable") == 0 && i + 1 < argc) {
-            // alias for -o <path>
-            emit_executable_path = argv[++i];
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-            generic_output_path = argv[++i];
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "-I", 2) == 0) {
-            // -Ipath or -I path
-            const char *path = argv[i] + 2;
-            if ( *path == '\0' && i + 1 < argc )
-                path = argv[++i];
-            prog->add_include_dir(path);	// guards empty + normalizes trailing '/'
-            if ( *path )
-                cli_include_dirs.push_back(path);
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "-D", 2) == 0) {
-            // -DNAME, -DNAME=VALUE, or -D NAME (repeatable). A bare NAME defines
-            // it as "1" (gcc behavior). Object-like only; applied after the
-            // builtin defines so a -D can override one. (Used to supply the
-            // predefined-macro environment real system headers branch on.)
-            const char *def = argv[i] + 2;
-            if ( *def == '\0' && i + 1 < argc )
-                def = argv[++i];
-            prog->add_cli_define(def);	// guards empty + splits NAME[=VALUE]
-            if ( *def )
-                cli_define_args.push_back(def);
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--emit-pch") == 0) {
+            break;
+        case cli_option::emit_object:
+            emit_object_path = value;
+            break;
+        case cli_option::emit_executable:
+            emit_executable_path = value;
+            break;
+        case cli_option::output:
+            generic_output_path = value;
+            break;
+        case cli_option::include_dir:
+            prog->add_include_dir(value);	// guards empty + normalizes trailing '/'
+            if ( *value )
+                cli_include_dirs.push_back(value);
+            break;
+        case cli_option::define:
+            // NAME, NAME=VALUE (a bare NAME is "1", gcc). Object-like only;
+            // applied after the builtin defines so a -D can override one.
+            prog->add_cli_define(value);	// guards empty + splits NAME[=VALUE]
+            if ( *value )
+                cli_define_args.push_back(value);
+            break;
+        case cli_option::emit_pch:
             emit_pch = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--emit-function") == 0 && i + 1 < argc) {
-            emit_function_name = argv[++i];
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--no-includes") == 0) {
+            break;
+        case cli_option::emit_function:
+            emit_function_name = value;
+            break;
+        case cli_option::no_includes:
             prog->skip_includes = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--no-embedded-headers") == 0) {
-            // Header partition (madc-header-partition-handoff.md): bypass embedded
-            // SYSTEM-library shims (glibc/libstdc++ twins) so `#include <...>` uses
-            // the REAL headers on disk, while KEEPING madc-own headers (ns_*/__madc__,
-            // which have no real twin) and compiler-owned freestanding headers
-            // (stddef/limits/float). The classifier is data-driven
-            // (embedded_header_is_system_library_shim). This is the incremental
-            // shim-retirement lever; it replaces the old disallow-everything gate,
-            // which wrongly also dropped ns_php etc.
-            // Rides the engine as well as the current Program so --project
-            // translation units inherit the same target surface (per-TU
-            // Programs copy only the engine's policy, configure_program).
+            break;
+        case cli_option::no_embedded_headers:
+            // Header partition (madc-header-partition-handoff.md): bypass the
+            // embedded SYSTEM-library shims so <...> reads the real headers
+            // on disk, keeping madc-own and compiler-owned headers
+            // (embedded_header_is_system_library_shim). Rides the engine so
+            // --project units inherit it. The ONE switch that sends the core
+            // system headers to disk.
             engine.registration_policy.bypass_system_library_headers = true;
             prog->registration_policy.bypass_system_library_headers = true;
-            // The ONE switch that sends the core system headers to disk.
-            engine.registration_policy.system_headers_from_libmadc = false;
-            prog->registration_policy.system_headers_from_libmadc = false;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--no-posix-compat") == 0) {
-            // This policy rides the engine as well as the current Program so
-            // --project translation units inherit the same target surface.
+            engine.registration_policy.system_header_source =
+                Program::RegistrationPolicy::SystemHeaderSource::disk;
+            prog->registration_policy.system_header_source =
+                Program::RegistrationPolicy::SystemHeaderSource::disk;
+            break;
+        case cli_option::no_posix_compat:
+            // Rides the engine so --project units inherit the target surface.
             engine.registration_policy.enable_posix_compat = false;
             prog->registration_policy.enable_posix_compat = false;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--no-auto-load") == 0) {
-            // Do not act on `import` / #load library bindings: the library is
-            // not opened and the namespace binds to the program's own symbol
-            // scope, so linking is explicit (e.g. via -l). Set on the engine
-            // too so --project translation-unit Programs (created from the
-            // engine) inherit it.
+            break;
+        case cli_option::no_auto_load:
+            // `import` / #load bind to the program's own symbol scope; the
+            // library is linked, never opened (link explicitly via -l).
+            // Rides the engine so --project units inherit it.
             engine.registration_policy.enable_auto_library_loading = false;
             prog->registration_policy.enable_auto_library_loading = false;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--finstrument-functions") == 0) {
+            break;
+        case cli_option::instrument_functions:
             prog->instrument_functions = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "-fno-builtin-", strlen("-fno-builtin-")) == 0) {
-            const char *name = argv[i] + strlen("-fno-builtin-");
-            if ( *name )
-                prog->disabled_builtin_names.insert(name);
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-fno-eval-shims") == 0
-                || strcmp(argv[i], "-feval-shims") == 0) {
+            break;
+        case cli_option::no_builtin:
+            prog->disabled_builtin_names.insert(value);	// a joined value: never empty
+            break;
+        case cli_option::no_eval_shims:
             // Whether this artifact can be host-called through the value ABI
-            // is a property of the BUILD, and for a .o only the build knows:
-            // an executable never can (implied), a shared object usually can,
-            // and a .o headed for a standalone link never will. Same shape as
-            // -fPIC — the object's intended use, stated at compile time.
-            // Emit-lane state (like -static-libmadc), so every lane —
-            // single-TU, --project, .o link — sees the same answer.
-            madc_no_eval_shims = strcmp(argv[i], "-fno-eval-shims") == 0;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-fdiagnostics-color") == 0
-                || strncmp(argv[i], "-fdiagnostics-color=", 20) == 0) {
-            // gcc's -fdiagnostics-color[=WHEN]: auto (the default) colours a
-            // terminal only; the bare flag is always.
-            const char *when = argv[i][19] ? argv[i] + 20 : "always";
+            // is a property of the BUILD (for a .o only the build knows), as
+            // -fPIC is: emit-lane state every lane sees.
+            madc_no_eval_shims = true;
+            break;
+        case cli_option::eval_shims:
+            madc_no_eval_shims = false;
+            break;
+        case cli_option::pic:
+            break;	// madc's code is position-independent already
+        case cli_option::diagnostics_color:
+        {
+            // gcc's -fdiagnostics-color[=WHEN]: the bare flag is always.
+            const char *when = bare ? "always" : value;
             madc::colour_when code;
-            if ( !madc::parse_colour_when(when, code) ) {
+            if ( !madc::parse_colour_when(when, code) )
+            {
                 std::cerr << "Unknown -fdiagnostics-color= value: " << when
                           << " (auto, always, never)" << std::endl;
                 return 1;
             }
             madc::set_colour_when(code);
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-fno-diagnostics-color") == 0) {
+            break;
+        }
+        case cli_option::no_diagnostics_color:
             madc::set_colour_when(madc::colour_when::never);
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--dump-cir") == 0) {
+            break;
+        case cli_option::dump_cir:
             dump_cir = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--dump-nodes") == 0) {
+            break;
+        case cli_option::dump_nodes:
             dump_nodes = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--dump-cir-checked") == 0) {
+            break;
+        case cli_option::dump_cir_checked:
             dump_checked = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--dump-source") == 0) {
+            break;
+        case cli_option::dump_source:
+        case cli_option::preprocess:
+            // -E: madc preprocesses during tokenize(), so the token stream IS
+            // the preprocessed unit; reconstruct_source prints it,
+            // content-only (no `# line` markers), diffable against gcc -E.
             dump_source = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--show-stats") == 0) {
+            break;
+        case cli_option::show_stats:
             show_stats = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-E") == 0) {
-            // -E: preprocess only — expand #include/#define/macros and print the
-            // resulting token stream as text, then stop (no parse, no codegen).
-            // madc's lexer preprocesses during tokenize(), so the token stream IS
-            // the preprocessed translation unit; this reuses the dump_source path
-            // (reconstruct_source over the post-PP tokens). Content-only (no
-            // `# line` markers) so it diffs cleanly against `gcc -E | grep -v '^#'`.
-            dump_source = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--freeze=", 9) == 0) {
-            freeze_path = argv[i] + 9;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--freeze-append=", 16) == 0) {
-            freeze_path = argv[i] + 16;
+            break;
+        case cli_option::freeze:
+            freeze_path = value;
+            break;
+        case cli_option::freeze_append:
+            freeze_path = value;
             freeze_append = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--freeze-mir-cache") == 0) {
+            break;
+        case cli_option::freeze_mir_cache:
             freeze_mir_cache = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--freeze-ledger=", 16) == 0) {
-            // Repeatable: each C-lane runtime source compiled into the
-            // container's AOT ledger segment (forest-carriers S5). The
-            // canonical list is scripts/ledger_sources.txt, handed over by
-            // scripts/forest_pack.sh — never spelled out here.
-            freeze_ledger_srcs.push_back(argv[i] + 16);
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--freeze-also-std=", 18) == 0) {
-            // Repeatable: one more --std= the frozen profile serves — the
-            // madc dialect's corpus IS the C++17 one (scripts/
-            // forest_pack_share.sh names the standards at pack time).
-            freeze_also_std.push_back(argv[i] + 18);
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--freeze-sources=", 17) == 0) {
-            // Repeatable: a file listing, one per line, the headers whose
-            // exact text joins the container as source-only units — the
-            // source arm that serves every system header. The list is
-            // generated by scripts/forest_pack*.sh, never spelled out here.
-            freeze_source_lists.push_back(argv[i] + 17);
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--freeze-run") == 0) {
+            break;
+        case cli_option::freeze_ledger:
+            // Repeatable; the canonical list is scripts/ledger_sources.txt,
+            // handed over by scripts/forest_pack.sh — never spelled out here.
+            freeze_ledger_srcs.push_back(o.value);
+            break;
+        case cli_option::freeze_also_std:
+            freeze_also_std.push_back(o.value);
+            break;
+        case cli_option::freeze_raw:
+            freeze_raw = true;
+            break;
+        case cli_option::emit_builtin_registry:
+            builtin_registry_out = value;
+            break;
+        case cli_option::emit_module_table:
+            module_table_out = value;
+            break;
+        case cli_option::freeze_sources:
+            freeze_source_lists.push_back(o.value);
+            break;
+        case cli_option::freeze_run:
             freeze_run = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--no-sysroot-includes") == 0) {
-            // Hermetic system-include resolution (darwin-host port D2): the
-            // toolchain-only view of the include table, so a FREEZE on a host
-            // that carries a real SDK produces the same corpus as one that
-            // does not (the header-less consumer's). Rides the engine too so
-            // --project translation units inherit it.
+            break;
+        case cli_option::no_sysroot_includes:
+            // The toolchain-only include view, so a freeze on a host with a
+            // real SDK makes the header-less consumer's corpus. Rides the
+            // engine too.
             engine.registration_policy.enable_sysroot_includes = false;
             prog->registration_policy.enable_sysroot_includes = false;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--pack-forest=", 14) == 0) {
-            madc_pack_forest_path = argv[i] + 14;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-static-libmadc") == 0
-                   || strcmp(argv[i], "-static") == 0) {
-            // gcc's -static-libgcc precedent: carry the madc runtime pieces
-            // this program needs INSIDE the emitted image (from the AOT
-            // ledger), so it runs with no madc library installed. libc and
-            // libstdc++ stay dynamic. `-static` is accepted as the alias
-            // where full-static cannot exist (darwin has no static
-            // libSystem) and is reserved for a future true full-static on
-            // Linux — same promise either way today.
-            madc_static_libmadc = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--run-frozen") == 0) {
-            run_frozen = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--run-frozen=", 13) == 0) {
-            run_frozen = true;
-            run_frozen_path = argv[i] + 13;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--dump-forest") == 0) {
-            dump_forest = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--dump-forest=", 14) == 0) {
-            dump_forest = true;
-            dump_forest_path = argv[i] + 14;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--forest-bind") == 0) {
-            // Phase 6 (opt-in): bind grove-backed system #includes from the
-            // blob appended to this executable instead of live-parsing them.
-            prog->registration_policy.enable_forest_bind = true;
-            forest_bind_asked = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--forest-bind=", 14) == 0) {
-            // --forest-bind=PATH: bind from a standalone --freeze container
-            // (dev/testing without appending to the binary).
-            prog->registration_policy.enable_forest_bind = true;
-            forest_bind_asked = true;
-            prog->forest_bind_path = argv[i] + 14;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--forest-touch-log=", 19) == 0) {
-            // The pack step's layout recorder: log the frozen-table reads
-            // this compile's bind makes (scripts/forest_pack_layout.sh).
-            prog->forest_touch_log = argv[i] + 19;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--forest-relayout=", 18) == 0) {
-            // The pack step's layout pass: the remaining arguments are the
-            // recorded root binds' logs, in canonical root order.
-            forest_relayout_path = argv[i] + 18;
-            filearg = i + 1;
             break;
-        } else if (strcmp(argv[i], "--no-forest-bind") == 0) {
-            // Force live parse: overrides both the packed-binary default and
-            // an explicit --forest-bind (the A/B lever for measurement).
+        case cli_option::pack_forest:
+            madc_pack_forest_path = value;
+            break;
+        case cli_option::static_libmadc:
+            madc_static_libmadc = true;
+            break;
+        case cli_option::run_frozen:
+            run_frozen = true;
+            if ( !bare )
+                run_frozen_path = value;
+            break;
+        case cli_option::dump_forest:
+            dump_forest = true;
+            if ( !bare )
+                dump_forest_path = value;
+            break;
+        case cli_option::forest_bind:
+            prog->registration_policy.enable_forest_bind = true;
+            forest_bind_asked = true;
+            if ( !bare )
+                prog->forest_bind_path = value;
+            break;
+        case cli_option::forest_touch_log:
+            prog->forest_touch_log = value;
+            break;
+        case cli_option::forest_relayout:
+            forest_relayout_path = value;	// the remainder is its logs
+            break;
+        case cli_option::no_forest_bind:
             no_forest_bind = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--config=", 9) == 0) {
-            // madc.ini (S6): this file is the WHOLE search — a named config
-            // that silently failed to load is the same failure class as a
-            // named forest container that was ignored.
-            config_path = argv[i] + 9;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--no-config") == 0) {
-            // Skip the madc.ini lookup entirely (hermetic builds and test
-            // runs: no ambient file in the CWD or the user's config dir can
-            // change what this compile does).
+            break;
+        case cli_option::config:
+            config_path = value;
+            break;
+        case cli_option::no_config:
             no_config = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--dump-registered") == 0) {
+            break;
+        case cli_option::dump_registered:
             dump_registered = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-dM") == 0) {
+            break;
+        case cli_option::dump_macros:
             dump_macro_table = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
-            project_manifest = argv[++i];
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "-i") == 0
-                   || strcmp(argv[i], "--interactive") == 0) {
-            // D20: the REPL even on a piped stdin (python -i); with a
-            // program file, the file first.
+            break;
+        case cli_option::project:
+            project_manifest = value;
+            break;
+        case cli_option::interactive:
             interactive = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--mcp") == 0) {
-            // split arc 1C: madc's own MCP server over a file's document.
+            break;
+        case cli_option::mcp:
             mcp = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--lsp") == 0) {
-            // split arc 1C.12: madc's own LSP server; a file after it is
-            // opened before the client asks.
+            break;
+        case cli_option::lsp:
             lsp = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--history-file=", 15) == 0) {
-            // D23 (plan §41.7a): the REPL's history file, Julia's flag;
-            // `no` keeps history for the session alone.
-            history_file = argv[i] + 15;
-            if (history_file == "no")
+            break;
+        case cli_option::stdio:
+            stdio_transport = true;
+            break;
+        case cli_option::history_file:
+            history_file = o.value;	// `no`: history for the session alone
+            if ( history_file == "no" )
                 history_file.clear();
             history_file_given = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0
-                || strcmp(argv[i], "-?") == 0) {
+            break;
+        case cli_option::help:
             show_help = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--version") == 0
-                || strcmp(argv[i], "-V") == 0) {
+            help_json = o.value == "json";
+            break;
+        case cli_option::completion:
+            show_completion = madc::cli::parse_shell(o.value, completion_shell);
+            break;
+        case cli_option::version:
             show_version = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--capabilities=json") == 0) {
+            break;
+        case cli_option::dump_machine:
+            show_machine = true;
+            break;
+        case cli_option::capabilities:
+            // json is the only format this build implements; any other (the
+            // bare word included) is refused loudly rather than answered
+            // with a schema the consumer did not ask for.
+            if ( o.value != "json" )
+            {
+                std::cerr << "Unknown capabilities format: " << o.word
+                          << " (json)" << std::endl;
+                return 1;
+            }
             show_capabilities = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--capabilities", 14) == 0) {
-            // Any other --capabilities[=fmt]: reject the format loudly rather
-            // than silently hand back the JSON schema a consumer did not ask
-            // for. `json` is the only format this build implements.
-            std::cerr << "Unknown capabilities format: " << argv[i]
-                      << " (json)" << std::endl;
-            return 1;
-        } else if (strncmp(argv[i], "-l", 2) == 0 && argv[i][2] != '\0') {
-            // -l<name>: bind a library so its symbols resolve at link time
-            // (e.g. -lcrypt). The NAME is a module or bare library name; the
-            // TARGET spelling comes from the ONE owner (madc_modules): a
-            // registry row's real image (-lm -> libm.so.6 / libSystem.B.dylib
-            // / ucrtbase.dll), else lib<name>.<dso> (<name>.dll on Windows),
-            // else the verbatim path/spelling. JIT: opened RTLD_GLOBAL below.
-            // AOT: the spelling joins the link closure (DT_NEEDED / load
-            // command / PE import) verbatim, so every lane agrees on the image.
-            std::string lib = madc_module_library_spelling(argv[i] + 2);
+            break;
+        case cli_option::library:
+        {
+            // The NAME's TARGET spelling comes from the ONE owner
+            // (madc_modules); JIT: opened RTLD_GLOBAL below; AOT: the
+            // spelling joins the link closure verbatim.
+            std::string lib = madc_module_library_spelling(value);
             cc_link_args.push_back(lib);
             link_libs.push_back(lib);
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--emit=", 7) == 0) {
+            break;
+        }
+        case cli_option::library_dir:
+            if ( *value )
+                link_paths.lib_dirs.push_back(value);
+            break;
+        case cli_option::module_path:
+            if ( *value )
+                prog->module_search_dirs.push_back(value);
+            break;
+        case cli_option::import_module:
+            if ( *value )
+                prog->command_line_imports.push_back(madc::dis::istring(value));
+            break;
+        case cli_option::linker_option:
+        {
+            // gcc's pass-through to the linker; madc is its own linker.
+            std::string refused;
+            if ( !read_linker_options(value, link_paths.runpath, refused) )
+            {
+                std::cerr << "madc: " << o.word << ": linker option '"
+                          << refused << "' is not supported (-rpath is)"
+                          << std::endl;
+                return 1;
+            }
+            break;
+        }
+        case cli_option::warning_selection:
+            break;	// madc's diagnostics are one fixed set
+        case cli_option::warnings_as_errors:
+            std::cerr << "madc: " << o.word << ": not supported (madc's warnings"
+                      << " are never errors)" << std::endl;
+            return 1;
+        case cli_option::pass_through:
+            std::cerr << "madc: " << o.word << ": not supported (madc has no separate"
+                      << " assembler or preprocessor to pass it to)" << std::endl;
+            return 1;
+        case cli_option::emit:
             // Render the cir_node tree (MC11-IR) as C source; do not run.
-            const char *lang = argv[i] + 7;
-            if (!cir_emit_lang_of(lang, emit_lang)) {
-                std::cerr << "Unknown --emit target: " << lang
+            if ( !cir_emit_lang_of(value, emit_lang) )
+            {
+                std::cerr << "Unknown --emit target: " << value
                           << " (" << CIR_EMIT_TARGETS << ")" << std::endl;
                 return 1;
             }
             do_emit = true;
-            filearg = i + 1;
-        } else if (prog->set_language_standard_option(argv[i])) {
+            break;
+        case cli_option::language_std:
+            if ( !prog->set_language_standard(o.value) )
+            {
+                std::cerr << "Unknown --std target: " << o.value << std::endl;
+                return 1;
+            }
             cli_set_std = true;
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "--std=", 6) == 0) {
-            std::cerr << "Unknown --std target: " << (argv[i] + 6) << std::endl;
-            return 1;
-        } else if (prog->set_stdlib_flavor_option(argv[i])) {
-            filearg = i + 1;
-        } else if (strncmp(argv[i], "-stdlib=", 8) == 0) {
-            // Which flavors exist is a property of the BUILD host (what
-            // gen_sys_includes.sh could probe), so name the ones this binary
-            // actually has rather than the ones the flag could spell.
-            std::cerr << "Unknown -stdlib flavor: " << (argv[i] + 8)
-                      << " (this madc was built with: " << prog->stdlib_flavor_names()
-                      << ")" << std::endl;
-            return 1;
-        } else {
-            filearg = i;
+            cli_std_option = o.value;
+            break;
+        case cli_option::stdlib_flavor:
+            // Which flavors exist is a property of the BUILD host, so name the
+            // ones this binary has rather than the ones the flag could spell.
+            if ( !prog->set_stdlib_flavor(o.value) )
+            {
+                std::cerr << "Unknown -stdlib flavor: " << o.value
+                          << " (this madc was built with: " << prog->stdlib_flavor_names()
+                          << ")" << std::endl;
+                return 1;
+            }
             break;
         }
     }
+
+    // The program's own words: the operands a line that builds took (gcc's
+    // argument permutation), then the remainder; argv[filearg..argc) as before.
+    std::vector<std::string> program_words(parsed.operands);
+    program_words.insert(program_words.end(), parsed.remainder.begin(),
+                         parsed.remainder.end());
+    std::vector<char *> program_argv(1, argv[0]);
+    for ( size_t k = 0; k < program_words.size(); k++ )
+        program_argv.push_back(&program_words[k][0]);
+    program_argv.push_back(NULL);
+    argv = program_argv.data();
+    argc = (int)program_words.size() + 1;
+    int filearg = 1;
 
     prog->class_parse_observability = show_stats;
     {
@@ -1286,6 +1148,16 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if ( show_machine )
+    {
+        // gcc's -dumpmachine: the target triple (build systems ask it —
+        // dpkg-architecture, autoconf's multiarch probe). The toolchain madc
+        // was built against answered it at build time.
+        std::cout << (*madc_toolchain_target ? madc_toolchain_target : "unknown")
+                  << std::endl;
+        return 0;
+    }
+
     if ( show_capabilities )
     {
         // Source-free like --version: emit the manifest before any madc.ini
@@ -1295,9 +1167,65 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    // The help, --help=json and the completion scripts are madc's table
+    // (src/madc_cli.cpp) through the reader's writers: one source for all.
     if ( show_help )
     {
-        print_usage(argv[0]);
+        if ( help_json )
+            std::cout << madc::cli::describe_json(madc_cli_table()) << std::endl;
+        else
+            madc::cli::write_help(std::cout, madc_cli_table(), madc::terminal_columns());
+        return 0;
+    }
+
+    if ( show_completion )
+    {
+        madc::cli::write_completion(std::cout, madc_cli_table(), completion_shell);
+        return 0;
+    }
+
+    // --emit-builtin-registry=<out.cpp> (the dialect is builtin, R1): the
+    // build's generator — the dialect files read once, as text, into one
+    // builder per name (madc_builtin_registry.cpp). No source file.
+    if ( builtin_registry_out )
+    {
+        std::ostringstream gen;
+        if ( !emit_builtin_registry(gen, std::cerr) )
+            return 1;
+        std::ofstream out(builtin_registry_out);
+        out << gen.str();
+        out.close();
+        if ( !out )
+        {
+            std::cerr << "madc: --emit-builtin-registry: cannot write "
+                      << builtin_registry_out << std::endl;
+            return 1;
+        }
+        return 0;
+    }
+
+    // --emit-module-table=<out.inc> <face>: a module's build step — its face
+    // read once, as text, into one builder per name and the static table its
+    // description returns (madc_module.h). The face is the source argument.
+    if ( module_table_out )
+    {
+        if ( filearg >= argc )
+        {
+            std::cerr << "madc: --emit-module-table: name the module's face file" << std::endl;
+            return 1;
+        }
+        std::ostringstream gen;
+        if ( !emit_module_table(gen, std::cerr, argv[filearg]) )
+            return 1;
+        std::ofstream out(module_table_out);
+        out << gen.str();
+        out.close();
+        if ( !out )
+        {
+            std::cerr << "madc: --emit-module-table: cannot write " << module_table_out
+                      << std::endl;
+            return 1;
+        }
         return 0;
     }
 
@@ -1352,7 +1280,7 @@ int main(int argc, char **argv)
     // A -stdlib= on the command line already set prog->stdlib_flavor, and CLI
     // outranks madc.ini — same precedence as `std` above.
     if ( config.has_stdlib && !prog->stdlib_flavor
-      && !prog->set_stdlib_flavor_option("-stdlib=" + config.stdlib_option) )
+      && !prog->set_stdlib_flavor(config.stdlib_option) )
     {
         std::cerr << "madc: " << config.source_path << ": unknown stdlib '"
                   << config.stdlib_option << "' (this madc was built with: "
@@ -1380,16 +1308,15 @@ int main(int argc, char **argv)
     for ( const std::string &dir : config.include_dirs )
         prog->add_include_dir(dir);
     // `modules` (split arc 1A.4) — php.ini's `extension =`: each a module
-    // name as -l<name> takes it, after the command line's. Additive, not an
-    // override (a module is a capability, not a setting); a library the
-    // command line already named is not named twice.
+    // imported as --import=<name> imports it, after the command line's.
+    // Additive, not an override (a module is a capability, not a setting); a
+    // module the command line already named is not named twice.
     for ( const std::string &name : config.modules )
     {
-        std::string lib = madc_module_library_spelling(name);
-        if ( std::find(link_libs.begin(), link_libs.end(), lib) != link_libs.end() )
-            continue;
-        cc_link_args.push_back(lib);
-        link_libs.push_back(lib);
+        madc::dis::istring module(name.c_str());
+        if ( std::find(prog->command_line_imports.begin(), prog->command_line_imports.end(),
+                       module) == prog->command_line_imports.end() )
+            prog->command_line_imports.push_back(module);
     }
     // Discovery arm 5, on both the program and the engine — the engine's copy
     // is what --project TU programs and runtime-eval children inherit (the
@@ -1440,10 +1367,34 @@ int main(int argc, char **argv)
     // it. Order matters: RLIMIT hard limits can only be lowered, never
     // raised, so the guard must know the workload before it arms.
     ProjectManifest manifest;
-    if ( project_manifest )
+    // Several sources on an artifact lane (gcc's `cc -o prog a.c b.c`,
+    // `cc -c a.c b.c`) are a project of those translation units, built by
+    // the --project lane below: one .o per unit for -c, one image for -o /
+    // -shared, every unit under the command line's --std, -I and -D. Only
+    // when EVERY operand is a unit the compiler reads; anything else keeps
+    // the single-source lane's loud refusal.
+    bool cli_sources_project = !project_manifest && !run_frozen
+        && run_object_paths.empty() && argc - filearg > 1
+        && native_artifact_requested();
+    for ( int i = filearg; cli_sources_project && i < argc; i++ )
+        if ( madc::file_kind_family(madc::file_kind_of_path(argv[i]))
+             == madc::fkUNKNOWN )
+            cli_sources_project = false;
+    if ( cli_sources_project )
+    {
+        for ( int i = filearg; i < argc; i++ )
+        {
+            ProjectTU tu;
+            tu.file = argv[i];
+            tu.std_option = cli_std_option.c_str();
+            manifest.tus.push_back(tu);
+        }
+    }
+    if ( project_manifest || cli_sources_project )
     {
         std::string err;
-        if ( !(mcp ? project_of_path(project_manifest, manifest, err)
+        if ( project_manifest
+          && !(mcp ? project_of_path(project_manifest, manifest, err)
                    : read_project_manifest(project_manifest, manifest, err)) )
         {
             std::cerr << "madc --project: " << err << std::endl;
@@ -1469,20 +1420,18 @@ int main(int argc, char **argv)
     // parse when no blob is appended or the context pin mismatches. Freeze
     // modes are excluded: a freeze PRODUCES forest state from a live parse;
     // binding while freezing stays an explicit test-harness request
-    // (--forest-bind), never the default.
-    if ( no_forest_bind || ((freeze_path || freeze_run) && !forest_bind_asked) )
+    // (--forest-bind), never the default. --no-embedded-headers is excluded
+    // too: a bound grove IS the core system headers served from libmadc, and
+    // that switch sends them to disk (owner law, embedded-headers.md) — an
+    // explicit --forest-bind=FILE is a container the user names, still bound.
+    if ( no_forest_bind || ((freeze_path || freeze_run) && !forest_bind_asked)
+      || (prog->system_headers_from_disk_only() && !forest_bind_asked) )
     {
         prog->registration_policy.enable_forest_bind = false;
         prog->forest_bind_path.clear();
     }
 
-    // AOT (-c / -shared / -o / --emit-*): compile through gen object-capture
-    // mode and write a native artifact instead of running. -o without -c or
-    // -shared means a linked executable (gcc semantics); --emit-pch keeps its
-    // own -o meaning (.madh output path).
-    bool emit_native = compile_object || emit_shared || emit_relocatable
-                    || emit_object_path || emit_executable_path
-                    || (generic_output_path && !emit_pch);
+    bool emit_native = native_artifact_requested();
 
     // gcc parity: ld rejects "-r and -shared may not be used together".
     if ( emit_relocatable && emit_shared )
@@ -1554,7 +1503,8 @@ int main(int argc, char **argv)
                          : generic_output_path ? generic_output_path
                          : "a.out";
         return madc_cir_link_objects(run_object_paths, kind, outp,
-                                     cc_link_args, prog.get()) == 0 ? 0 : 1;
+                                     cc_link_args, prog.get(),
+                                     link_paths) == 0 ? 0 : 1;
     }
 
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
@@ -1570,13 +1520,14 @@ int main(int argc, char **argv)
         if ( emit_native )
             break;
         std::string lerr;
-        if ( !madc_module_open(lib, lerr, /*bind_now=*/true) )
+        std::string target = madc_module_locate(lib, link_paths.lib_dirs);
+        if ( !madc_module_open(target, lerr, /*bind_now=*/true) )
         {
             std::cerr << "madc: -l: failed to load " << lib << ": "
                       << lerr << std::endl;
             return 1;
         }
-        prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
+        prog->loaded_lib_paths.push_back(target);   // the frozen-forest link closure
     }
 
     // The REPL host's backend (Windows, split arc 1A.5): this process is its
@@ -1651,7 +1602,7 @@ int main(int argc, char **argv)
     }
 
     if ( generic_output_path && !emit_pch && !compile_object && !emit_shared
-	 && !emit_relocatable )
+	 && !emit_relocatable && !preprocess_only() )
 	emit_executable_path = generic_output_path;
 
     if ( emit_native )
@@ -1712,7 +1663,7 @@ int main(int argc, char **argv)
     if ( emit_function_name && filearg < argc )
 	return emit_function(*prog, argv[filearg], emit_function_name);
 
-    if ( project_manifest && !mcp )
+    if ( (project_manifest || cli_sources_project) && !mcp )
     {
 	if ( emit_native )
 	{
@@ -1745,7 +1696,8 @@ int main(int argc, char **argv)
 	    int erc = madc_project_emit_native(engine, manifest, kind, outpath,
 					       cc_link_args,
 					       prog->registration_policy.enable_forest_bind,
-					       prog->forest_bind_path);
+					       prog->forest_bind_path,
+					       link_paths);
 	    return erc == 0 ? 0 : 1;
 	}
 	// Remaining positionals (filearg..argc) become the program's argv.
@@ -1777,9 +1729,9 @@ int main(int argc, char **argv)
     // what to do with a translation unit, so it has nothing to work on
     // (gcc); otherwise -i or a terminal stdin is the REPL, and a piped stdin
     // is the program, as if named `-`.
-    // The REPL's options — every argument before the first positional — are
-    // its Windows backend's command line (run_repl).
-    const std::vector<std::string> repl_options(argv + 1, argv + filearg);
+    // The REPL's options — madc's own option words, as the reader consumed
+    // them — are its Windows backend's command line (run_repl).
+    const std::vector<std::string> repl_options(parsed.option_words);
     std::vector<char *> stdin_argv;
     if ( interactive && filearg < argc && strcmp(argv[filearg], "-") == 0 )
     {
@@ -1797,6 +1749,11 @@ int main(int argc, char **argv)
 	|| emit_function_name || dump_source || dump_macro_table
 	|| dump_cir || dump_nodes || dump_checked || dump_registered
 	|| freeze_path || freeze_run;
+    if ( stdio_transport && !lsp && !mcp )
+    {
+	std::cerr << "madc: --stdio names the transport of --lsp or --mcp" << std::endl;
+	return 1;
+    }
     if ( lsp )
     {
 	if ( interactive || artifact_request || filearg + 1 < argc )
@@ -1808,6 +1765,10 @@ int main(int argc, char **argv)
 	return run_lsp(std::move(prog), filearg < argc ? argv[filearg] : NULL,
 		       repl_options);
     }
+    // A tool server's tools come from its Program's imports, read before any
+    // document parses: --import's modules enter it now.
+    if ( mcp && !prog->import_command_line_modules() )
+	return 1;
     if ( mcp && project_manifest )
     {
 	if ( interactive || artifact_request || filearg != argc )
@@ -1842,6 +1803,11 @@ int main(int argc, char **argv)
 		      << "compilation terminated." << std::endl;
 	    return 1;
 	}
+	// --import with no source only tries the imports (python -c "import
+	// NAME"), so a launcher tests before it starts: 0, or the import
+	// error and a status of its own.
+	if ( !interactive && !prog->command_line_imports.empty() )
+	    return prog->import_command_line_modules() ? 0 : madc_import_unavailable_status;
 	if ( interactive || terminal )
 	    return run_repl(std::move(prog), terminal,
 			    history_file_given ? history_file
@@ -1882,6 +1848,12 @@ int main(int argc, char **argv)
 	// runs (its threads may compile through eval).
 	std::unique_ptr<madc::dis::istring_table::hold> intern_hold(
 	    new madc::dis::istring_table::hold());
+	// --freeze-sources=: the source arm is staged BEFORE the parse — the TU
+	// being frozen sees libmadc's headers as the pack's consumers will.
+	if ( freeze_path )
+	    for ( const std::string &list : freeze_source_lists )
+		if ( !prog->pack_stage_source_list(list) )
+		    return 1;
 	// A NULL TokenProgram means a lexer-phase diagnostic already printed
 	// (failed #include, unterminated literal, bad PP directive) and
 	// compilation aborted — exit nonzero like every later phase does.
@@ -1890,18 +1862,14 @@ int main(int argc, char **argv)
 	gettimeofday(&_tk1, NULL);
 	double _fw_tk1 = prog->_forest_work_seconds;
 
-	if ( dump_source )
+	// -E / --dump-source: the preprocessed text; -dM: the effective macro
+	// table after preprocessing (madc's PP runs during tokenize), sorted —
+	// diffable against `gcc -dM -E`.
+	if ( preprocess_only() )
 	{
-	    std::cout << prog->reconstruct_source();
-	    return 0;
-	}
-
-	// -dM: the effective macro table after preprocessing (madc's PP runs
-	// during tokenize), sorted — diffable against `gcc -dM -E`.
-	if ( dump_macro_table )
-	{
-	    prog->dump_macros(stdout);
-	    return 0;
+	    std::cout.flush();
+	    return write_preprocessed_output(*prog, dump_macro_table,
+					     generic_output_path);
 	}
 
 	// CIR pipeline: madc parse → CIR translate → c2mir compile → MIR execute.
@@ -1912,11 +1880,11 @@ int main(int argc, char **argv)
 	bool parse_ok = prog->parse(tp);
 	intern_hold.reset();
 	gettimeofday(&_ps1, NULL);
-	// A GUI module row bound at parse (`import madcwebview;`) lifts an armed
+	// A GUI module imported at parse (`import ui_web;`) lifts an armed
 	// memory guard before the program runs: WebKit's address-space
 	// reservations dwarf any sane program budget (owner ruling 2026-09-07).
 	if ( parse_ok && prog->bound_gui_module )
-	    madc_lift_memory_guard("a GUI module row was imported");
+	    madc_lift_memory_guard("a GUI module was imported");
 	double _fw_ps1 = prog->_forest_work_seconds;
 	// import (module form): the modules' TARGET spellings join the native
 	// link closure exactly as -l spellings do (verbatim entries — the same
@@ -2105,11 +2073,18 @@ int main(int argc, char **argv)
 	    // blob-less binary shows just the probe cost.
 	    {
 		Program::ForestBindStats fs = prog->forest_bind_stats();
-		if ( prog->bind_directory_tried )
+		if ( prog->forest_system.directory_tried )
 		    fprintf(stderr,
 			"[stats] forest map+open ..... %.3f + %.3f s  (%s)\n",
 			fs.map_secs, fs.open_secs,
 			fs.opened ? "container bound" : "no container — live parse");
+		// The dialect is builtin (R4c): the generated table's names this
+		// compile built, in the dialect namespaces it named.
+		if ( prog->dialect_from_table() )
+		    fprintf(stderr,
+			"[stats] dialect table ....... %zu namespaces named; %zu of %zu names built\n",
+			prog->dialect_named.size(), prog->dialect_builds,
+			(size_t)madc::builtins::dialect_table_count);
 		if ( fs.opened )
 		{
 		    double reg_secs = fs.restore_secs - fs.declidx_secs - fs.mat_secs;
@@ -2207,26 +2182,28 @@ int main(int argc, char **argv)
 	// a forest snapshot container; do not run.
 	if ( freeze_path )
 	{
-	    // --freeze-sources=: the source arm joins AFTER the parse, so a
-	    // header the frozen TU tokenized keeps that record. An unreadable
-	    // list or file fails the freeze.
-	    for ( const std::string &list : freeze_source_lists )
-		if ( !prog->pack_record_source_list(list) )
-		    return 1;
+	    // --freeze-sources=: the staged arm's units join AFTER the parse, so
+	    // a header the frozen TU tokenized keeps that record. An unreadable
+	    // file fails the freeze.
+	    if ( !prog->pack_record_staged_sources() )
+		return 1;
 	    // --freeze-ledger=: compile the C-lane runtime sources into ledger
 	    // modules FIRST (each an independent compile with its own Program),
 	    // then pack them alongside the groves. A ledger failure fails the
 	    // freeze — a container that silently lacks the ledger it was asked
 	    // for is worse than no container at all.
+	    // The image-only startup members join it as the native objects an
+	    // -o / -c link merges (B231).
 	    std::vector<cir_ledger_module> ledger;
 	    if ( !freeze_ledger_srcs.empty()
-		 && !madc_cir_ledger_compile(engine, freeze_ledger_srcs, ledger,
-						 prog.get()) )
+		 && (!madc_cir_ledger_compile(engine, freeze_ledger_srcs, ledger,
+						  prog.get())
+		     || !madc_cir_crt_objects_compile(ledger)) )
 		return 1;
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
 				      freeze_append, freeze_mir_cache,
 				      ledger.empty() ? NULL : &ledger,
-				      /*progress=*/true, &freeze_also_std);
+				      /*progress=*/true, &freeze_also_std, freeze_raw);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}
@@ -2277,16 +2254,15 @@ int main(int argc, char **argv)
 	// (gcc CLI vocabulary; --emit-object/--emit-executable are aliases.)
 	if ( emit_native )
 	{
-	    // Positionals after the source are the SCRIPT's argv — but no script
-	    // runs on this lane, so they can only be misplaced flags (madc's
-	    // convention puts flags BEFORE the source, unlike gcc). Dropping
-	    // them silently turned `-c foo.c -o bar.o` into a derived-name .o
-	    // with exit 0 — a silent wrong answer. Refuse loudly instead.
+	    // Options after the source were consumed where they stood (the
+	    // permutation after the option loop), so what remains here is a
+	    // second operand this lane has no use for. Dropping it silently
+	    // would build the artifact from part of the command line — a
+	    // silent wrong answer. Refuse loudly instead.
 	    if ( filearg + 1 < argc )
 	    {
 		std::cerr << "madc: unconsumed arguments after '" << argv[filearg]
-			  << "' in AOT mode (flags go before the source"
-			     " file):";
+			  << "' in AOT mode:";
 		for ( int i = filearg + 1; i < argc; i++ )
 		    std::cerr << " " << argv[i];
 		std::cerr << std::endl;
@@ -2335,7 +2311,8 @@ int main(int argc, char **argv)
 	    else
 		outpath = "a.out";
 	    int erc = madc_cir_emit_native(prog.get(), argv[filearg], kind,
-					   outpath.c_str(), cc_link_args);
+					   outpath.c_str(), cc_link_args,
+					   link_paths);
 	    print_stats();
 	    return erc == 0 ? 0 : 1;
 	}

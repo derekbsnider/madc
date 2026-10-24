@@ -18,11 +18,11 @@
 # (run in place, like the gcc testsuites — never vendored) and because the run
 # takes minutes, which the per-test suites multiply by every execution lane.
 #
-# -D_DEFAULT_SOURCE is REQUIRED and is not a workaround: the program calls
-# clock_gettime(CLOCK_MONOTONIC), and glibc hides the POSIX clock constants
-# under strict -std=c17. `gcc -std=c17` fails on the identical two lines;
-# the project's own build line uses the gnu default. When madc gains
-# --std=gnu* (claude_status UPDATE 76 NEXT 4) this becomes that flag.
+# --std=gnu17 is the project's own build dialect (gcc's default): the program
+# calls clock_gettime(CLOCK_MONOTONIC), whose POSIX constants glibc hides
+# under strict -std=c17 (`gcc -std=c17` fails on the identical two lines).
+# It is also the dialect the pack precompiles (owner 2026-10-18), so the lane
+# binds the pack's C layer; a -D on the line would decline that bind.
 #
 # OPTIMIZATION LEVEL: the lane runs -O2, which is both FASTER and STRICTER
 # than the default. Measured on this corpus (task time, all 50/50 correct in
@@ -54,7 +54,7 @@ if [ ! -x "$BIN" ]; then
 fi
 
 ARGS="${MADC_INDEX_C_ARGS--O2}"
-out=$("$BIN" --std=c17 -D_DEFAULT_SOURCE $ARGS "$SRC" 2>&1)
+out=$("$BIN" --std=gnu17 $ARGS "$SRC" 2>&1)
 rc=$?
 
 # The summary line is the whole verdict: "Summary: <secs>s, <total>, <ok>, <fails>".

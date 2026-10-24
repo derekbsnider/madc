@@ -1,0 +1,15 @@
+// --std=c names gcc's default C dialect, gnu17 (owner 2026-10-18: the
+// precompiled standard is the default, and the bare family spelling is it).
+// Oracle: gcc -std=gnu17 prints "gnu" and "201710"; the old alias meaning,
+// gcc -std=c11, prints "strict" and "201112".
+#include <stdio.h>
+int main(void)
+{
+#ifdef __STRICT_ANSI__
+	printf("strict\n");
+#else
+	printf("gnu\n");
+#endif
+	printf("%ld\n", (long)__STDC_VERSION__);
+	return 0;
+}

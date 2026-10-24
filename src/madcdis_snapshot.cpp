@@ -407,6 +407,15 @@ bool snapshot_writer::add_segment(uint32_t seg_id, uint32_t kind,
 	p.payload.swap(raw);
     else if ( !madc_pch::compress(raw, p.payload, codec, level) )
 	return false;
+    else if ( p.payload.size() >= len )
+    {
+	// The codec did not shrink it: store the payload's own bytes,
+	// untransformed, with codec None — the rule blocked_encode applies per
+	// block — so a reader binds it in place instead of decoding a frame.
+	p.meta.codec = (uint32_t)PchCompression::None;
+	p.meta.flags = 0;
+	p.payload.assign((const uint8_t *)bytes, (const uint8_t *)bytes + len);
+    }
     p.meta.comp_size = (uint64_t)p.payload.size();
 
     _segs.push_back(std::move(p));
@@ -500,18 +509,20 @@ bool snapshot_append_blob(const char *path, const void *blob, size_t len)
     FILE *f = fopen(path, "ab");
     if ( !f )
 	return false;
-    // Pad the host file to 16 so the blob base — and with it every 16-aligned
-    // payload offset — is 16-aligned in the mapped image (the bind-in-place
-    // contract in snapshot.h).
+    // Pad the host file with zeros to SNAPSHOT_APPEND_ALIGN: the blob base —
+    // and with it every 16-aligned payload offset — is 16-aligned in the
+    // mapped image (the bind-in-place contract), and it starts a page, so the
+    // container's in-page layout never moves with the host's size (snapshot.h).
     long end = 0;
     if ( fseek(f, 0, SEEK_END) != 0 || (end = ftell(f)) < 0 )
     {
 	fclose(f);
 	return false;
     }
-    static const uint8_t zeros[16] = { 0 };
-    size_t pad = (size_t)(align16((size_t)end) - (size_t)end);
-    if ( pad && fwrite(zeros, 1, pad, f) != pad )
+    const size_t in_page = (size_t)end % SNAPSHOT_APPEND_ALIGN;
+    const size_t pad = in_page ? SNAPSHOT_APPEND_ALIGN - in_page : 0;
+    const std::vector<uint8_t> zeros(pad, 0);	// pack time only: no static page
+    if ( pad && fwrite(zeros.data(), 1, pad, f) != pad )
     {
 	fclose(f);
 	return false;
@@ -640,20 +651,24 @@ bool snapshot_reader::previous_image_len(size_t &image_len) const
       || (size_t)(_blob - _image) > _image_size )
 	return false;
 
+    // The writer's pad is zeros, fewer than SNAPSHOT_APPEND_ALIGN of them (an
+    // older writer's pad to 16 included), and a footer ends in its non-zero
+    // magic: walk back over the zeros and open the one end that leaves. More
+    // zeros than a pad, or no container at that end, is no previous blob.
     const size_t blob_begin = (size_t)(_blob - _image);
-    for ( size_t pad = 0; pad < 16 && pad <= blob_begin; ++pad )
-    {
-	const size_t candidate_len = blob_begin - pad;
-	if ( candidate_len < sizeof(snapshot_header) + sizeof(snapshot_footer) )
-	    continue;
-	snapshot_reader candidate;
-	if ( candidate.open(_image, candidate_len) )
-	{
-	    image_len = candidate_len;
-	    return true;
-	}
-    }
-    return false;
+    const size_t lowest = blob_begin > SNAPSHOT_APPEND_ALIGN - 1
+			 ? blob_begin - (SNAPSHOT_APPEND_ALIGN - 1) : 0;
+    size_t end = blob_begin;
+    while ( end > lowest && _image[end - 1] == 0 )
+	--end;
+    if ( end < sizeof(snapshot_header) + sizeof(snapshot_footer)
+	 || _image[end - 1] == 0 )
+	return false;
+    snapshot_reader candidate;
+    if ( !candidate.open(_image, end) )
+	return false;
+    image_len = end;
+    return true;
 }
 
 const snapshot_segment *snapshot_reader::find(uint32_t seg_id) const

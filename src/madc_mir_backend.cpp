@@ -21,7 +21,6 @@
 #include <mutex>
 #include <stdint.h>
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "tokens.h"
@@ -33,6 +32,7 @@
 #include "rt/rt_except.h"	// __madc_throw_cstr (madarray_count raises script errors)
 #include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
 #include "libmadc/sysinfo.h"
+#include "madc_run_child.h"	// __madc_sys_init: a Run child of self is served first
 
 extern "C" {
 #include "mir.h"
@@ -57,7 +57,8 @@ void *__madc_get_stderr(void) { return (void *)stderr; }
 //   ((long (*)()) (slot ? slot : (slot = __madc_dl_member(LIB, MEMBER))))(args)
 // — the same lowering in every lane (JIT, exe, obj, --emit=c11), replacing
 // the JIT-only __dl_<ns>_<member> import thunks. LIB is the TARGET
-// spelling the module map chose at compile time. Never returns NULL: a
+// spelling the module map chose at compile time, or a madc module's reference
+// (madc_module_reference). Never returns NULL: a
 // library or member that cannot be resolved raises a script exception.
 //
 // THREAD-SAFETY CONTRACT: the handle cache is guarded by its own mutex;
@@ -76,10 +77,14 @@ void *__madc_dl_member(const char *lib, const char *member)
 			h = it->second;
 	}
 	if (!h) {
+		// A madc module's member names its module by reference (found
+		// where the program runs); a library's, by its target spelling.
 		std::string err;
-		h = madc_module_open(lib, err);
+		bool module = lib[0] == '@';
+		h = module ? madc_module_open_reference(lib, err) : madc_module_open(lib, err);
 		if (!h) {
-			std::string msg = std::string("import: cannot load '") + lib + "': " + err;
+			std::string msg = module ? err
+				: std::string("import: cannot load '") + lib + "': " + err;
 			__madc_throw_cstr(msg.c_str());
 		}
 		std::lock_guard<std::mutex> g(cache_lock);
@@ -93,6 +98,25 @@ void *__madc_dl_member(const char *lib, const char *member)
 		__madc_throw_cstr(msg.c_str());
 	}
 	return sym;
+}
+
+// The program's module list (__madc_module_deps), opened ahead of its other
+// initializers: the CIR builder makes this call the first of the unit's
+// global init when the list names a madc module, so each module's own
+// initializer runs (a ui host registers) before main in every lane — an
+// executable through .init_array, the JIT through its wrapped main (a cheap
+// re-open: the import already loaded the module). A module that cannot open
+// ends the program with the import's status before main runs.
+//
+// THREAD-SAFETY CONTRACT: runs during static initialization, before the
+// program's threads; madc_module_deps_open is the madc_dl seam's contract.
+void __madc_open_module_deps(const char *table)
+{
+	std::string err;
+	if (!madc_module_deps_open(table, NULL, err)) {
+		fprintf(stderr, "%s\n", err.c_str());
+		exit(madc_import_unavailable_status);
+	}
 }
 
 void madc_puti(int64_t i)    { std::cout << i << std::endl; }
@@ -736,9 +760,13 @@ int64_t madarray_empty(void *ptr)
 // but a madc-built module dlopen'd MID-program is handed the main
 // program's arguments by ld.so, and repopulating then would stomp the
 // sys.path/sys.argv mutations the running script already made.
+// Both serve a Run child of self first (madc_run_child.h): a program that
+// can request one serves its own parent's request before its main runs —
+// the dialect declares no initializer object for it.
 static bool madc_sys_populated = false;
 void __madc_sys_init(int64_t argc, void *argv)
     {
+	madc_serve_run_child();
 	madc_sys_populated = true;
 	madc::sys_populate_args((int)argc, (char **)argv);
     }

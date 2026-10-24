@@ -20,7 +20,6 @@
 #include <vector>
 
 extern thread_local bool madc_verbose;
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "tokens.h"
@@ -58,9 +57,65 @@ bool ForestDeclNames::bind(const uint8_t *p, size_t len)
 	return true;
 }
 
+bool ForestDeclNames::bind_hash(const uint32_t *w, size_t words)
+{
+	_slots = NULL;
+	_mask = 0;
+	if (!w || words < 1 || !_n)
+		return false;
+	const uint32_t b = w[0];
+	if (b <= _n || (b & (b - 1)) != 0 || words != 1 + (size_t)b)
+		return false;
+	_slots = w + 1;
+	_mask = b - 1;
+	return true;
+}
+
+void ForestDeclNames::build_hash(const ForestDeclNames &dn, std::vector<uint32_t> &out)
+{
+	out.clear();
+	const uint32_t n = dn.size();
+	if (!n)
+		return;
+	uint32_t b = 16;
+	while (b < n + n / 3 + 1)	// load at most 3/4
+		b <<= 1;
+	out.assign(1 + (size_t)b, 0);
+	out[0] = b;
+	for (uint32_t i = 0; i < n; ++i) {
+		const char *nm = dn.name_at(i);
+		if (!nm)
+			continue;
+		uint32_t at = madc::dis::intern_table::hash_bytes(nm, (uint32_t)strlen(nm)) & (b - 1);
+		while (out[1 + at])
+			at = (at + 1) & (b - 1);
+		out[1 + at] = i + 1;
+	}
+}
+
+const uint32_t *ForestDeclNames::units_of_qualified(const char *ns, const char *name,
+						    uint32_t &n) const
+{
+	n = 0;
+	if (!ns || !name)
+		return NULL;
+	if (!_slots)
+		return units_of_sorted((std::string(ns) + "::" + name).c_str(), n);
+	typedef madc::dis::intern_table T;
+	const uint32_t ns_len = (uint32_t)strlen(ns), len = (uint32_t)strlen(name);
+	uint32_t h = T::hash_init();
+	for (uint32_t i = 0; i < ns_len; ++i)
+		h = T::hash_step(h, (unsigned char)ns[i]);
+	h = T::hash_step(T::hash_step(h, ':'), ':');
+	for (uint32_t i = 0; i < len; ++i)
+		h = T::hash_step(h, (unsigned char)name[i]);
+	return probe(h, ns, ns_len, name, len, n);
+}
+
 // Every probe is bounds-checked against the bound sizes (a corrupt offset
-// answers "not declared", never a wild read).
-const uint32_t *ForestDeclNames::units_of(const char *name, uint32_t &n) const
+// answers "not declared", never a wild read): name_at and units_at
+// (cir_freeze.h) are the two readers of one name's slot.
+const uint32_t *ForestDeclNames::units_of_sorted(const char *name, uint32_t &n) const
 {
 	n = 0;
 	if (!_n || !name)
@@ -68,6 +123,9 @@ const uint32_t *ForestDeclNames::units_of(const char *name, uint32_t &n) const
 	uint32_t lo = 0, hi = _n;
 	while (lo < hi) {
 		uint32_t mid = lo + (hi - lo) / 2;
+		// The hot probe (every name_verdict): its own reads, not name_at —
+		// measured, the shared reader's extra index check costs ~107 Ir per
+		// lookup across the binary search (+2.2M on cxx_stl.forest).
 		uint32_t o = _off[mid];
 		if (o >= _nbytes)
 			return NULL;
@@ -87,13 +145,38 @@ const uint32_t *ForestDeclNames::units_of(const char *name, uint32_t &n) const
 	return NULL;
 }
 
+// The run's start is the first name not below the stem (strcmp's order):
+// every name the stem starts sorts at or after it, and before any name past
+// it that the stem does not start.
+void ForestDeclNames::for_prefix(const char *stem, uint32_t &begin, uint32_t &end) const
+{
+	begin = end = 0;
+	if (!_n || !stem)
+		return;
+	uint32_t lo = 0, hi = _n;
+	while (lo < hi) {
+		uint32_t mid = lo + (hi - lo) / 2;
+		const char *nm = name_at(mid);
+		if (!nm)
+			return;
+		if (strcmp(nm, stem) < 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	const size_t len = strlen(stem);
+	begin = end = lo;
+	for (const char *nm; (nm = name_at(end)) != NULL && !strncmp(nm, stem, len); )
+		++end;
+}
+
 const uint32_t *ForestDeclNames::surface(const char *name, const char *ns, uint32_t &n) const
 {
 	n = 0;
 	if (!name || !*name)
 		return NULL;
 	if (ns && *ns) {
-		const uint32_t *q = units_of((std::string(ns) + "::" + name).c_str(), n);
+		const uint32_t *q = units_of_qualified(ns, name, n);
 		if (n)
 			return q;
 	}
@@ -297,6 +380,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	ForestDeclNames::build(names, f.decl_names);
 	ForestDeclNames dn;
 	dn.bind(f.decl_names.data(), f.decl_names.size());	// the one reader, freeze side too
+	ForestDeclNames::build_hash(dn, f.decl_names_hash);	// B2
 
 	std::map<madc::dis::istring, uint32_t> unit_by_name;
 	for (uint32_t u = 0; u < nunits; ++u)
@@ -325,39 +409,6 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		return slot < poi_files.size() ? unit_of_file(poi_files[slot]) : NO_UNIT;
 	};
 
-	// The dialect surface's units (pack-slices design §7): a fragment's entity
-	// is the dialect's own, listed with dialect units alone — a strict compile
-	// never visits it (madc::getline shares <stdio.h>'s bare `getline`). A
-	// C/C++ header's entity decided only by dialect names would change a
-	// strict compile's verdict: counted, expected zero.
-	std::vector<bool> dialect_unit(nunits, false);
-	for (uint32_t u = 0; u < nunits; ++u) {
-		const char *un = pool.c_str(f.units[u].unit_name_id);
-		dialect_unit[u] = un && embedded_dialect_fragment_p(madc::dis::istring(un));
-	}
-	size_t dialect_listed = 0, dialect_decided_c = 0;
-	auto dialect_lists = [&](std::set<uint32_t> &units, uint32_t origin) -> bool {
-		if (origin >= nunits || !dialect_unit[origin]) {
-			bool any = false, all = !units.empty();
-			for (std::set<uint32_t>::const_iterator it = units.begin(); it != units.end(); ++it)
-				if (*it < nunits && dialect_unit[*it])
-					any = true;
-				else
-					all = false;
-			if (any && all)
-				++dialect_decided_c;
-			return false;
-		}
-		for (std::set<uint32_t>::iterator it = units.begin(); it != units.end(); )
-			if (*it < nunits && dialect_unit[*it])
-				++it;
-			else
-				units.erase(it++);
-		units.insert(origin);
-		++dialect_listed;
-		return true;
-	};
-
 	SeedLists L((size_t)nunits + 1);
 	std::map<madc::dis::istring, SeedCensus> census;	// by kind
 	const char *kind_name[] = { "none", "prim", "void", "ptr", "ref", "const", "enum",
@@ -382,14 +433,11 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	// Env-gated probe (MADC_SEED_PLACE_PROBE=<substr>): every seed list an
 	// entity whose name holds the substring lands in.
 	static const char *place_probe = ::getenv("MADC_SEED_PLACE_PROBE");
-	// `used` (optional) receives the list indices the entity landed in;
-	// `origin` is the unit whose parse created the entity (NO_UNIT unknown).
+	// `used` (optional) receives the list indices the entity landed in.
 	auto place = [&](std::vector<std::vector<uint32_t> > &lists, uint32_t id,
-			 std::set<uint32_t> decided_units, bool undecided,
-			 uint32_t created_unit, uint32_t origin, SeedCensus &c,
+			 const std::set<uint32_t> &decided_units, bool undecided,
+			 uint32_t created_unit, SeedCensus &c,
 			 std::vector<uint32_t> *used = NULL) {
-		if (dialect_lists(decided_units, origin))
-			undecided = false;
 		auto put = [&](uint32_t l) {
 			lists[l].push_back(id);
 			if (used)
@@ -760,7 +808,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			if (created == NO_UNIT && r.kind == madc::dis::DK_TYPEDEF
 			    && r.ref0 && madc::dis::arena_id_is_project(r.ref0))
 				created = unit_of_slot(madc::dis::arena_slot_of(r.ref0));
-			place(L.arena, s, units, undecided, created, created, c);
+			place(L.arena, s, units, undecided, created, c);
 			break;
 		}
 		case madc::dis::DK_FUNC: {
@@ -792,7 +840,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			probe_nm = nm;
 			probe_ns = ns;
 			probe_extra = disp;
-			place(L.arena, s, units, undecided, unit_of_slot(s), unit_of_slot(s), c, &fn_lists[s]);
+			place(L.arena, s, units, undecided, unit_of_slot(s), c, &fn_lists[s]);
 			break;
 		}
 		case madc::dis::DK_NSBIND:
@@ -837,7 +885,6 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			if (mi != fn_lists.end())
 				units.insert(mi->second.begin(), mi->second.end());
 		}
-		dialect_lists(units, unit_of_slot(s));
 		if (units.empty()) {
 			uint32_t cu = unit_of_slot(s);
 			if (cu != NO_UNIT && cu < nunits) {
@@ -915,7 +962,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			L.deps.push_back(std::make_pair(madc::dis::arena_slot_of(t.owner_type_id),
 							(CIR_SEED_DEP_TEMPLATE << 30) | (uint32_t)i));
 			++c.dependent;
-			place(L.tmpl, (uint32_t)i, units, false, NO_UNIT, template_declared_in(i), c);
+			place(L.tmpl, (uint32_t)i, units, false, NO_UNIT, c);
 			continue;
 		}
 		const uint32_t declared_in = template_declared_in(i);
@@ -933,7 +980,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		probe_ns = ns;
 		probe_extra = NULL;
 		place(L.tmpl, (uint32_t)i, units, nk == 0 && units.empty(),
-		      nk == 0 ? declared_in : NO_UNIT, declared_in, c);
+		      nk == 0 ? declared_in : NO_UNIT, c);
 	}
 
 	// 4. Globals: the bind keeps one whose (name, ns) verdict holds.
@@ -969,7 +1016,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			units.insert(greq->begin(), greq->end());
 			++c.required;
 		}
-		place(L.glob, (uint32_t)i, units, n1 == 0 && !greq, created, created, c);
+		place(L.glob, (uint32_t)i, units, n1 == 0 && !greq, created, c);
 	}
 
 	// 4b. Decl-entry record ids (format 64): each decl-index entry's name ->
@@ -1252,8 +1299,5 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		 req_dropped, req_unknown_keys.size());
 	summary += buf;
 	snprintf(buf, sizeof(buf), "; decl records %zu of %zu entries", decl_records, decl_entries);
-	summary += buf;
-	snprintf(buf, sizeof(buf), "; dialect %zu listed with dialect units alone, %zu header entities decided by dialect names alone",
-		 dialect_listed, dialect_decided_c);
 	summary += buf;
 }

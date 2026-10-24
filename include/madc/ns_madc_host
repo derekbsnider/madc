@@ -80,7 +80,7 @@ namespace madc {
     // The tools a madc process serves (split arc 1D; include/madc_tool_host.h):
     // ONE registry over a ui:: world's documents — the code-graph tools, the
     // project memory's (its change log, proposals, records, tests) and every
-    // loaded module's (madcgit: the version history) — that a host extends
+    // imported module's (git: the version history) — that a host extends
     // with its own commands, calls, serves over MCP and reads the change log
     // of. A tier is a <bits/tool_enums> tool_tier code; `actor` the caller's
     // id (-1 = the local operator). A script tool answers into `result`;

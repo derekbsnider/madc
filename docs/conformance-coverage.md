@@ -12,6 +12,14 @@ madc does not own (gcc's own testsuite, and the third-party
 [c-testsuite](https://github.com/c-testsuite/c-testsuite)), so they are not
 self-graded.
 
+Each release's counts for the four release-gated corpora (C23 compile-clean
+and run, the torture under `--std=c23`, `g++.dg/cpp2a`) are not here: they are
+recorded per release, on the release binary, in
+[`parity/conformance-ledger.tsv`](parity/conformance-ledger.tsv) by
+`scripts/conformance_measure.sh`, and `scripts/check-release-conformance.sh`
+requires every release to raise one and lower none
+(`.claude/rules/branching.md`).
+
 **Measured on `7488a39cf`** — the content of `develop` at `a6e8bd55f`, whose
 release tier is green on every lane (`bin/madc`, the -O0 development build).
 

@@ -1,0 +1,56 @@
+// gcc's link line names where a library lives (-L<dir>) and where the
+// produced program finds it at run time (-Wl,-rpath,<dir>): SQLite's
+// testfixture rule ends "-L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/usr/local/lib".
+// -L is searched for every -l, ahead of the default directories; a run opens
+// the library from there. -rpath joins the image's DT_RUNPATH, so the
+// produced program loads a library no default directory holds. Any other
+// -Wl, option is refused, never dropped.
+// Pins: the run finds the -l library through -L (both spellings); the image
+// linked with -Wl,-rpath runs with no environment help; the same image
+// without it does not load; -Wl,--as-needed is refused.
+// Before: -L and -Wl, were taken as operands ("unconsumed arguments after
+// 'main.c' in AOT mode"); a run took "-L" as the program.
+// Oracle: gcc 13 and clang 18 -- `cc -shared -fPIC -o lib/libtwice.so
+// twice.c; cc -o prog main.c -Llib -ltwice '-Wl,-rpath,$ORIGIN/lib'` ->
+// ./prog prints "twice(21)=42"; linked without the rpath, ./prog fails to
+// load libtwice.so.
+int main()
+{
+	var dir = "tmp/testaot_link_dirs";
+	var lib = format("{}/lib", dir);
+	php::mkdir(dir.c_str());
+	php::mkdir(lib.c_str());
+	const char *cp = madc::compiler_path();
+	var lsrc = format("{}/twice.c", dir);
+	php::file_put_contents(lsrc.c_str(), "int twice(int x) { return 2 * x; }\n");
+	var built = format("{}/libtwice{}", lib, madc::library_suffix());
+	long rc = system(format("{} --no-config -shared -o {} {}", cp, built, lsrc));
+	println("lib: rc={}", rc);
+	var main_c = format("{}/main.c", dir);
+	php::file_put_contents(main_c.c_str(),
+		"#include <stdio.h>\nint twice(int);\nint main(void)\n{\n"
+		"\tprintf(\"twice(21)=%d\\n\", twice(21));\n\treturn 0;\n}\n");
+
+	rc = system(format("{} --no-config -L {} -ltwice {}", cp, lib, main_c));
+	println("run -L dir: rc={}", rc);
+	rc = system(format("{} --no-config -ltwice -L{} {}", cp, lib, main_c));
+	println("run -Ldir after -l: rc={}", rc);
+
+	var prog = format("{}/prog", dir);
+	rc = system(format("{} --no-config -o {} {} -L{} -ltwice '-Wl,-rpath,$ORIGIN/lib'",
+		cp, prog, main_c, lib));
+	println("link with rpath: rc={}", rc);
+	rc = system(prog.c_str());
+	println("its run: rc={}", rc);
+
+	var bare = format("{}/bare", dir);
+	rc = system(format("{} --no-config -o {} {} -ltwice", cp, bare, main_c));
+	long bare_run = system(format("{} 2>/dev/null", bare));
+	println("link without rpath: rc={} its run fails={}", rc, bare_run != 0 ? 1 : 0);
+
+	rc = system(format("{} --no-config -o {} {} -Wl,--as-needed 2>/dev/null", cp, bare, main_c));
+	println("-Wl,--as-needed refused: {}", rc != 0 ? 1 : 0);
+
+	system(format("rm -rf {}", dir));
+	return 0;
+}

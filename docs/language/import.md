@@ -28,6 +28,40 @@ exactly as after `#include <math.h>` — plus the library is bound for the
 program (below). A module with no interface (`c` today) cannot be imported
 this way; the diagnostic points at the alias form.
 
+### madc modules — `import git;`
+
+A **madc module** is a library that describes itself (Python's modules are
+the model; a madc module is madc's built form of a C++20 named module). It
+is found **by name**, never registered in madc: `import git;` searches the
+program's own directory, then each `--module-path=<dir>`, then madc's module
+directory (`<prefix>/lib/madc/modules`) for `git.so` / `git.dylib` /
+`git.dll`, opens it and reads its description through the one entry point
+it exports (`madc_module_git`). The description holds the module's
+declarations — generated from its face (`git.madi`) when the module was
+built — and what it brings a host: REPL commands (`%git`) and a tool
+server's tools. Whether a module is installed is answered by importing it:
+
+- no such module: `import: no module named 'git'`;
+- a file that is not a madc module, or one built for another module ABI:
+  `import: module 'git': <the reason>`.
+
+madc ships three: `git` (a read-only view of a repository, libgit2 inside),
+`markdown` (cmark-gfm inside) and `ui_web` (the web UI level's host over the
+platform webview: importing it registers the host, so `ui::open(ui::WEB)`
+gets a window). An imported module opens at program start in every lane —
+the JIT, an executable and an object (its module list names it) — so its own
+initializer runs before `main`. A native program finds its modules where it
+RUNS: the module file it was built against while that file is there, else
+the module of that name in the program's own directory, then in the module
+directory of the madc it loads (beside libmadc) — so a program copied to
+another machine finds the modules installed there. One that will not open
+ends the program with the import error and status 69 before `main`. From
+the command line, `--import=<name>`
+imports a module ahead of the program; with no source it only tries the
+import and exits 0, or 69 with the import error — a launcher's test before
+it starts (`python -c "import git"`). The configuration file's
+`modules = <name>` is the same import.
+
 ### Alias form — `import name as ns;`
 
 Binds the module's library under a namespace of your choosing. Members
@@ -100,18 +134,10 @@ either.
   file.o` opens each spelling before loading — no `-l` on the command line
   for an imported module (the MSVC `.drectve` / Rust `#[link]` shape; a
   `.o` has no `DT_NEEDED`). An explicit `-l` still opens first and stays an
-  override; a `.o` built before the table existed loads as before. A lazy
-  row's spelling is listed with a `?` prefix — optional: the loader opens it
-  when it can and never fails on it.
-- **Lazy rows** (`madcwebview`): an OPTIONAL library's row is marked lazy —
-  the interface form binds nothing at parse and joins no link closure; each
-  declared function is a first-call slot through a pointer of its declared
-  type (`__madc_dl_member`, as the alias form, but typed). The program
-  compiles and runs on a machine without the library; ask
-  `madc::module_available("madcwebview")` before the first call (the web
-  target's `ui::open` does, and refuses with the reason). The alias form of
-  a lazy row keeps the eager binding — a namespace answers member lookups
-  from the exports.
+  override; a `.o` built before the table existed loads as before. A madc
+  module is listed by its reference — name and file (`@-git=<file>`; `@g`
+  for a GUI module, which lifts an armed memory guard before it opens) —
+  required, and the program's own init opens it.
 - **`--no-auto-load`**: do not act on `import` library bindings — nothing is
   opened; namespaces bind to the program's own symbol scope, so symbols come
   from explicit linking (`-l`, the host). `tests/testnoautoload.mad` pins it.

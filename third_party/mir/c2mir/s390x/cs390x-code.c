@@ -5,7 +5,6 @@
 #include "../mirc.h"
 #include "mirc_s390x_linux.h"
 
-#include "mirc_s390x_float.h"
 #include "mirc_s390x_limits.h"
 #include "mirc_s390x_stdarg.h"
 #include "mirc_s390x_stdint.h"

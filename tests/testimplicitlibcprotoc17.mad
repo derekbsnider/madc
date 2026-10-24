@@ -8,6 +8,10 @@
 // re-measure). __builtin_printf IS printf (GCC semantics) and adopts the same
 // prototype through the twin, emitted as printf.
 //
+// It keeps --std=c17 where the suite moved to the gnu defaults (owner
+// 2026-10-18): the pack precompiles only gnu17, so the strict compile is the
+// fall-through this twin exists to cover.
+//
 // Lanes as for testimplicitlibcproto: the strong line rides the forest-bound
 // lanes (.headerless_expect, .darwin_expect); the dev lane's .expect asserts
 // only the common head.

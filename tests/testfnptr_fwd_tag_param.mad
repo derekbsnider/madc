@@ -1,0 +1,34 @@
+/* A tag declared at file scope before a function type names it in a
+ * parameter list is that file-scope tag (tcl.h: `struct Tcl_Obj;`, then
+ * Tcl_ObjCmdProc's `struct Tcl_Obj *const *objv`, then the definition). madc
+ * emitted the typedef with no file-scope `struct Obj;` ahead of it, so in the
+ * C handed to c2mir the parameter's tag was scoped to the parameter list
+ * (C11 6.2.1p4) and every call through such a pointer warned "incompatible
+ * argument type for pointer type parameter" (SQLite's test1.c,
+ * test_syscall.c, test_thread.c).
+ * Oracle: gcc and clang -Wall -Wextra -O0: no diagnostic, prints 27. */
+#include <stdio.h>
+struct Obj;
+union Val;
+typedef int (ObjProc)(void *cd, int objc, struct Obj *const *objv);
+typedef long (ValProc)(union Val *v);
+typedef struct Obj { int v; } Obj;
+union Val { long l; double d; };
+typedef struct { ObjProc *objProc; void *cd; ValProc *valProc; } Info;
+static int f(void *cd, int objc, Obj *const objv[]) { (void)cd; return objc + objv[0]->v; }
+static long vl(union Val *v) { return v->l; }
+static int g(void *cd, int objc, Obj *const objv[])
+{
+	Info info = { f, 0, vl };
+	union Val u;
+	u.l = 5;
+	(void)cd;
+	return info.objProc(info.cd, objc - 1, objv + 1) + (int)info.valProc(&u);
+}
+int main(void)
+{
+	Obj a = { 10 }, b = { 20 };
+	Obj *v[2] = { &a, &b };
+	printf("%d\n", g(0, 3, v));
+	return 0;
+}

@@ -24,13 +24,17 @@
 # compression profile (zstd level 15 + compressed intern spine — the same
 # trade the Linux release pack ships); with nothing to append to, the
 # container starts at offset 0 and the file IS a valid standalone container
-# (footer at EOF), exactly what -sectcreate expects.
+# (footer at EOF), exactly what -sectcreate expects. The C LAYER
+# (docs/plans/2026-10-18-c-pack-layer.md, J5) is frozen onto it first, raw;
+# the madc profile then stacks on top, as on Linux and win64 — still one
+# standalone container, footer at EOF.
 #
 # All paths are caller-relative (no cd): the Makefile invokes this from src/
 # with ../-relative arguments.
 set -e
 . "$(dirname "$0")/forest_pack_share.sh"	# the standards the one profile serves
 . "$(dirname "$0")/forest_pack_layout.sh"	# the layout pass (format 60)
+. "$(dirname "$0")/forest_pack_c_layer.sh"	# the C layer stage and its gate
 
 CROSS="$1"
 MANIFEST="$2"
@@ -45,8 +49,9 @@ if [ ! -x "$CROSS" ]; then
     exit 1
 fi
 # GNU timeout: the container has it; a darwin build host gets it from brew
-# coreutils (gnubin `timeout`, or `gtimeout`). Every run stays capped.
-TIMEOUT="$(command -v timeout || command -v gtimeout || true)"
+# coreutils (gnubin `timeout`, or `gtimeout`) — forest_pack_share.sh resolves
+# it for every pack step. Every run stays capped.
+TIMEOUT="$FOREST_PACK_TIMEOUT"
 if [ -z "$TIMEOUT" ]; then
     echo "forest_pack_darwin: needs GNU timeout (brew install coreutils on a Mac)" >&2
     exit 1
@@ -114,6 +119,17 @@ TU="$OUT.tu.cpp"
 
 : > "$OUT"
 ulimit -t 900
+# THE C LAYER first (J5): the darwin twin of the Linux and win64 packs' — one
+# raw profile per FOREST_C_LAYER row (the gnu17 row; gnu11 == gnu17 by content
+# digest on this prelude too), the roots of forest_pack_c_headers_darwin.txt,
+# frozen by the same freezer behind --no-sysroot-includes, at the bottom of the
+# stack. scripts/forest_pack_c_layer.sh owns the stage.
+C_LIST="$(dirname "$0")/forest_pack_c_headers_darwin.txt"
+if ! forest_pack_c_freeze "$C_LIST" "$OUT" "$OUT" 900 "$CROSS" --no-sysroot-includes; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED - the C layer" >&2
+    exit 1
+fi
 # --no-config for the same reason as the native pack: an ambient madc.ini must
 # never change the frozen corpus's producer config (see scripts/forest_pack.sh).
 #
@@ -184,6 +200,13 @@ while IFS= read -r src; do
         exit 1
     fi
 done <<<"$LEDGER_SOURCES"
+# The startup objects (B231): the image-only members' native objects ride
+# the ledger, for -o / -c links to merge.
+if ! grep -q $'^crtobj\t' "$DUMP"; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED - the ledger carries no startup object" >&2
+    exit 1
+fi
 # Degradation gate (task #63) — the PRODUCER and DIRECTORY halves. Both arches
 # check against the same `darwin pack-errors` key, each on its own log, so a
 # divergence between them still fails loudly (58 apiece today).
@@ -254,5 +277,15 @@ if [ "$consumer_count" -eq 0 ]; then
     exit 1
 fi
 echo "forest_pack_darwin: consumer parse leg OK ($consumer_count program(s) parsed from the pack)"
+
+# The C layer's gate (scripts/forest_pack_c_layer.sh). The consumer is the
+# freezer reaching the container explicitly, lowering without execution — the
+# same split as the parse leg above (a cross freeze cannot run the Mach-O).
+if ! forest_pack_c_gate "$C_LIST" "$OUT" darwin "$DUMP" 120 \
+        "$CROSS" --forest-bind="$OUT" --no-sysroot-includes --emit=c11; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED — the C layer's gate (container dropped)" >&2
+    exit 1
+fi
 
 echo "forest_pack_darwin: OK ($(grep -c '^unit	' "$DUMP") units in $OUT for $(basename "$CROSS"))"

@@ -1,0 +1,14 @@
+// A provider word (`string` -> <string>) used BEFORE the program's own
+// `#include <string>`: the auto-include serves <string> ahead of the first
+// use, and the program's later include of the same header is that one
+// serving — never an in-place inclusion after the use.
+// Oracle: g++ 13 / clang++ 18, -std=c++17, the program with its include at
+// the top (the auto-include's meaning), `std::string`, printf: "len 3".
+int main()
+{
+	string s = "abc";
+	println("len {}", (int)s.size());
+	return 0;
+}
+
+#include <string>

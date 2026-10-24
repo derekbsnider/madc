@@ -17,6 +17,10 @@
 #     has no .tbd stubs to attribute symbols per-dylib), while the madc
 #     runtime is ledger-merged IN-image: defined in the symtab, absent
 #     from the bind table.
+#   * MIR's call helpers (issue #8): a pure-C program whose generated code
+#     calls mir.blk_mov / mir.va_arg / mir.va_block_arg still loads
+#     libSystem alone — the image defines them, binds none, and a -c object
+#     marks them weak.
 #
 # Execution is the Mac battery's job (leg 6d — dyld actually resolving
 # the flat binds); this gate proves the STRUCTURE on the container with
@@ -109,6 +113,67 @@ if run "$MADC" --forest-bind="$FOREST" -static-libmadc -o "$D/xprog" \
 		|| fail "[B] ___madc_try_push not defined in the image"
 else
 	fail "[B] C++ -static-libmadc -o emit failed: $(tail -2 "$D/x.log" | tr '\n' ' ')"
+fi
+
+# --- leg C: MIR's call helpers ride the image (issue #8) -----------------
+# A pure-C program that passes a struct over 128 bytes by value (mir.blk_mov)
+# and reads va_arg (mir.va_arg, mir.va_block_arg) still loads libSystem alone:
+# the image defines the helpers (madc's crt:mir_calls startup member), never
+# binds them, and an object marks them weak, so two madc objects link.
+cat > "$D/helpers.c" <<'EOF'
+#include <stdarg.h>
+#include <stdio.h>
+struct big { long v[20]; };
+struct trio { long a, b, c; };
+__attribute__((noinline)) static long weigh(struct big b)
+{
+	long t = 0;
+	for (int i = 0; i < 20; i++)
+		t += b.v[i] * (i + 1);
+	return t;
+}
+__attribute__((noinline)) static long total(int n, ...)
+{
+	va_list ap;
+	long t = 0;
+	va_start(ap, n);
+	for (int i = 0; i < n; i++)
+		t += va_arg(ap, int);
+	struct trio p = va_arg(ap, struct trio);
+	va_end(ap);
+	return t + p.a + p.b + p.c;
+}
+int main(void)
+{
+	struct big b;
+	struct trio p = { 10, 20, 30 };
+	for (int i = 0; i < 20; i++)
+		b.v[i] = 3 * i + 1;
+	printf("weigh %ld total %ld\n", weigh(b), total(3, 1, 2, 3, p));
+	return 0;
+}
+EOF
+if run "$MADC" -o "$D/helpers" "$D/helpers.c" >"$D/h.log" 2>&1; then
+	n=$(load_dylibs "$D/helpers")
+	[ "$n" = "1" ] && pass "[C] one LC_LOAD_DYLIB (libSystem) only" \
+		|| fail "[C] expected 1 load dylib, found $n — MIR's helpers pulled a library"
+	mb=$("$OBJDUMP" --macho --bind --lazy-bind --weak-bind "$D/helpers" 2>/dev/null | grep -c "mir\.")
+	[ "$mb" = "0" ] && pass "[C] zero mir.* binds" \
+		|| fail "[C] $mb mir.* bind(s) — the image imports MIR's helpers"
+	for s in _mir.blk_mov _mir.va_arg _mir.va_block_arg; do
+		"$NM" "$D/helpers" 2>/dev/null | grep -q " T $s\$" \
+			&& pass "[C] $s defined in the image" \
+			|| fail "[C] $s not defined in the image"
+	done
+else
+	fail "[C] -o emit failed: $(tail -2 "$D/h.log" | tr '\n' ' ')"
+fi
+if run "$MADC" -c -o "$D/helpers.o" "$D/helpers.c" >"$D/ho.log" 2>&1; then
+	w=$("$NM" -m "$D/helpers.o" 2>/dev/null | grep -c "weak external _mir\.")
+	[ "$w" = "3" ] && pass "[C] the object's three helpers are weak definitions" \
+		|| fail "[C] $w of the object's three helpers are weak definitions"
+else
+	fail "[C] -c emit failed: $(tail -2 "$D/ho.log" | tr '\n' ' ')"
 fi
 
 [ $rc -eq 0 ] && echo "macho_exe_dylib_gate: OK" || echo "macho_exe_dylib_gate: FAILURES"

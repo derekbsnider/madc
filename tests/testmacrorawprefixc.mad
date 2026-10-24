@@ -1,0 +1,16 @@
+/* C has no raw string literals: in a replacement list, R"x" is the parameter
+ * R, then the string "x" (C11 6.4.5, 6.10.3.1) — likewise u8R"z". The macro
+ * spelling tokenizer read R"x" as a raw string with no '(' and swallowed the
+ * rest of the body, so R was never substituted ("use of undeclared
+ * identifier 'R'"). gcc -std=c11 and clang -std=c11 print "ax" and "byz". */
+#include <stdio.h>
+
+#define CAT(R) R"x"
+#define PRE(u8R) u8R"z"
+
+int main(void)
+{
+	puts(CAT("a"));
+	puts(PRE("by"));
+	return 0;
+}

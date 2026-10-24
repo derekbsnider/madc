@@ -1,0 +1,7 @@
+# Labels whose line legitimately DIFFERS from tests/testis_same_typedef.win64_expect
+# versus tests/testis_same_typedef.expect — the win64 domain's own answers:
+# on LLP64 std::size_t is unsigned long long and std::ptrdiff_t long long, so
+# neither is the same type as unsigned long / long (x86_64-w64-mingw32 g++ 13
+# under wine prints `alias: 0 1 0 0 1`). Every other labelled line must be
+# identical in both (scripts/check-expect-twins.sh).
+alias

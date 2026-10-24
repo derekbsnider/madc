@@ -20,6 +20,7 @@
 #include <bits/diag_enums>	// diag_severity / diag_phase: the rows' enum codes
 #include <bits/file_kinds>	// madc::fk*: the ONE file-kind vocabulary (a View's lang, emit's target)
 #include <bits/session_enums>	// session_reply / offer_state: a session reply's enum codes
+#include <bits/project_enums>	// project_kind: a project manifest's kind codes
 
 namespace madc {
     // Full-program eval: the source must define (or be wrapped into)
@@ -249,9 +250,9 @@ namespace madc {
     bool parse_refresh_checked(value &out_diags, int64_t handle, const char *source);
     bool parse_would_accept(value &out_diags, int64_t handle, const char *source);
 
-    // The git substrate (Nexus L4a) is the git:: namespace of the madcgit
-    // MODULE since the V6 seam — <ns_git> (`import madcgit;`): libgit2 is a
-    // dependency of the IDE's nexus, never part of madc (owner, 2026-09-15).
+    // The git substrate (Nexus L4a) is the git:: namespace of the git MODULE
+    // (`import git;`): libgit2 is a dependency of the IDE's nexus, never part
+    // of madc (owner, 2026-09-15).
 
     // The COMPARISON spelling of a path (V6c-2): symlinks, `.` and `..`
     // resolved (POSIX realpath) when the path exists, the input spelling
@@ -260,6 +261,36 @@ namespace madc {
     // file named `/abs/src/x.mad` compare equal. Use it wherever two path
     // spellings must name one document; do not write a second normalizer.
     value &canonical_path(value &out, const char *path);
+
+    // A path's extension and stem — THE one rule: the extension is what
+    // follows the last dot of the final component, never a dot in a directory
+    // and never a leading dot (".bashrc" has none). path_drop_extension: the
+    // path without it ("dir.d/foo.c" -> "dir.d/foo"; unchanged when there is
+    // none); path_stem: the final component without it ("dir/foo.tar.gz" ->
+    // "foo.tar"), as gcc names an artifact.
+    value &path_drop_extension(value &out, const char *path);
+    value &path_stem(value &out, const char *path);
+
+    // A path in generic form: each of the host's separators written '/'
+    // ("a\\b/c" -> "a/b/c" on Windows; on POSIX '\' is a file-name byte and
+    // the path comes back as it is). The form madc stores and prints a path
+    // in, and a path-typed command-line value's.
+    value &path_generic(value &out, const char *path);
+
+    // Make every missing directory above `path` (`mkdir -p` of its parent;
+    // owner-only on POSIX): "a/b/c.txt" makes a and a/b, "a/b/" makes a/b
+    // too. A failure shows at the caller's own open or test of the path.
+    void path_make_parents(const char *path);
+
+    // The user configuration directory of `app` — madc's one rule, the one
+    // madc.ini's lookup reads: $XDG_CONFIG_HOME/<app> when it is set, else on
+    // Windows %APPDATA%\<app>, else ~/.config/<app>; "" when none is known.
+    // user_config_dir reads this process's environment; user_config_dir_of
+    // is the rule over its inputs (NULL or "" = unset; `windows` = the
+    // Windows arm applies), so each platform's answer can be asked anywhere.
+    value &user_config_dir(value &out, const char *app);
+    value &user_config_dir_of(value &out, const char *app, const char *xdg,
+			      const char *appdata, const char *home, bool windows);
 
     // Revision handles (Nexus L4b; design 2026-09-13 §3.3): parse_open_tagged
     // opens a READ-ONLY parse handle of `source` whose generation is a fresh
@@ -339,6 +370,41 @@ namespace madc {
 		       const char *kind, const char *outpath);
     int64_t project_run(const char *manifest);
 
+    // A madc project manifest (<base>.prj.json) — madc's ONE reader and
+    // writer, so a host never parses or writes the file itself:
+    //   project_manifest_read: the manifest at `path` as madc reads it —
+    //       { "tus": [{ "file", "directory", "defines", "include_dirs",
+    //       "std", "stdlib" }], "entry", "output", "kind" (a project_kind
+    //       code), "icon", "libs", "madc", "json" }: each TU's "file"
+    //       resolved against the manifest's directory (as the --project
+    //       lane reads it), "json" the file's own JSON as written (the keys
+    //       madc does not model — an IDE's "commands" — ride there). False
+    //       with out_err's reason when it does not read (an unknown kind
+    //       word, a malformed field, no "tus").
+    //   project_manifest_create / _add_tu / _remove_tu / _set_kind: each a
+    //       read-modify-write of the native manifest that keeps every key
+    //       it does not change. create refuses an existing file; add names
+    //       the file relative to the manifest's directory when it lies
+    //       below it (refused when it is no file, or a TU already); remove
+    //       drops the entry naming `file`; set_kind writes the kind's word.
+    //       False with out_err's reason, the file as it was.
+    //   project_default_output: the executable a build makes when none is
+    //       named — "output" against the manifest's directory, else the
+    //       path less ".prj.json", else less its extension.
+    //   project_events_path: the project memory's file beside a manifest
+    //       (<path less its extension>.events); "" for a source file.
+    //   project_kind_name: a kind's manifest word ("console", "gui").
+    // Thread contract: one writer per manifest is the caller's (as for any
+    // file); the reads are pure functions of the file.
+    bool project_manifest_read(value &out, value &out_err, const char *path);
+    bool project_manifest_create(value &out_err, const char *path);
+    bool project_manifest_add_tu(value &out_err, const char *path, const char *file);
+    bool project_manifest_remove_tu(value &out_err, const char *path, const char *file);
+    bool project_manifest_set_kind(value &out_err, const char *path, project_kind kind);
+    bool project_default_output(value &out, value &out_err, const char *path);
+    value &project_events_path(value &out, const char *path);
+    const char *project_kind_name(project_kind kind);
+
     // The build surface (madcide IDE-10c): the CLI's AOT lane run
     // IN-PROCESS — parse `path` in a child Program (relative #includes
     // resolve as the CLI's do), emit a native artifact at `outpath`.
@@ -373,12 +439,11 @@ namespace madc {
     // and the madcrun:// / madcproj:// channels spawn THIS executable with
     // the run named in its environment (MADC_RUN_CHILD); serve_run_child
     // runs that request and exits with the guest's status, and answers -1
-    // in every other process. The initializer below calls it, so a program
-    // that can make the request serves it before its main runs (the
-    // <iostream> ios_base::Init idiom).
+    // in every other process. A program that includes this header calls it
+    // from its injected entry init (__madc_sys_init), so a program that can
+    // make the request serves it before its main runs.
     // Thread contract: process start, before the program's threads.
     int64_t serve_run_child();
-    static const int64_t __madc_run_child = serve_run_child();
 
     // Value channels between cooperative tasks (MT-2; the Go contract —
     // src/madc_task_chan.cpp carries the full semantics). capacity 0 =
@@ -470,11 +535,6 @@ namespace madc {
     // true with "". The std::getline(cin, string&) contract, carried by
     // the carrier.
     bool getline(value &out);
-    // Is a module's library available on this system? The module map's
-    // spelling is opened through the one dl seam (and stays open); false
-    // when it cannot be. A LAZY module row (madcwebview) compiles and
-    // runs without its library — ask this before the first call.
-    bool module_available(const char *name);
     // The console of the process that started this one (plan
     // 2026-10-03-chthonia-windows-macos.md §7a). A Windows program built as
     // a GUI image (-mwindows, a manifest's "kind": "gui") starts with no

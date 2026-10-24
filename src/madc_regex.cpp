@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"		// madc_verbose (the DBG contract)
 #include "madc_regex.h"

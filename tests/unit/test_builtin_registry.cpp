@@ -1,0 +1,180 @@
+// The dialect is builtin (docs/plans/2026-10-17-dialect-builtin-registration.md,
+// R1): the generated registration registers exactly what a live parse of the
+// dialect files registers, field by field (builtin_function_line) — the
+// fidelity gate the generator answers to.
+
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include "doctest.h"
+
+thread_local bool madc_verbose = false;
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+
+#include <deque>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <queue>
+#include <set>
+#include <sstream>
+#include <stack>
+#include <string>
+#include <vector>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+#include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
+#include "madc.h"
+#include "madc_builtin_registry.h"
+
+// An empty program (the pack bind off, as the dialect's text parse runs).
+static std::shared_ptr<Program> parse_empty(const char *tag)
+{
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->registration_policy.enable_forest_bind = false;
+	prog->forest_bind_path.clear();
+	TokenProgram *tp = prog->tokenize_buffer(madc::dis::istring("int main() { return 0; }\n"),
+						 madc::dis::istring(tag));
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+	return prog;
+}
+
+TEST_CASE("R1: the generated registration registers what a live parse of the dialect files does") {
+	DialectTextParse dp;
+	std::string err;
+	REQUIRE(parse_dialect_as_text(dp, err));
+	// The text parse read every dialect file: each namespace has publics.
+	std::set<std::string> namespaces;
+	for (size_t i = 0; i < dp.function_keys.size(); ++i)
+		namespaces.insert(dp.live->funcdef_map[dp.function_keys[i]]->namespace_name.c_str());
+	const char *expect_ns[] = { "madc", "php", "perl", "python", "ruby", "rust", "js",
+				    "ui", "ui_ws" };
+	for (size_t i = 0; i < sizeof(expect_ns) / sizeof(expect_ns[0]); ++i)
+		CHECK_MESSAGE(namespaces.count(expect_ns[i]) == 1u, expect_ns[i]);
+	std::vector<BuiltinGroup> groups;
+	plan_builtin_registry(dp, groups);
+
+	// The generated side: every builder of the table, into a program that
+	// parsed nothing of the dialect.
+	REQUIRE(madc::builtins::dialect_table_count > 0u);
+	std::shared_ptr<Program> gen = parse_empty("<gen>");
+	for (size_t i = 0; i < madc::builtins::dialect_table_count; ++i)
+		madc::builtins::dialect_table[i].build(*gen);
+
+	size_t compared = 0, differ = 0, skipped = 0;
+	std::map<std::string, size_t> skip_reasons;
+	for (size_t g = 0; g < groups.size(); ++g) {
+		if (!groups[g].skip.empty()) {
+			skipped += (groups[g].kind == bgType || groups[g].kind == bgVariable ? 1 : 0)
+				 + groups[g].keys.size();
+			++skip_reasons[groups[g].skip];
+			continue;
+		}
+		if (groups[g].kind == bgFunctionTemplate) {
+			madc::dis::istring want = builtin_function_template_line(*dp.live, groups[g].ns, groups[g].name);
+			madc::dis::istring got = builtin_function_template_line(*gen, groups[g].ns, groups[g].name);
+			++compared;
+			if (want != got) {
+				if (differ < 20)
+					MESSAGE("live: " << std::string(want.c_str()) << "\ngen:  " << std::string(got.c_str()));
+				++differ;
+			}
+		}
+		if (groups[g].kind == bgType || groups[g].kind == bgVariable) {
+			madc::dis::istring want = groups[g].kind == bgType
+				? builtin_type_line(*dp.live, groups[g].ns, groups[g].name)
+				: builtin_variable_line(*dp.live, groups[g].ns, groups[g].name);
+			madc::dis::istring got = groups[g].kind == bgType
+				? builtin_type_line(*gen, groups[g].ns, groups[g].name)
+				: builtin_variable_line(*gen, groups[g].ns, groups[g].name);
+			++compared;
+			if (want != got) {
+				if (differ < 20)
+					MESSAGE("live: " << std::string(want.c_str()) << "\ngen:  " << std::string(got.c_str()));
+				++differ;
+			}
+		}
+		for (size_t k = 0; k < groups[g].keys.size(); ++k) {
+			madc::dis::istring want = builtin_function_line(*dp.live, groups[g].keys[k]);
+			madc::dis::istring got = builtin_function_line(*gen, groups[g].keys[k]);
+			++compared;
+			if (want != got) {
+				if (differ < 20)
+					MESSAGE("live: " << std::string(want.c_str()) << "\ngen:  " << std::string(got.c_str()));
+				++differ;
+			}
+		}
+	}
+	for (std::map<std::string, size_t>::const_iterator it = skip_reasons.begin();
+	     it != skip_reasons.end(); ++it)
+		MESSAGE("not yet built: " << it->second << " name(s) — " << it->first);
+	MESSAGE("compared " << compared << " declaration(s), type(s) and object(s); " << skipped << " not yet built");
+	CHECK(compared > 0u);
+	CHECK(differ == 0u);
+}
+
+// R5a: the prerequisite words the build wrote for each dialect fragment are
+// the words a scan of its embedded text reads (dialect_fragment_scan_words, the
+// one reader) — and every fragment the dialect's roots name is carried.
+TEST_CASE("R5a: the generated fragment words equal a scan of each fragment's text") {
+	std::shared_ptr<Program> prog = parse_empty("<words>");
+	prog->language_std = Program::STD_MADC;
+	std::vector<madc::dis::istring> roots;
+	REQUIRE(prog->dialect_image_roots(roots));
+	size_t fragments = 0;
+	for (size_t i = 0; i < roots.size(); ++i) {
+		if (!embedded_dialect_fragment_p(roots[i]))
+			continue;
+		++fragments;
+		const std::string *text = find_embedded_header(roots[i].c_str());
+		REQUIRE(text != nullptr);
+		std::vector<std::pair<madc::dis::istring, bool> > scanned, generated;
+		dialect_fragment_scan_words(*text, scanned);
+		CHECK_MESSAGE(generated_fragment_words(roots[i], generated), roots[i].c_str());
+		std::set<std::pair<std::string, bool> > want, got;
+		for (size_t k = 0; k < scanned.size(); ++k)
+			want.insert(std::make_pair(std::string(scanned[k].first.c_str()), scanned[k].second));
+		for (size_t k = 0; k < generated.size(); ++k)
+			got.insert(std::make_pair(std::string(generated[k].first.c_str()), generated[k].second));
+		CHECK_MESSAGE(want == got, roots[i].c_str());
+		CHECK(got.size() == generated.size());
+	}
+	CHECK(fragments > 0u);
+	std::vector<std::pair<madc::dis::istring, bool> > none;
+	CHECK_FALSE(generated_fragment_words(madc::dis::istring("stdio.h"), none));
+	CHECK(none.empty());
+}
+
+// A module face's platform integer — darwin's `long long`, a type distinct from
+// `long` where int64_t aliases it (datadef.h) — is generated as its accessor's
+// call, which answers the loading madc's own type. A native darwin build
+// generates its module tables on darwin (src/madc_modules.mk); the alias is set
+// here so the Linux unit test parses as that generator does.
+TEST_CASE("module table: a platform integer is named through its accessor") {
+	char dir[] = "/tmp/madc_unit_faceXXXXXX";
+	REQUIRE(mkdtemp(dir) != nullptr);
+	const std::string face = std::string(dir) + "/plat.madi";
+	{
+		std::ofstream f(face.c_str());
+		f << "namespace plat {\n"
+		     "    long long signed_ll(long long a);\n"
+		     "    unsigned long long unsigned_ll();\n"
+		     "}\n";
+	}
+	const TargetInt64Alias saved = madc_target_int64_alias;
+	madc_target_int64_alias = TargetInt64Alias::LongLong;
+	std::ostringstream out, diag;
+	const bool ok = emit_module_table(out, diag, face);
+	madc_target_int64_alias = saved;
+	remove(face.c_str());
+	rmdir(dir);
+	INFO(diag.str());
+	REQUIRE(ok);
+	CHECK(out.str().find("dd_platform_longlong()") != std::string::npos);
+	CHECK(out.str().find("dd_platform_ulonglong()") != std::string::npos);
+}

@@ -3,8 +3,8 @@
 // madc::tool_host — the tools a madc process serves (split arc 1D, plan	//
 // 2026-10-09-madc-madcide-split-arc.md item 19): ONE registry over a	//
 // hub world's documents holding the code-graph tools, the project	//
-// memory and its tools (the registry's edit memory), and every loaded	//
-// module's (madcgit: the version history). `madc --mcp` serves one; a	//
+// memory and its tools (the registry's edit memory), and every		//
+// imported module's (git: the version history). `madc --mcp` serves one; a //
 // dialect host (madcide) builds one over its ui:: world, adds its own	//
 // commands as tools, calls them, answers MCP messages over its seats and	//
 // reads the memory's change log.					//

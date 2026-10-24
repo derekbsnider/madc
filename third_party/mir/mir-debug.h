@@ -19,7 +19,7 @@
      MIR_debug_type_t ti = MIR_debug_base_type (d, "int", MIR_DEBUG_ENC_SIGNED, 4);
      for each generated function fn:
        MIR_debug_add_func (d, fn->name, fn->machine_code, fn->code_len,
-                           fn->line_map, fn->line_map_len);
+                           fn->line_map, fn->line_map_len, fn->cfi, fn->cfi_len);
        for each local var v with reg r and type t:
          int64_t off; MIR_reg_frame_offset (fn, r, &off);
          MIR_debug_add_var (d, v->name, v->is_param, t, off, deref_p, 0);
@@ -94,11 +94,13 @@ extern MIR_debug_type_t MIR_debug_func_type (MIR_debug_t d, MIR_debug_type_t ret
 extern void MIR_debug_add_param_type (MIR_debug_t d, MIR_debug_type_t fn, MIR_debug_type_t type);
 
 /* --- Functions and their variables --------------------------------------
-   addr/size/line_map come straight from a generated MIR_func (machine_code,
-   code_len, line_map / line_map_len).  Variables are attached to the most
-   recently added function.  */
+   addr/size/line_map/cfi come straight from a generated MIR_func (machine_code,
+   code_len, line_map / line_map_len, cfi / cfi_len -- its frame's call frame
+   instructions, written to .debug_frame unless the artifact has .eh_frame).
+   Variables are attached to the most recently added function.  */
 extern void MIR_debug_add_func (MIR_debug_t d, const char *name, const void *addr, size_t size,
-                                const MIR_line_map_t *line_map, size_t line_map_len);
+                                const MIR_line_map_t *line_map, size_t line_map_len,
+                                const uint8_t *cfi, size_t cfi_len);
 /* Location of the variable, built as the DWARF expression
      DW_OP_fbreg(fp_offset) [DW_OP_deref] [DW_OP_plus_uconst(member_offset)].
    fp_offset: the frame-pointer-relative slot, from MIR_reg_frame_offset.
@@ -144,9 +146,9 @@ extern void MIR_debug_gdb_unregister (MIR_debug_jit_t entry);
 
 typedef struct MIR_object *MIR_object_t;
 
-/* Section identifiers (fixed section-header indexes 1..4 in the emitted
-   object; .init_array follows at 5 when non-empty).  MIR_OBJ_SEC_UNDEF
-   marks an imported (undefined) symbol.
+/* Section identifiers (section-header indexes in kind order from 1 in the
+   emitted object: .text, .data, .bss and .mir.addrpool always, the others
+   when non-empty).  MIR_OBJ_SEC_UNDEF marks an imported (undefined) symbol.
    ADDRPOOL (".mir.addrpool", R6 PIC) is the GOT-shaped address-slot
    section: every 8-byte address the generated code materializes or calls
    through -- const-pool entries and switch tables -- lives here instead of
@@ -156,7 +158,18 @@ typedef struct MIR_object *MIR_object_t;
    INITARR (".init_array", SHT_INIT_ARRAY -- the platform section, so an
    external linker collects it natively) holds 8-byte function-pointer
    slots, one per registered module initializer (MIR_object_add_init);
-   each slot is zero in the file and covered by an ABS64 relocation. */
+   each slot is zero in the file and covered by an ABS64 relocation.
+   EHFRAME (".eh_frame") and EXCEPT (".gcc_except_table") are the generated
+   functions' unwind records, read-only: their CIEs and FDEs, and the region
+   tables the FDEs hand their personality (MIR_UNWIND_TABLE_VERSION).  Every
+   pointer in them is pc-relative (PC32), so neither ever needs a dynamic
+   relocation; the CIE's personality and each table's cleanups go through
+   .mir.addrpool slots (gcc's DW.ref word).  Present only when non-empty;
+   ELF and Mach-O images.
+   XDATA (".xdata") and PDATA (".pdata") are the PE/COFF counterparts: each
+   generated function's UNWIND_INFO, and its RUNTIME_FUNCTION {begin, end,
+   unwind info} -- three image-relative RVA32 fields.  Read-only, 4-byte
+   aligned, present only when non-empty; PE/COFF images only. */
 enum {
   MIR_OBJ_SEC_UNDEF = -1,
   MIR_OBJ_SEC_TEXT = 0,
@@ -164,6 +177,11 @@ enum {
   MIR_OBJ_SEC_BSS = 2,
   MIR_OBJ_SEC_ADDRPOOL = 3,
   MIR_OBJ_SEC_INITARR = 4,
+  MIR_OBJ_SEC_EHFRAME = 5,
+  MIR_OBJ_SEC_EXCEPT = 6,
+  MIR_OBJ_SEC_XDATA = 7,
+  MIR_OBJ_SEC_PDATA = 8,
+  MIR_OBJ_SEC_NUM /* the count of kinds: every per-kind table is sized by it */
 };
 
 /* Relocation kinds (mapped to the arch-specific ELF type at emit). */
@@ -187,6 +205,11 @@ enum {
   MIR_OBJ_RELOC_AARCH64_ADD_LO12 = 4,    /* add Xd,Xn,#lo12:
                                             R_AARCH64_ADD_ABS_LO12_NC,
                                             (S+A)[11:0] into imm12 */
+  MIR_OBJ_RELOC_RVA32 = 5, /* image-relative 32-bit: IMAGE_REL_AMD64_ADDR32NB
+                              (S+A-ImageBase), the unwind tables' RVAs.
+                              PE/COFF only.  Never dynamic: an image rebases
+                              as a whole (the in-process loader's base is its
+                              mapping). */
 };
 
 /* Create a builder, or NULL if the build's target is not a supported ELF
@@ -210,6 +233,13 @@ extern size_t MIR_object_bss_reserve (MIR_object_t obj, size_t len, size_t align
    relocation in MIR_OBJ_SEC_ADDRPOOL. */
 extern size_t MIR_object_addrpool_append (MIR_object_t obj, const void *bytes, size_t len,
                                           size_t align);
+/* Append len bytes to section sec (any kind with a body; .bss has
+   MIR_object_bss_reserve) at the given power-of-2 alignment, padding with
+   zeros (bytes == NULL appends zero fill); returns the section offset.
+   MIR_object_data_append and MIR_object_addrpool_append are this for their
+   kinds. */
+extern size_t MIR_object_section_append (MIR_object_t obj, int sec, const void *bytes,
+                                         size_t len, size_t align);
 
 /* Define (sec >= 0, at section offset value with the given size) or import
    (sec == MIR_OBJ_SEC_UNDEF) a symbol.  func_p selects STT_FUNC vs
@@ -260,7 +290,8 @@ extern int MIR_object_add_init (MIR_object_t obj, const char *name);
 
 /* Attach a debug builder (AOT R5): MIR_object_emit and
    MIR_object_emit_executable will generate .debug_abbrev/.debug_info/
-   .debug_line (and .debug_frame on x86-64) from it into the artifact.
+   .debug_line from it into the artifact (and .debug_frame only when the
+   object has no .eh_frame: gcc/clang -g describe frames in .eh_frame alone).
    Function addresses in the builder must be .text SECTION OFFSETS (cast to
    the addr pointer; offset 0 is valid), typically taken from
    MIR_object_find_symbol.  The .o carries R_X86_64_64 relocations against
@@ -449,6 +480,9 @@ extern int MIR_object_read (MIR_object_t obj, const void *buf, size_t size, char
 /* Iterate the names of the builder's UNDEFINED (imported) symbols:
    idx 0, 1, ... until NULL. */
 extern const char *MIR_object_undef_name (MIR_object_t obj, size_t idx);
+/* Nonzero when the idx-th undefined symbol (MIR_object_undef_name's order) is
+   a weak reference: the link may leave it undefined, its address 0. */
+extern int MIR_object_undef_weak_p (MIR_object_t obj, size_t idx);
 
 extern MIR_object_loaded_t MIR_object_load (const void *buf, size_t size,
                                             MIR_object_resolver_t resolver, void *env,

@@ -15,6 +15,19 @@ static void fancy_abort (int code) {
 static const MIR_reg_t FP_HARD_REG = R29_HARD_REG;
 static const MIR_reg_t LINK_HARD_REG = R30_HARD_REG;
 
+/* DWARF CFI (mir-gen.c): at entry CFA = sp and the return address is in x30
+   (column 30, no rule: the register itself). */
+#define TARGET_CFI_RA_COLUMN 30
+#define TARGET_CFI_CIE_INSNS 0x0c, 31, 0 /* DW_CFA_def_cfa sp, 0 */
+#define TARGET_DWARF_SP 31
+#define TARGET_DWARF_FP 29
+
+static unsigned target_dwarf_reg (MIR_reg_t hard_reg) {
+  if (hard_reg <= SP_HARD_REG) return hard_reg; /* x0-x30, sp */
+  gen_assert (V0_HARD_REG <= hard_reg && hard_reg <= V31_HARD_REG);
+  return 64 + (hard_reg - V0_HARD_REG);
+}
+
 static inline MIR_reg_t target_nth_loc (MIR_reg_t loc, MIR_type_t type MIR_UNUSED, int n) {
   return loc + n;
 }
@@ -134,16 +147,7 @@ static MIR_reg_t get_arg_reg (MIR_type_t arg_type, size_t *int_arg_num, size_t *
   return arg_reg;
 }
 
-static void mir_blk_mov (uint64_t *to, uint64_t *from, uint64_t nwords) {
-  for (; nwords > 0; nwords--) *to++ = *from++;
-}
-
-static MIR_insn_t gen_mov (gen_ctx_t gen_ctx, MIR_insn_t anchor, MIR_insn_code_t code,
-                           MIR_op_t dst_op, MIR_op_t src_op) {
-  MIR_insn_t insn = MIR_new_insn (gen_ctx->ctx, code, dst_op, src_op);
-  gen_add_insn_before (gen_ctx, anchor, insn);
-  return insn;
-}
+/* mir_blk_mov, the "mir.blk_mov" helper: mir-aarch64-calls.c. */
 
 static MIR_reg_t target_get_stack_slot_base_reg (gen_ctx_t gen_ctx MIR_UNUSED) {
   return FP_HARD_REG;
@@ -780,13 +784,6 @@ static int get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *pro
   }
 }
 
-struct insn_pattern_info {
-  int start, num;
-};
-
-typedef struct insn_pattern_info insn_pattern_info_t;
-DEF_VARR (insn_pattern_info_t);
-
 struct label_ref {
   int abs_addr_p, short_p;
   size_t label_val_disp;
@@ -1191,6 +1188,7 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   MIR_op_t sp_reg_op, fp_reg_op, treg_op, treg_op2;
   int save_prev_stack_p;
   size_t i, offset, frame_size, frame_size_after_saved_regs, saved_iregs_num, saved_fregs_num;
+  size_t fp_mark, body_mark;
 
   assert (curr_func_item->item_type == MIR_func_item);
   func = curr_func_item->u.func;
@@ -1202,8 +1200,13 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
         saved_fregs_num++;
     }
   if (leaf_p && !alloca_p && saved_iregs_num == 0 && saved_fregs_num == 0 && !func->vararg_p
-      && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0)
+      && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0) {
+    gen_unwind_frame (gen_ctx, 0, 0); /* no frame: SP stays at the CFA */
+    /* the frame address where a frame record would sit (gcc builds one at
+       CFA - 16), the return address still in lr */
+    gen_lower_frame_queries (gen_ctx, SP_HARD_REG, -16, LINK_HARD_REG, 0, TRUE);
     return;
+  }
   sp_reg_op = _MIR_new_var_op (ctx, SP_HARD_REG);
   fp_reg_op = _MIR_new_var_op (ctx, FP_HARD_REG);
   /* Prologue: */
@@ -1242,6 +1245,11 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op, treg_op2);
   }
   gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp = sp - (frame_size|t) */
+  /* The frame (CFI): after the allocation CFA = sp + frame_size; once fp = sp,
+     CFA = fp + frame_size with the frame record {caller's fp, lr} at fp.  The
+     saved registers' rules start at the body (body_mark). */
+  gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_SP, (int64_t) frame_size);
+  body_mark = gen_cfi_mark (gen_ctx, NULL);
   if (save_prev_stack_p)
     gen_mov (gen_ctx, anchor, MIR_MOV,
              _MIR_new_var_mem_op (ctx, MIR_T_I64, 16, SP_HARD_REG, MIR_NON_VAR, 1),
@@ -1253,7 +1261,12 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   gen_mov (gen_ctx, anchor, MIR_MOV,
            _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, SP_HARD_REG, MIR_NON_VAR, 1),
            _MIR_new_var_op (ctx, FP_HARD_REG));             /* mem[sp] = fp */
-  gen_mov (gen_ctx, anchor, MIR_MOV, fp_reg_op, sp_reg_op); /* fp = sp */
+  new_insn = gen_mov (gen_ctx, anchor, MIR_MOV, fp_reg_op, sp_reg_op); /* fp = sp */
+  fp_mark = gen_cfi_mark (gen_ctx, new_insn);
+  gen_cfi_frame (gen_ctx, fp_mark, TARGET_DWARF_FP, (int64_t) frame_size);
+  gen_cfi_save (gen_ctx, fp_mark, TARGET_DWARF_FP, -(int64_t) frame_size);
+  if (!func->jret_p)
+    gen_cfi_save (gen_ctx, fp_mark, TARGET_CFI_RA_COLUMN, 8 - (int64_t) frame_size);
 #if !defined(__APPLE__)
   if (func->vararg_p) {  // ??? saving only regs corresponding to ...
     MIR_reg_t base = SP_HARD_REG;
@@ -1292,6 +1305,8 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
         gen_mov (gen_ctx, anchor, MIR_MOV,
                  new_hard_reg_mem_op (gen_ctx, anchor, MIR_T_I64, offset, FP_HARD_REG),
                  _MIR_new_var_op (ctx, i));
+        gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg (i),
+                      (int64_t) offset - (int64_t) frame_size);
         offset += 8;
       } else {
         if (offset % 16 != 0) offset = (offset + 15) / 16 * 16;
@@ -1303,9 +1318,12 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
          * vreg. */
         if (new_insn->code == MIR_DMOV) new_insn->code = MIR_LDMOV;
 #endif
+        gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg (i),
+                      (int64_t) offset - (int64_t) frame_size);
         offset += 16;
       }
     }
+  gen_cfi_mark_at (gen_ctx, body_mark, DLIST_PREV (MIR_insn_t, anchor));
   if (small_aggregate_save_area != 0) {  // ??? duplication with vararg saved regs
     if (small_aggregate_save_area % 16 != 0)
       small_aggregate_save_area = (small_aggregate_save_area + 15) / 16 * 16;
@@ -1313,6 +1331,12 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
                              MIR_new_int_op (ctx, small_aggregate_save_area));
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= <small aggr save area size> */
   }
+  /* For a stack walk (MIR_unwind_info_t): after the prologue sp = CFA -
+     frame_size - the small aggregate save area; an ALLOCA's result is the new sp. */
+  gen_unwind_frame (gen_ctx, -(int64_t) (frame_size + small_aggregate_save_area), 0);
+  /* The frame address is fp, the frame record {caller's fp, lr} AAPCS64 chains;
+     the return address its lr: */
+  gen_lower_frame_queries (gen_ctx, FP_HARD_REG, 0, FP_HARD_REG, 8, FALSE);
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))
@@ -2083,36 +2107,8 @@ static void target_get_early_clobbered_hard_regs (MIR_insn_t insn, MIR_reg_t *hr
     *hr1 = R11_HARD_REG;
 }
 
-static int pattern_index_cmp (const void *a1, const void *a2) {
-  int i1 = *(const int *) a1, i2 = *(const int *) a2;
-  int c1 = (int) patterns[i1].code, c2 = (int) patterns[i2].code;
-
-  return c1 != c2 ? c1 - c2 : (long) i1 - (long) i2;
-}
-
 static void patterns_init (gen_ctx_t gen_ctx) {
-  MIR_alloc_t alloc = gen_alloc (gen_ctx);
-  int i, ind, n = sizeof (patterns) / sizeof (struct pattern);
-  MIR_insn_code_t prev_code, code;
-  insn_pattern_info_t *info_addr;
-  insn_pattern_info_t pinfo = {0, 0};
-
-  VARR_CREATE (int, pattern_indexes, alloc, 0);
-  for (i = 0; i < n; i++) VARR_PUSH (int, pattern_indexes, i);
-  qsort (VARR_ADDR (int, pattern_indexes), n, sizeof (int), pattern_index_cmp);
-  VARR_CREATE (insn_pattern_info_t, insn_pattern_info, alloc, 0);
-  for (i = 0; i < ARM_INSN_BOUND; i++) VARR_PUSH (insn_pattern_info_t, insn_pattern_info, pinfo);
-  info_addr = VARR_ADDR (insn_pattern_info_t, insn_pattern_info);
-  for (prev_code = ARM_INSN_BOUND, i = 0; i < n; i++) {
-    ind = VARR_GET (int, pattern_indexes, i);
-    if ((code = patterns[ind].code) != prev_code) {
-      if (i != 0) info_addr[prev_code].num = i - info_addr[prev_code].start;
-      info_addr[code].start = i;
-      prev_code = code;
-    }
-  }
-  assert (prev_code != ARM_INSN_BOUND);
-  info_addr[prev_code].num = n - info_addr[prev_code].start;
+  GEN_INDEX_PATTERNS (gen_ctx, patterns, ARM_INSN_BOUND, &pattern_indexes, &insn_pattern_info);
 }
 
 struct imm {
@@ -2831,8 +2827,10 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   VARR_TRUNC (MIR_item_t, const_pool_items, 0);
   VARR_TRUNC (const_ref_t, const_refs, 0);
   VARR_TRUNC (switch_table_desc_t, switch_table_descs, 0);
+  gen_start_code_pass (gen_ctx);
   for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
+    gen_cfi_note_insn (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
     if (insn->code == MIR_LABEL) {
       set_label_disp (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code));
     } else if (insn->code != MIR_USE) {
@@ -2843,8 +2841,10 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         exit (1);
       } else {
         gen_assert (replacement != NULL);
-        gen_record_line (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
+        size_t insn_start = VARR_LENGTH (uint8_t, result_code);
+        gen_record_line (gen_ctx, insn_start, insn);
         out_insn (gen_ctx, insn, replacement, NULL);
+        gen_record_call (gen_ctx, insn_start, VARR_LENGTH (uint8_t, result_code), insn);
       }
     }
   }
@@ -2899,7 +2899,7 @@ static void target_rebase (gen_ctx_t gen_ctx, uint8_t *base) {
    'Z'/'N' constraints reject references in object mode, so a leak fails the
    pattern match loudly before any code is emitted. */
 #define TARGET_HAS_OBJECT_CAPTURE 1
-static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
+static size_t target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
   MIR_context_t ctx = gen_ctx->ctx;
   MIR_object_t obj = gen_object;
   size_t i, j;
@@ -2975,6 +2975,7 @@ static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code
                                  curr_func_item->u.func->name);
   VARR_TRUNC (MIR_code_reloc_t, relocs, 0);
   gen_obj_record_lrefs (gen_ctx, func_off);
+  return func_off;
 }
 
 static void target_change_to_direct_calls (MIR_context_t ctx MIR_UNUSED) {}

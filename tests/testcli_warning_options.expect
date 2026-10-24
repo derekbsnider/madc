@@ -1,0 +1,4 @@
+run: rc=0
+link: rc=0
+its run: rc=0
+-Werror refused: 1

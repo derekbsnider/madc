@@ -2,6 +2,8 @@
 // (vised_core.inc: the document component, an anchor caret, the edit
 // notification, madc's colon mode).
 // Usage: madc examples/vised/vised.mad FILE [ro] [--web]
+// --web shows the same tree in a window, served by the ui_web module:
+//   madc --import=ui_web examples/vised/vised.mad FILE --web
 // Typing edits at the caret; the arrows, home and end move it; ^Z undoes;
 // ^S saves (:w), ^Q quits (:q — refused while modified), ^X discards
 // (:q!); Esc opens the colon line, where every ex command runs.

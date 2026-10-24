@@ -1,0 +1,1 @@
+glibc's FILE (_shortbuf) and struct cmsghdr (__cmsg_data) layouts; macOS's struct __sFILE and cmsghdr have neither member

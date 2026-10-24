@@ -1,0 +1,7 @@
+link: rc=0 built=1 stdout_empty=1
+ran argc=1
+its run: rc=0
+probe: rc=0 built=1
+object: rc=0 built=1
+script argc=3
+script: rc=0 built=0

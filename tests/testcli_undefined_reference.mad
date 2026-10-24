@@ -1,0 +1,47 @@
+// Linking an executable refuses a function no library of the link defines,
+// naming it, as ld does; a function a -l library defines links, and so does
+// one the C library defines. A shared object may keep undefined references.
+// Before: madc -o wrote the executable anyway (rc 0) and the loader refused
+// it at run time (rc 127), so every configure "does this function exist"
+// probe answered yes (SQLite's tgetent without a library, localtime_s).
+// Oracle: gcc 13 / clang 18 -- `cc probe.c -o probe` with an undefined
+// `madc_no_such_function` exits 1 ("undefined reference to
+// `madc_no_such_function'"); `cc libm.c -o p -lm` (cos) and `cc libc.c -o p`
+// (gmtime_r) exit 0; `cc -shared -fPIC probe.c -o p.so` exits 0.
+int main()
+{
+	var dir = "tmp/testcli_undefined_reference";
+	php::mkdir(dir.c_str());
+	const char *cp = madc::compiler_path();
+	var err = format("{}/err.txt", dir);
+
+	var missing = format("{}/missing.c", dir);
+	php::file_put_contents(missing.c_str(),
+		"extern void madc_no_such_function(void);\nint main(void)\n{\n\tmadc_no_such_function();\n\treturn 0;\n}\n");
+	var missing_exe = format("{}/missing", dir);
+	long rc = system(format("{} --no-config {} -o {} 2> {}", cp, missing, missing_exe, err));
+	long named = system(format("grep -q 'undefined reference to `madc_no_such_function' {}", err));
+	println("undefined: refused={} named={} built={}", rc != 0 ? 1 : 0,
+		named == 0 ? 1 : 0, php::file_exists(missing_exe.c_str()) ? 1 : 0);
+
+	var libm = format("{}/libm.c", dir);
+	php::file_put_contents(libm.c_str(),
+		"extern double cos(double);\nint main(void)\n{\n\treturn (int)cos(0.0) - 1;\n}\n");
+	var libm_exe = format("{}/libm", dir);
+	rc = system(format("{} --no-config {} -o {} -lm", cp, libm, libm_exe));
+	println("-lm: rc={}", rc);
+	rc = system(libm_exe.c_str());
+	println("-lm run: rc={}", rc);
+
+	var libc = format("{}/libc.c", dir);
+	php::file_put_contents(libc.c_str(),
+		"extern void gmtime_r(void);\nint main(void)\n{\n\treturn 0;\n\tgmtime_r();\n}\n");
+	rc = system(format("{} --no-config {} -o {}/libc", cp, libc, dir));
+	println("libc: rc={}", rc);
+
+	rc = system(format("{} --no-config -shared -fPIC {} -o {}/missing.so", cp, missing, dir));
+	println("shared: rc={}", rc);
+
+	system(format("rm -rf {}", dir));
+	return 0;
+}

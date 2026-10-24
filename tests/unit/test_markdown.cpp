@@ -1,5 +1,5 @@
 // test_markdown.cpp — madc::markdown_tree (the ONE cmark-gfm caller, the
-// madcmark module) over a README-shaped sample: the tree's kinds, the
+// markdown module) over a README-shaped sample: the tree's kinds, the
 // kind-specific fields and the source positions. The oracle is cmark-gfm
 // itself: a probe walking the same sample with CMARK_OPT_SOURCEPOS and the
 // table, strikethrough, autolink and tasklist extensions (cmark_iter over
@@ -10,7 +10,7 @@
 #define MADC_UNIT_TEST
 #include "doctest.h"
 
-#include "madcdis/markdown.h"
+#include "modules/markdown/markdown.h"
 
 #include <string>
 #include <vector>

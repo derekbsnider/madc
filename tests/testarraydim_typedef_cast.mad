@@ -1,0 +1,31 @@
+/* An array bound that casts through a TYPEDEF name the lexer left an
+ * identifier -- `int a[(u32)4];`, SQLite's BITVEC_NPTR
+ * `((u32)(64/sizeof(Bitvec *)))` -- is an integer constant expression
+ * (C11 6.6p6: a cast to an integer type). It was refused ("Expecting integer
+ * constant expression"): the constant folder read `(u32)` as a parenthesized
+ * expression; `(unsigned)4` folded.
+ * Oracle: gcc and clang -O0 print "4 4 8 3 72 8". */
+#include <stdio.h>
+typedef unsigned int u32;
+typedef struct Bitvec Bitvec;
+#define NPTR ((u32)(64/sizeof(Bitvec *)))
+
+int g1[(u32)4];
+int g2[(unsigned)4];
+int g3[NPTR];
+struct Bitvec {
+	u32 n;
+	union {
+		u32 a[(u32)(16/sizeof(u32))];
+		Bitvec *p[NPTR];
+	} u;
+};
+
+int main(void)
+{
+	int l1[(u32)3];
+	printf("%d %d %d %d %d %d\n", (int)(sizeof(g1)/4), (int)(sizeof(g2)/4),
+	       (int)(sizeof(g3)/4), (int)(sizeof(l1)/4),
+	       (int)sizeof(struct Bitvec), (int)(sizeof(((Bitvec *)0)->u.p)/8));
+	return 0;
+}

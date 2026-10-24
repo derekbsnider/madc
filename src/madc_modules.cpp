@@ -4,8 +4,10 @@
 #include <stdint.h>
 #include <string.h>
 #include "madc_modules.h"
+#include "madc_module.h"	// madc_module_entry_name
 #include "madc_dl.h"
 #include "madc_posix_io.h"	// resolve_real_path, host_path_dirname
+#include "madc_guards.h"	// madc_lift_memory_guard: a GUI module in a module list
 
 // The rows. `c` and `m` name the C runtime images by their REAL sonames /
 // install names / module names — a dev-symlink spelling (libm.so) needs the
@@ -13,28 +15,12 @@
 // cannot open them. Darwin keeps both in libSystem; Windows keeps both in
 // the UCRT. The interface column is the embedded header `import` tokenizes
 // first (NULL = interface-less: the alias form's variadic member convention
-// is all there is). The commands column names the function a module exports
-// to bring REPL commands (madc_module_commands.h; NULL = none); the tools
-// column, the one that brings agent tools (madc_module_tools.h).
+// is all there is). A madc MODULE (madc_module.h) has no row: it is found by
+// name on the module path and describes itself.
 static const MadcModuleSpec madc_modules[] = {
-	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0, NULL, NULL },
-	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0, NULL, NULL },
-	{ "madcwebview", "webview.h", "libmadcwebview.so", "libmadcwebview.dylib", "madcwebview.dll", MADC_MODULE_GUI | MADC_MODULE_LAZY, NULL, NULL },
-	// The git substrate (Nexus L4a → the V6 seam): a READ-ONLY view of a
-	// local repository over the SYSTEM libgit2 — a dependency of the IDE's
-	// nexus, never part of madc (owner ruling 2026-09-15). Built by
-	// src/madcgit.mk where pkg-config finds libgit2; the <ns_git> fragment
-	// imports it and asks madc::module_available before the first call.
-	// It brings `%git` to a session that loads it (split arc 1B.10), and
-	// the version history to a tool server's history tools (1C.14).
-	{ "madcgit", "madcgit.h", "libmadcgit.so", "libmadcgit.dylib", "madcgit.dll", MADC_MODULE_LAZY,
-	  "madcgit_commands", "madcgit_tools" },
-	// GitHub-flavoured Markdown (plan 2026-10-03-chthonia-windows-macos.md
-	// §7d): cmark-gfm, a dependency linked statically into the module
-	// (src/madcmark.mk); the <ns_markdown> fragment imports it and asks
-	// madc::module_available before the first call.
-	{ "madcmark", "madcmark.h", "libmadcmark.so", "libmadcmark.dylib", "madcmark.dll", MADC_MODULE_LAZY, NULL, NULL },
-	{ NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL }
+	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll" },
+	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll" },
+	{ NULL, NULL, NULL, NULL, NULL }
 };
 
 const MadcModuleSpec *madc_module_find(const std::string &name)
@@ -43,34 +29,6 @@ const MadcModuleSpec *madc_module_find(const std::string &name)
 		if (name == madc_modules[i].name)
 			return &madc_modules[i];
 	return NULL;
-}
-
-const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling)
-{
-	for (int i = 0; madc_modules[i].name; i++)
-		if (spelling == madc_module_library_spelling(madc_modules[i].name))
-			return &madc_modules[i];
-	return NULL;
-}
-
-void *madc_module_entry_point(const std::string &spelling, madc_module_entry which)
-{
-	const MadcModuleSpec *row = madc_module_find_spelled(spelling);
-	const char *name = !row ? NULL
-		: which == madc_module_entry::commands ? row->commands : row->tools;
-	if ( !name )
-		return NULL;
-	std::string why;
-	void *handle = madc_module_open(spelling, why);
-	return handle ? madcdl_sym(handle, name) : NULL;
-}
-
-bool madc_module_any_flagged(unsigned flags)
-{
-	for (int i = 0; madc_modules[i].name; i++)
-		if (madc_modules[i].flags & flags)
-			return true;
-	return false;
 }
 
 const char *madc_target_dso_suffix(TargetOS os)
@@ -116,7 +74,7 @@ bool madc_spelled_library_p(const std::string &name)
 // Char-level twin of host_path_last_separator (madc_posix_io.cpp): a TARGET
 // spelling may carry either separator whatever the host, so both mark a
 // path here.
-static bool is_path_spelling(const std::string &name)
+bool madc_spelling_is_path(const std::string &name)
 {
 	return name.find_first_of("/\\") != std::string::npos;
 }
@@ -124,7 +82,7 @@ static bool is_path_spelling(const std::string &name)
 std::string madc_module_library_spelling(const std::string &name, TargetOS os)
 {
 	const char *sfx = madc_target_dso_suffix(os);
-	if (is_path_spelling(name) || carries_dso_suffix(name, sfx))
+	if (madc_spelling_is_path(name) || carries_dso_suffix(name, sfx))
 		return name;
 	if (const MadcModuleSpec *row = madc_module_find(name)) {
 		switch (os) {
@@ -141,6 +99,156 @@ std::string madc_module_library_spelling(const std::string &name, TargetOS os)
 std::string madc_module_library_spelling(const std::string &name)
 {
 	return madc_module_library_spelling(name, madc_target_os);
+}
+
+// A madc MODULE's file (madc_module.h): its name and the target's library
+// suffix, no lib prefix — modules live in their own directories, apart from
+// the system's libraries, so a short name never meets a system lib<name>.
+std::string madc_module_file_spelling(const std::string &module)
+{
+	return module + madc_target_dso_suffix();
+}
+
+// madc's lib directory: libmadc's own image's when it is a library of its
+// own — a shared object in lib/ (POSIX), a DLL in bin/ beside madc.exe
+// (Windows: <dll dir>/../lib, the exe's rule) — else the running binary's
+// <exe dir>/../lib (libmadc linked into it).
+static std::string madc_home_lib_dir()
+{
+	std::string image = madc_self_lib_path();
+	if (image.empty() || image == madc_self_exe_path())
+		return madc_self_lib_dir();
+	std::string dir = madc::detail::host_path_dirname(image);
+#ifdef _WIN32
+	return dir.empty() ? dir : dir + "../lib";
+#else
+	return dir;
+#endif
+}
+
+std::string madc_module_dir()
+{
+	std::string libdir = madc_home_lib_dir();
+	if (libdir.empty())
+		return "";
+	return madc::detail::host_path_join(madc::detail::host_path_join(libdir, "madc"), "modules");
+}
+
+std::string madc_module_find_file(const std::string &module, const std::vector<std::string> &dirs)
+{
+	std::string file = madc_module_file_spelling(module);
+	std::vector<std::string> search(dirs);
+	std::string own = madc_module_dir();
+	if (!own.empty())
+		search.push_back(own);
+	for (size_t i = 0; i < search.size(); i++) {
+		if (search[i].empty())
+			continue;
+		std::string path = madc::detail::host_path_join(search[i], file);
+		if (madc::detail::host_path_type_of(path) == madc::detail::host_path_type::file)
+			return path;
+	}
+	return "";
+}
+
+std::string madc_module_reference(const std::string &name, const std::string &file, bool gui)
+{
+	return std::string("@") + (gui ? 'g' : '-') + name + '=' + file;
+}
+
+const MadcModuleDescription *madc_module_describe(void *handle, const std::string &name,
+						  const std::string &path, std::string &error)
+{
+	error.clear();
+	std::string entry = madc_module_entry_name(name);
+	madc_module_describe_fn describe = (madc_module_describe_fn)madcdl_sym(handle, entry.c_str());
+	if (!describe) {
+		error = path + " is not a madc module (it exports no " + entry + ")";
+		return NULL;
+	}
+	const MadcModuleDescription *d = describe();
+	if (!d || d->abi != MADC_MODULE_ABI) {
+		error = path + " was built for module ABI " + std::to_string(d ? d->abi : 0u)
+			+ "; this madc reads ABI " + std::to_string(MADC_MODULE_ABI);
+		return NULL;
+	}
+	if (!d->name || name != d->name) {
+		error = path + " describes itself as '" + (d->name ? d->name : "") + "'";
+		return NULL;
+	}
+	return d;
+}
+
+void *madc_module_open_reference(const std::string &reference, std::string &error)
+{
+	error.clear();
+	size_t eq = reference.find('=');
+	if (reference.size() < 3 || reference[0] != '@' || eq == std::string::npos || eq < 2) {
+		error = "import: '" + reference + "' is not a module reference";
+		return NULL;
+	}
+	std::string name = reference.substr(2, eq - 2);
+	std::string path = reference.substr(eq + 1);
+	// Its own load may reserve address space far beyond any program
+	// budget (WebKit's): the guard lifts BEFORE it opens.
+	if (reference[1] == 'g')
+		madc_lift_memory_guard("a GUI module in the program's module list");
+	if (path.empty() || madc::detail::host_path_type_of(path) != madc::detail::host_path_type::file) {
+		std::vector<std::string> dirs;
+		std::string own = madc::detail::host_path_dirname(madc_self_exe_path());
+		if (!own.empty())
+			dirs.push_back(own);
+		path = madc_module_find_file(name, dirs);
+		if (path.empty()) {
+			error = "import: no module named '" + name + "'";
+			return NULL;
+		}
+	}
+	std::string why;
+	void *handle = madc_module_open(path, why);
+	if (handle && !madc_module_describe(handle, name, path, why))
+		handle = NULL;	// the loader keeps it open: a refused module stays mapped
+	if (!handle)
+		error = "import: module '" + name + "': " + why;
+	return handle;
+}
+
+// The module list's entry spellings (madc_modules.h): a link library is its
+// spelling; a madc module its reference (madc_module_reference).
+void madc_module_deps_append(std::string &table, const std::string &entry)
+{
+	table += entry;
+	table.push_back('\0');
+}
+
+bool madc_module_deps_open(const char *table, const char *end, std::string &error)
+{
+	error.clear();
+	for (const char *p = table; p && (!end || p < end) && *p; ) {
+		size_t n = end ? strnlen(p, (size_t)(end - p)) : strlen(p);
+		std::string entry(p, n);
+		p += n + 1;
+		std::string why;
+		if (entry[0] != '@') {
+			if (!madc_module_open(entry, why)) {
+				error = "import: cannot load '" + entry + "': " + why;
+				return false;
+			}
+			continue;
+		}
+		if (!madc_module_open_reference(entry, error))
+			return false;
+	}
+	return true;
+}
+
+std::string madc_module_entry_name(const std::string &module)
+{
+	std::string entry = "madc_module_" + module;
+	for (size_t i = 0; i < entry.size(); i++)
+		if (entry[i] == '.')
+			entry[i] = '_';
+	return entry;
 }
 
 // A Mach-O dylib's LC_ID_DYLIB, read from the file at `path` ("" = not a
@@ -197,7 +305,7 @@ static std::string macho_dylib_id(const std::string &path)
 std::string madc_darwin_install_name(const std::string &spelling)
 {
 	std::string path = spelling;
-	if (!is_path_spelling(spelling)) {
+	if (!madc_spelling_is_path(spelling)) {
 		std::string libdir = madc_self_lib_dir();
 		if (libdir.empty())
 			return spelling;
@@ -209,7 +317,7 @@ std::string madc_darwin_install_name(const std::string &spelling)
 
 std::string madc_darwin_link_rpath(const std::string &spelling)
 {
-	if (!is_path_spelling(spelling)
+	if (!madc_spelling_is_path(spelling)
 	    || macho_dylib_id(spelling).compare(0, 7, "@rpath/") != 0)
 		return "";
 	// The REAL directory: a versioned link (libx.dylib -> libx.1.dylib)
@@ -221,11 +329,51 @@ std::string madc_darwin_link_rpath(const std::string &spelling)
 	return dir;
 }
 
+// What ld's reading of a library comes to for a run: its shared objects
+// opened in order (the first one's handle answers), an empty archive the
+// process's own scope, a static archive refused.
+static void *open_link_result(madc_link_kind kind, const std::vector<madc_link_image> &images,
+			      const std::string &file, bool bind_now, std::string &error)
+{
+	switch (kind) {
+	case madc_link_kind::images: {
+		void *first = NULL;
+		for (const madc_link_image &im : images) {
+			void *h = madcdl_open_global(im.path.c_str(), bind_now);
+			if (!h) {
+				const char *e = madcdl_error();
+				error = e ? e : "cannot open";
+				return NULL;
+			}
+			if (!first)
+				first = h;
+		}
+		return first;
+	}
+	case madc_link_kind::none:
+		return madcdl_open_self();
+	case madc_link_kind::archive:
+		error = file + ": a static archive (madc links shared libraries)";
+		return NULL;
+	case madc_link_kind::unresolved:
+		break;
+	}
+	return NULL;
+}
+
 void *madc_module_open(const std::string &spelling, std::string &error,
 		       bool bind_now)
 {
 	error.clear();
-	if (!is_path_spelling(spelling)) {
+	// ld's reading of the library, on an ELF host: a path's file at once (a
+	// linker script or an archive is no dlopen input); a bare spelling only
+	// when the loader cannot open it (a link-time name: no dev symlink, a
+	// script, a stub archive).
+	bool elf = madc_target_os == TargetOS::Posix;
+	bool path = madc_spelling_is_path(spelling);
+	std::vector<madc_link_image> images;
+	std::string file;
+	if (!path) {
 		std::string libdir = madc_self_lib_dir();
 		if (!libdir.empty()) {
 			std::string beside = libdir + "/" + spelling;
@@ -233,11 +381,23 @@ void *madc_module_open(const std::string &spelling, std::string &error,
 				return h;
 			(void)madcdl_error();	// consume; the loader's own search follows
 		}
+	} else if (elf) {
+		madc_link_kind k = madc_module_link_images(spelling,
+				madc_link_search_path(std::vector<std::string>()), images, file);
+		if (k != madc_link_kind::unresolved)
+			return open_link_result(k, images, file, bind_now, error);
 	}
 	void *h = madcdl_open_global(spelling.c_str(), bind_now);
-	if (!h) {
-		const char *e = madcdl_error();
-		error = e ? e : "cannot open";
+	if (h)
+		return h;
+	const char *e = madcdl_error();
+	std::string loader_error = e ? e : "cannot open";
+	if (elf && !path) {
+		madc_link_kind k = madc_module_link_images(spelling,
+				madc_link_search_path(std::vector<std::string>()), images, file);
+		if (k != madc_link_kind::unresolved)
+			return open_link_result(k, images, file, bind_now, error);
 	}
-	return h;
+	error = loader_error;
+	return NULL;
 }

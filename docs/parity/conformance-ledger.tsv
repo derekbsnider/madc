@@ -1,0 +1,14 @@
+# conformance-ledger.tsv — each release's C23 and C++20 conformance counts.
+# Written ONLY by scripts/conformance_measure.sh --record; read by the release
+# gate scripts/check-release-conformance.sh (.claude/rules/branching.md, owner
+# 2026-10-16: every release raises at least one passing count and lowers none,
+# against the previous release, on the same in-scope set).
+# release	corpus	std	passing	in_scope	commit	measured
+v0.105.0	c23-compile	c23	38	72	be3be7194	2026-10-22
+v0.105.0	c23-run	c23	35	70	be3be7194	2026-10-22
+v0.105.0	torture-c23	c23	1490	1625	be3be7194	2026-10-22
+v0.105.0	cpp2a	c++20	350	651	be3be7194	2026-10-22
+v0.106.0	c23-compile	c23	38	72	1156d1650	2026-10-23
+v0.106.0	c23-run	c23	40	70	1156d1650	2026-10-23
+v0.106.0	torture-c23	c23	1493	1625	1156d1650	2026-10-23
+v0.106.0	cpp2a	c++20	350	651	1156d1650	2026-10-23

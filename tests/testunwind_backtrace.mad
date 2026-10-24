@@ -1,0 +1,73 @@
+/* The platform unwinder walks every frame madc generates.  leaf, called from
+ * middle, called from main, runs _Unwind_Backtrace; each frame's IP is mapped
+ * to its function by _Unwind_FindEnclosingFunction -- the unwind tables' own
+ * answer.  Each function learns its own identity the same way (self_id walks
+ * one frame up from its caller), so the check never compares a function
+ * pointer with a code address (a JIT's function pointer may be a thunk).
+ * Every call goes through a volatile pointer: no frame is inlined away.
+ * Without unwind data for a generated frame the walk stops there.
+ * Oracle: gcc 13 -O0 and clang 18 -O0 print the lines below. */
+#include <stdint.h>
+#include <stdio.h>
+
+struct _Unwind_Context;
+typedef int (*trace_fn) (struct _Unwind_Context *, void *);
+extern int _Unwind_Backtrace (trace_fn, void *);
+extern uintptr_t _Unwind_GetIP (struct _Unwind_Context *);
+extern void *_Unwind_FindEnclosingFunction (void *);
+
+static void *enclosing (struct _Unwind_Context *ctx) {
+	return _Unwind_FindEnclosingFunction ((void *) (_Unwind_GetIP (ctx) - 1));
+}
+
+/* frame 1 is self_id itself, frame 2 its caller */
+struct up { int n; void *fn; };
+static int up_trace (struct _Unwind_Context *ctx, void *arg) {
+	struct up *u = arg;
+	if (++u->n < 2) return 0;
+	u->fn = enclosing (ctx);
+	return 5; /* _URC_END_OF_STACK: stop */
+}
+static void *self_id (void) {
+	struct up u = {0, NULL};
+	_Unwind_Backtrace (up_trace, &u);
+	return u.fn;
+}
+static void *(*volatile self_id_p) (void) = self_id;
+
+static void *ids[3];
+static int seen[3], frames;
+
+static int trace (struct _Unwind_Context *ctx, void *arg) {
+	(void) arg;
+	void *fn = enclosing (ctx);
+	frames++;
+	for (int i = 0; i < 3; i++)
+		if (fn != NULL && fn == ids[i] && seen[i] == 0) seen[i] = frames;
+	return 0; /* _URC_NO_REASON: keep walking */
+}
+
+static int leaf (int n) {
+	ids[0] = self_id_p ();
+	_Unwind_Backtrace (trace, NULL);
+	return n + 1;
+}
+static int (*volatile leaf_p) (int) = leaf;
+
+static int middle (int n) {
+	ids[1] = self_id_p ();
+	return leaf_p (n * 2) + 1;
+}
+static int (*volatile middle_p) (int) = middle;
+
+int main (void) {
+	ids[2] = self_id_p ();
+	int r = middle_p (3);
+	printf ("result %d\n", r);
+	printf ("identities: %d\n", ids[0] != NULL && ids[1] != NULL && ids[2] != NULL);
+	printf ("leaf found: %d\n", seen[0] != 0);
+	printf ("middle found: %d\n", seen[1] != 0);
+	printf ("main found: %d\n", seen[2] != 0);
+	printf ("in order: %d\n", seen[0] != 0 && seen[0] < seen[1] && seen[1] < seen[2]);
+	return 0;
+}

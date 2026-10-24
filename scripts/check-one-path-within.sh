@@ -8,7 +8,7 @@
 # lexer's system-header classification (a strncmp against prefixes with a
 # '/' appended to a Windows canonical spelling, so no mingw header was ever
 # "system" and guard-less ones like <pshpack1.h> were silently skipped on
-# re-inclusion — B167) and madcgit's working-tree test (correct, but its own
+# re-inclusion — B167) and the git module's working-tree test (correct, but its own
 # copy). A second copy of the rule is how that comes back.
 #
 # Rule: outside the owner, no source tests a path against a directory by

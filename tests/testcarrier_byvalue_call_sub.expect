@@ -1,0 +1,4 @@
+copy: 2
+count: 3
+loop: k=4 sum=60
+chain: 20

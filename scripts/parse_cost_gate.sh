@@ -4,10 +4,15 @@
 # (callgrind Ir — deterministic, unlike wall time), ratcheted against a
 # recorded baseline. A growth past the tolerance is RED; an improvement past
 # it asks for the baseline to be re-recorded DOWNWARD so the gain is kept.
+# A row only ever moves DOWN (owner 2026-10-18): --record keeps each row at
+# the lower of its recorded and measured cost, so a growth inside the
+# tolerance is never written back (ten such re-records would creep 5%). A row
+# rises only with --accept-increase, which only the operator approves.
 #
 #   bash scripts/parse_cost_gate.sh                 # check (exit 1 on red)
-#   bash scripts/parse_cost_gate.sh --record        # re-record (refuses growth)
+#   bash scripts/parse_cost_gate.sh --record        # re-record (rows only fall)
 #   bash scripts/parse_cost_gate.sh --record --accept-increase='<reason>'
+#                                                   # operator-approved growth
 #   bash scripts/parse_cost_gate.sh --map=DIR [--label=TEXT]
 #                                                   # a callgrind MAP, no verdict
 #   MADC_BIN=bin/madc-release (default) — the shipped -O2 binary
@@ -15,10 +20,16 @@
 # Workloads live in scripts/parse_cost/: <name>.<ext> + <name>.expect (its
 # exact stdout), optionally <name>.modes ("live forest"; default "live"). A
 # LIVE row parses every system header (--no-forest-bind: the parser and
-# instantiator are what is measured; the dialect surface still binds — it is
-# the compiler's own, pack-slices design §7); a FOREST row takes the packed
+# instantiator are what is measured; the dialect surface is the builtin
+# table, the compiler's own, in both rows); a FOREST row takes the packed
 # forest, the path a default compile takes. A workload may be a symlink to a test (subscript.mad
-# is tests/testsubscript.mad, the owner's benchmark against g++). The baseline records the
+# is tests/testsubscript.mad, the owner's benchmark against g++), or to a real
+# codebase on the build host (sqlite3.c is SQLite's amalgamation — a dependency,
+# never copied into the repo); a symlink whose source is missing is RED, never
+# skipped. <name>.flags adds madc flags to every row of the workload (`-c -o
+# {scratch}/sqlite3.o`: {scratch} is this run's scratch directory). <name>.builds
+# (dialect workloads) is the count of dialect table names it builds, held by
+# scripts/check-dialect-pay-per-use.sh, not by this gate. The baseline records the
 # toolchain it was measured on (compiler, libc, libstdc++ headers, valgrind):
 # a different toolchain parses different headers, so a mismatch REFUSES the
 # comparison instead of passing or failing on someone else's numbers.
@@ -76,15 +87,23 @@ measure() {
 }
 
 rows=()
+missing=0
 for src in "$DIR"/*.cpp "$DIR"/*.c "$DIR"/*.mad; do
+	if [ -L "$src" ] && [ ! -e "$src" ]; then
+		echo "RED  $(basename "$src"): its source $(readlink "$src") is not on this host"
+		missing=$((missing + 1))
+		continue
+	fi
 	[ -e "$src" ] || continue
 	name=$(basename "$src"); name="${name%.*}"
 	modes=live
 	[ -f "$DIR/$name.modes" ] && modes=$(cat "$DIR/$name.modes")
+	extra=""
+	[ -f "$DIR/$name.flags" ] && extra=$(sed "s|{scratch}|$SP|g" "$DIR/$name.flags")
 	for m in $modes; do
 		case "$m" in
-		live) rows+=("$name.live|$src|--no-forest-bind") ;;
-		forest) [ -z "$mapdir" ] && rows+=("$name.forest|$src|") ;;
+		live) rows+=("$name.live|$src|--no-forest-bind $extra") ;;
+		forest) [ -z "$mapdir" ] && rows+=("$name.forest|$src|$extra") ;;
 		*) echo "parse_cost_gate: $DIR/$name.modes: unknown mode '$m'" >&2; exit 2 ;;
 		esac
 	done
@@ -92,7 +111,7 @@ done
 
 fp=$(fingerprint)
 declare -A now
-red=0
+red=$missing
 for r in "${rows[@]}"; do
 	IFS='|' read -r row src flags <<< "$r"
 	name="${row%.*}"
@@ -148,6 +167,20 @@ if [ "$record" -eq 1 ]; then
 		echo "  (fix it, or --accept-increase='<why the extra work is the price of correctness>')"
 		exit 1
 	fi
+	# Without an approved increase a row never rises: a growth inside the
+	# tolerance keeps its recorded cost. Read before the file is rewritten.
+	declare -A keep
+	if [ -z "$reason" ] && [ "$base_fp" = "$fp" ]; then
+		for r in "${rows[@]}"; do
+			row="${r%%|*}"
+			b=$(awk -F'\t' -v k="$row" '$1==k{print $2}' "$BASE")
+			[ -n "$b" ] || continue
+			if awk -v n="${now[$row]}" -v b="$b" 'BEGIN{exit !(n > b)}'; then
+				keep[$row]=$b
+				echo "parse_cost_gate: $row keeps $b (measured ${now[$row]}: a baseline only falls)"
+			fi
+		done
+	fi
 	{
 		printf '# parse-cost baseline (scripts/parse_cost_gate.sh): callgrind Ir per workload\n'
 		printf '# toolchain\t%s\n' "$fp"
@@ -155,7 +188,7 @@ if [ "$record" -eq 1 ]; then
 		[ -n "$reason" ] && printf '# accepted-increase\t%s\n' "$reason"
 		for r in "${rows[@]}"; do
 			row="${r%%|*}"
-			printf '%s\t%s\n' "$row" "${now[$row]}"
+			printf '%s\t%s\n' "$row" "${keep[$row]:-${now[$row]}}"
 		done
 	} > "$BASE"
 	echo "parse_cost_gate: recorded $BASE"

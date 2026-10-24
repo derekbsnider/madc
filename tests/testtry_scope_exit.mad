@@ -1,0 +1,73 @@
+// A try block left by return, break, continue or goto ends its try frame, and
+// an object in a nested block of a try body (or in a handler) is destroyed once
+// when its scope exits: a later throw neither lands in the abandoned frame nor
+// destroys the object again.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): the lines in the .expect.
+// madc before the fix: the nested-block objects were destroyed twice, and the
+// throw after an early return looped in the dead frame's handler.
+// The runner checks lines, not their order, so the `trace:` line records the
+// order of every construction (c), destruction (d) and handler (h).
+#include <cstdio>
+#include <cstring>
+static int live = 0;
+static char trace[512];
+static void note(char what, int id)
+{
+	size_t n = std::strlen(trace);
+	std::snprintf(trace + n, sizeof trace - n, " %c%d", what, id);
+}
+struct T {
+	int id;
+	T(int i) : id(i) { ++live; note('c', id); }
+	~T() { --live; note('d', id); }
+};
+static int early_return(int k)
+{
+	try {
+		T a(k);
+		if (k == 1)
+			return 10;
+		throw k;
+	} catch (int v) { note('h', v); }
+	return 0;
+}
+static void leave_by_goto()
+{
+	try {
+		T g(40);
+		goto out;
+	} catch (...) { note('h', 99); }
+out:
+	note('h', 41);
+}
+int main()
+{
+	try {
+		{ T b(2); }
+		throw 3;
+	} catch (int v) { note('h', v); }
+	std::printf("nested block: live %d\n", live);
+	try {
+		try { throw 4; }
+		catch (int v) { T c(v); }
+		throw 5;
+	} catch (int v) { note('h', v); }
+	std::printf("handler object: live %d\n", live);
+	try {
+		std::printf("early return %d\n", early_return(1));
+		for (int i = 0; i < 3; ++i) {
+			try {
+				T d(20 + i);
+				if (i == 0)
+					continue;
+				if (i == 1)
+					break;
+			} catch (...) { note('h', 98); }
+		}
+		leave_by_goto();
+		throw 6;
+	} catch (int v) { note('h', v); }
+	std::printf("left frames: live %d\n", live);
+	std::printf("trace:%s\n", trace);
+	return 0;
+}

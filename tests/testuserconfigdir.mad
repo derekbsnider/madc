@@ -1,0 +1,29 @@
+// madc::user_config_dir / user_config_dir_of — the user configuration
+// directory, madc's one rule (madc_config_file.h; madc.ini's lookup reads it):
+// $XDG_CONFIG_HOME/<app> when set, else %APPDATA%\<app> on Windows, else
+// ~/.config/<app>; "" when none is known. user_config_dir_of asks the rule
+// over its inputs, so each platform's arm is checked on any host; the .env
+// pins XDG_CONFIG_HOME, so user_config_dir answers the same everywhere. The
+// Windows arm is the one a madc.ini user file on Windows was never found
+// without (B91): madc looked only in $HOME/.config, which Windows rarely sets.
+void show(const char *label, const char *xdg, const char *appdata,
+	  const char *home, bool windows)
+{
+	var out;
+	madc::user_config_dir_of(out, "probeapp", xdg, appdata, home, windows);
+	println("{}: [{}]", label, out);
+}
+
+int main()
+{
+	show("xdg", "/x", "/a", "/h", true);
+	show("xdg-empty-windows", "", "/a", "/h", true);
+	show("posix-home", NULL, "/a", "/h", false);
+	show("windows-no-appdata", NULL, NULL, "/h", true);
+	show("none", NULL, NULL, NULL, false);
+
+	var live;
+	madc::user_config_dir(live, "probeapp");
+	println("live: [{}]", live);
+	return 0;
+}

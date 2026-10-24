@@ -144,7 +144,10 @@ if [ "$interop" = 1 ]; then
 		|| { diff "$out/oracle_a.out" "$out/lane_a.out" | head -20; fail "[interop] lane A output differs from the all-g++ build (< oracle, > madc-defined)"; }
 	echo "mangle_abi_gate: [interop] lane A OK — madc-defined class linked into a g++ program, output identical ($(grep -c . "$out/madc_def.syms") symbols, set-equal with g++, none bound stronger)"
 
-	# Lane B: g++ defines, madc (--std=c++20 this time) uses.
+	# Lane B: g++ defines, madc (--std=c++20 this time) uses. A function with
+	# cleanups names __madc_personality (B205), which the object carries
+	# itself as a g++ link carries libgcc's: plain g++ links it, no madc
+	# library (B229).
 	"$MADC_BIN" --std=c++20 -fno-eval-shims -c -o "$out/madc_use.o" $abi/interop_madc_use.mad \
 		|| fail "[interop] madc could not compile the user TU to an object"
 	g++ -o "$out/lane_b" "$out/gxx_def.o" "$out/madc_use.o" \

@@ -1,0 +1,108 @@
+/* madcwebview_chrome.h — madc's extension of the webview C API: the NATIVE
+ * chrome around the webview — a menu bar over the window (madcide GUI chrome
+ * S2), the platform's file dialogs (S4) and its clipboard (plan §41.11a step
+ * 3e). Built into the ui_web module beside upstream's webview.cc; the
+ * module's host (ui_web.cpp) is its caller.
+ *
+ * JSON-free by design: the host (ui_web.cpp) walks the engine's
+ * menu description and calls begin / add / separator / end; the platform
+ * layer only builds widgets. `key` is a madc key spelling ("^s", "pgdn",
+ * "^k d"): a CONTROL key becomes the item's accelerator (GTK4 accel, Cocoa
+ * key equivalent, Win32's accelerator column); a chord or a bare key is
+ * shown beside the title and never bound — the page still delivers it to
+ * the engine, which resolves it as the terminal would. A selection calls the
+ * registered action callback with the item's id (on the UI thread, inside
+ * the platform's run loop). activate(id) fires that callback as if the item
+ * were chosen — the test seam. Return 0 = ok; nonzero = no window / unknown
+ * id / no native menu on this host. Built for GTK4 (GtkPopoverMenuBar),
+ * Cocoa (the application's main menu) and Win32 (an HMENU bar).
+ * Thread contract: the UI thread only (webview's own).
+ */
+#ifndef MADCWEBVIEW_MENU_H
+#define MADCWEBVIEW_MENU_H 1
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef void (*madcwebview_menu_action_fn)(const char *id, void *arg);
+
+WEBVIEW_API int madcwebview_menu_begin(webview_t w);
+WEBVIEW_API int madcwebview_menu_add(webview_t w, const char *menu, const char *id,
+				     const char *title, const char *key, int enabled);
+WEBVIEW_API int madcwebview_menu_separator(webview_t w, const char *menu);
+WEBVIEW_API int madcwebview_menu_end(webview_t w);
+WEBVIEW_API int madcwebview_menu_on_action(webview_t w, madcwebview_menu_action_fn cb,
+					   void *arg);
+WEBVIEW_API int madcwebview_menu_activate(webview_t w, const char *id);
+
+/* The platform's file dialogs (S4): open or save-as, over the webview's
+ * window, ASYNCHRONOUS — the call returns 0 once the dialog is up and the
+ * callback fires later, on the UI thread inside the platform's run loop,
+ * with the chosen path ("" = cancelled). `initial` names the folder or file
+ * the dialog starts at (NULL/"" = the platform's default). Nonzero = no
+ * window / no native dialog on this host. GTK4: GtkFileDialog (4.10+),
+ * GtkFileChooserNative on an older GTK 4; Cocoa: NSOpenPanel /
+ * NSSavePanel as a sheet; Win32: IFileOpenDialog / IFileSaveDialog. */
+typedef void (*madcwebview_dialog_fn)(const char *path, void *arg);
+
+WEBVIEW_API int madcwebview_dialog_open(webview_t w, const char *title,
+					const char *initial,
+					madcwebview_dialog_fn cb, void *arg);
+WEBVIEW_API int madcwebview_dialog_save(webview_t w, const char *title,
+					const char *initial,
+					madcwebview_dialog_fn cb, void *arg);
+/* A one-shot timer on the UI thread (the window's bounded wait, madcide
+ * polish): cb(arg) fires once, about ms milliseconds later, inside the
+ * platform's run loop — the host's `tick` op ends its loop from it so the
+ * engine can hand its cooperative tasks the CPU while the window is idle.
+ * Nonzero = no window here (GTK: a GLib timeout source; Cocoa: dispatch_after
+ * on the main queue; Win32: SetTimer on the top-level window, served by the
+ * chrome subclass's WM_TIMER). A tick armed for a loop that ended early may
+ * fire in a later one; the callback owner tolerates that. */
+typedef void (*madcwebview_tick_fn)(void *arg);
+WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn cb,
+				 void *arg);
+
+/* The engine's wait in the platform loop (the host's `run` op): run reads
+ * and dispatches the UI thread's events until stop asks it to return (0) or
+ * the window is destroyed (1, where the platform can tell). Stop is called
+ * from a callback the loop dispatched (an event, a menu selection, the
+ * tick); outside a run it does nothing, so it never ends a later one.
+ * Win32: stop is a flag the loop reads after every message it dispatches,
+ * never a WM_QUIT — a modal loop running inside a dispatch (a menu being
+ * tracked, a file dialog) would take a WM_QUIT for itself: it ends the
+ * dialog, or is consumed and never reaches this loop. WM_QUIT means the
+ * window was destroyed (upstream ends its loop with one then). GTK and
+ * Cocoa: upstream's webview_run / webview_terminate, whose loop does not
+ * tell a close from a stop (0 either way). */
+WEBVIEW_API int madcwebview_run(webview_t w);
+WEBVIEW_API int madcwebview_stop(webview_t w);
+
+/* The platform's clipboard, plain UTF-8 text (plan §41.11a step 3e): set
+ * replaces what it holds; get reads it NOW and hands the text to cb before
+ * it returns ("" = it holds no text). Line ends are the platform's: set
+ * writes "\r\n" on Win32, get passes on whatever the clipboard holds.
+ * Nonzero = no window / no clipboard here. GTK4: GdkClipboard (its read is
+ * asynchronous, so get turns the main context until it answers, cancelled
+ * after two seconds); Cocoa: the general NSPasteboard; Win32:
+ * CF_UNICODETEXT. UI thread only, outside a running loop's callback. */
+typedef void (*madcwebview_text_fn)(const char *text, void *arg);
+WEBVIEW_API int madcwebview_clipboard_set(webview_t w, const char *text);
+WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
+					  void *arg);
+
+/* Full screen (View ▸ Full screen): on = 1 enters it, 0 leaves it, -1
+ * toggles the window's CURRENT state — so a window the user took out of
+ * full screen by the platform's own means toggles from where it is. The
+ * menu bar stays. Nonzero = no window here. GTK4: gtk_window_fullscreen
+ * (the window manager covers the monitor); Cocoa: toggleFullScreen: (its
+ * own space, animated); Win32: the frame dropped and the monitor covered,
+ * the style and placement restored on leaving. UI thread only. */
+WEBVIEW_API int madcwebview_fullscreen(webview_t w, int on);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MADCWEBVIEW_MENU_H */

@@ -1,0 +1,17 @@
+drop dir.d/foo.c -> dir.d/foo
+drop dir.d/foo -> dir.d/foo
+drop foo.tar.gz -> foo.tar
+drop .bashrc -> .bashrc
+drop dir/.bashrc -> dir/.bashrc
+drop noext -> noext
+stem dir/foo.tar.gz -> foo.tar
+stem tools/madcide/madcide.mad -> madcide
+stem /usr/bin/chthonia -> chthonia
+stem chthonia.exe -> chthonia
+stem dir.d/.hidden -> .hidden
+generic: dir/sub/f.c -> dir/sub/f.c
+backslash: a\b/c -> a\b/c
+parents made: 1
+leaf made: 0
+trailing made: 1
+cleaned: 1

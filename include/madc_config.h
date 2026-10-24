@@ -43,7 +43,7 @@ struct config_settings
     bool has_stdlib = false;
     std::string forest;				// forest = <file>   -> discovery arm 5
     std::vector<std::string> include_dirs;	// include = <dir>   (repeatable)
-    std::vector<std::string> modules;		// modules = <name>  (repeatable) -> -l<name>
+    std::vector<std::string> modules;		// modules = <name>  (repeatable) -> --import=<name>
     std::string cpu_limit;			// cpu-limit = off|auto|<secs> (validated by
     bool has_cpu_limit = false;			// the guards' one knob parser at parse)
     std::string mem_limit;			// mem-limit = off|auto|<MB>

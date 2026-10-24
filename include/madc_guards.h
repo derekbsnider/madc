@@ -15,8 +15,8 @@
 // from, in precedence order, the environment (MADC_MEM_LIMIT /
 // MADC_CPU_LIMIT), madc.ini (mem-limit / cpu-limit), the default.
 //
-// An armed memory guard sets the SOFT limit only, so a program that binds a
-// GUI-flagged module row (MADC_MODULE_GUI — WebKit reserves address space
+// An armed memory guard sets the SOFT limit only, so a program that imports a
+// GUI module (its description's mdGui — WebKit reserves address space
 // far beyond any sane program budget) lifts it at run start
 // (madc_lift_memory_guard). Every trip names its knob (never silent).
 //
@@ -45,7 +45,7 @@ void madc_install_resource_guards(size_t project_tus,
 				  const madc::config_settings &cfg);
 
 // Lift an armed memory guard (soft limit back to the hard limit) because
-// the program bound a GUI module row; `reason` names it for the DBG trace.
+// the program imported a GUI module; `reason` names it for the DBG trace.
 // False when no memory guard was armed.
 bool madc_lift_memory_guard(const char *reason);
 

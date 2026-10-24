@@ -8,6 +8,23 @@
 
 static const MIR_reg_t FP_HARD_REG = BP_HARD_REG;
 
+/* DWARF CFI (mir-gen.c): at entry CFA = rsp + 8 and the return address (rip,
+   column 16) is at CFA - 8. */
+#define TARGET_CFI_RA_COLUMN 16
+#define TARGET_CFI_CIE_INSNS                                                      \
+  0x0c, 7, 8,   /* DW_CFA_def_cfa rsp, 8 */                                       \
+    0x80 | 16, 1 /* DW_CFA_offset rip, CFA + 1 * -8 */
+#define TARGET_DWARF_SP 7
+#define TARGET_DWARF_FP 6
+
+static unsigned target_dwarf_reg (MIR_reg_t hard_reg) {
+  static const unsigned char gp[] = {0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15};
+
+  if (hard_reg <= R15_HARD_REG) return gp[hard_reg];
+  gen_assert (XMM0_HARD_REG <= hard_reg && hard_reg <= XMM15_HARD_REG);
+  return 17 + (hard_reg - XMM0_HARD_REG);
+}
+
 static inline MIR_reg_t target_nth_loc (MIR_reg_t loc, MIR_type_t type MIR_UNUSED, int n) {
   return loc + n;
 }
@@ -292,11 +309,6 @@ static MIR_reg_t get_arg_reg (MIR_type_t arg_type, size_t *int_arg_num, size_t *
     *mov_code = MIR_MOV;
   }
   return arg_reg;
-}
-
-static void gen_mov (gen_ctx_t gen_ctx, MIR_insn_t anchor, MIR_insn_code_t code, MIR_op_t dst_op,
-                     MIR_op_t src_op) {
-  gen_add_insn_before (gen_ctx, anchor, MIR_new_insn (gen_ctx->ctx, code, dst_op, src_op));
 }
 
 static void prohibit_omitting_fp (gen_ctx_t gen_ctx);
@@ -850,33 +862,13 @@ static const char *VA_ARG = "mir.va_arg";
 static const char *VA_BLOCK_ARG_P = "mir.va_block_arg.p";
 static const char *VA_BLOCK_ARG = "mir.va_block_arg";
 
-#if (defined(__ELF__) || defined(_WIN32)) && defined(__GNUC__)
-/* AOT object mode: generated code calls these builtins through the "mir.*"
-   import items above, which become undefined symbols in an emitted .o --
-   export them from libmir under those exact names so the link resolves.
-   (va_arg_builtin / va_block_arg_builtin get theirs in mir-x86_64.c;
-   mingw/PE takes the same shape -- dotted asm labels + alias are
-   probe-verified on gas/COFF.)  The mir.ui2f / ui2d / ui2ld / ld2i family
-   used to be exported here too; those conversions are generated inline now
-   (see expand_uint_to_fp_insn and the MIR_LD2I pattern), so the names no
+/* Generated code calls these builtins through the "mir.*" import items above,
+   which become undefined symbols in an emitted .o: libmir exports them under
+   those names (mir-x86_64.c, with "mir.arg_memcpy"), and an image madc writes
+   carries its own copy (mir-x86_64-calls.c).  The mir.ui2f / ui2d / ui2ld /
+   ld2i family used to be exported too; those conversions are generated inline
+   now (see expand_uint_to_fp_insn and the MIR_LD2I pattern), so the names no
    longer exist on either side of the link. */
-/* "mir.arg_memcpy" (block-argument copies) is bound to libc memcpy at gen
-   time; give it a linkable definition of its own. */
-static void *mir_arg_memcpy (void *dest, const void *src, size_t n) {
-  return memcpy (dest, src, n);
-}
-extern __typeof (mir_arg_memcpy) mir_arg_memcpy_obj_export asm ("mir.arg_memcpy")
-  __attribute__ ((alias ("mir_arg_memcpy"), used));
-#elif defined(__APPLE__) && defined(__GNUC__)
-/* The same export on Mach-O: a wrapper under the '_'-prefixed label (see
-   mir-aot-export.h), as Mach-O has no alias attribute. */
-#include "mir-aot-export.h"
-void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n)
-  asm (MIR_AOT_SYM ("mir.arg_memcpy")) __attribute__ ((used));
-void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n) {
-  return memcpy (dest, src, n);
-}
-#endif
 
 static void get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *proto_item,
                          MIR_item_t *func_import_item) {
@@ -901,14 +893,6 @@ static void get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *pr
   default: assert (FALSE);
   }
 }
-
-struct insn_pattern_info {
-  int start, num;
-};
-
-typedef struct insn_pattern_info insn_pattern_info_t;
-
-DEF_VARR (insn_pattern_info_t);
 
 struct const_ref {
   int call_p;            /* flag that constant from call insn */
@@ -936,6 +920,14 @@ typedef struct label_ref label_ref_t;
 DEF_VARR (label_ref_t);
 
 #define MOVDQA_CODE 0
+#ifdef _WIN32
+#define WIN64_ABI_P 1 /* the Windows x64 ABI, as a value */
+#define PUSH_CODE 1  /* push bp: the Windows prologue (target_make_prolog_epilog) */
+#define POP_CODE 2   /* pop bp: its epilogue */
+#define PROBE_CODE 3 /* the prologue's stack probe (win64_probe_frame) */
+#else
+#define WIN64_ABI_P 0
+#endif
 
 struct call_ref {
   MIR_item_t ref_func_item; /* func where the ref is located and referenced func */
@@ -989,6 +981,7 @@ struct target_ctx {
   VARR (call_ref_t) * call_refs;
   VARR (text_ref_t) * text_refs; /* object mode: imm64 item addresses in code text */
   VARR (switch_table_desc_t) * switch_table_descs; /* object mode: tables to move to the pool */
+  size_t label_pad_slack; /* the emitted loop heads' padding bound less their real padding */
 };
 
 #define alloca_p gen_ctx->target_ctx->alloca_p
@@ -1010,6 +1003,7 @@ struct target_ctx {
 #define relocs gen_ctx->target_ctx->relocs
 #define text_refs gen_ctx->target_ctx->text_refs
 #define switch_table_descs gen_ctx->target_ctx->switch_table_descs
+#define label_pad_slack gen_ctx->target_ctx->label_pad_slack
 
 static void prohibit_omitting_fp (gen_ctx_t gen_ctx) { keep_fp_p = TRUE; }
 
@@ -1513,6 +1507,231 @@ static void vsave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t har
            _MIR_new_var_op (ctx, hard_reg));
 }
 
+#ifdef _WIN32
+/* Windows commits a thread's stack a guard page at a time: before the prologue
+   moves SP down by SIZE (a page or more), read every page below SP in order,
+   the last read at SP - SIZE (the pages ___chkstk_ms touches; MIR links
+   nothing, so the probe is inline).  One loop of a fixed size (PROBE_CODE,
+   its operand -SIZE), whatever SIZE is: the prologue's unwind codes reach at
+   most 255 bytes into it.  RAX is free at function entry. */
+static void win64_probe_frame (gen_ctx_t gen_ctx, MIR_insn_t anchor, size_t size) {
+  MIR_context_t ctx = gen_ctx->ctx;
+
+  if (size < 4096) return;
+  gen_add_insn_before (gen_ctx, anchor,
+                       _MIR_new_unspec_insn (ctx, 2, MIR_new_int_op (ctx, PROBE_CODE),
+                                             MIR_new_int_op (ctx, -(int64_t) size)));
+}
+
+/* The Windows frame's bp sits DELTA below the frame's top, the base every
+   bp-relative address in the body was assigned against (the stack slots of
+   target_get_stack_slot_offset, the incoming arguments and the home area of
+   target_machinize): move each by DELTA -- a memory operand's displacement,
+   a bp + imm address's immediate, a stack home recorded for a debugger. */
+static void win64_rebase_fp (gen_ctx_t gen_ctx, int64_t delta) {
+  MIR_context_t ctx = gen_ctx->ctx;
+  MIR_func_t func = curr_func_item->u.func;
+
+  if (delta == 0) return;
+  for (MIR_insn_t insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;
+       insn = DLIST_NEXT (MIR_insn_t, insn)) {
+    size_t nops = MIR_insn_nops (ctx, insn);
+
+    for (size_t i = 0; i < nops; i++) {
+      MIR_op_t *op = &insn->ops[i];
+
+      if (op->mode == MIR_OP_VAR_MEM) {
+        gen_assert (op->u.var_mem.index != FP_HARD_REG);
+        if (op->u.var_mem.base == FP_HARD_REG) op->u.var_mem.disp += delta;
+      } else if (op->mode == MIR_OP_VAR && op->u.var == FP_HARD_REG) {
+        gen_assert (insn->code == MIR_ADD && i == 1 && nops == 3
+                    && (insn->ops[2].mode == MIR_OP_INT || insn->ops[2].mode == MIR_OP_UINT));
+        insn->ops[2].u.i += delta;
+      }
+    }
+  }
+  for (size_t i = 0; i < VARR_LENGTH (MIR_reg_loc_t, gen_reg_locs); i++)
+    VARR_ADDR (MIR_reg_loc_t, gen_reg_locs)[i].fp_offset += delta;
+}
+
+/* ---- Windows x64 unwind data (UNWIND_INFO of the x64 exception-handling ABI) ----
+   Written from the prologue facts the DWARF CFI is written from (gen_cfi_mark /
+   gen_cfi_frame / gen_cfi_save, in code order): an SP rule whose mark also saves
+   a register at the new SP is that register's push (UWOP_PUSH_NONVOL), any other
+   SP rule an allocation (UWOP_ALLOC_SMALL / _LARGE), the FP rule the frame
+   register at FO = the SP rule's CFA offset minus the FP rule's (UWOP_SET_FPREG),
+   and every other save a move to its distance above the establisher frame -- SP
+   after the fixed allocation (UWOP_SAVE_NONVOL / _SAVE_XMM128, the _FAR forms
+   past 16 bits).  A code's offset is its rule's, the end of the instruction; the
+   codes run in reverse prologue order.  A frameless function has none: the
+   unwinder's leaf rule (the return address at SP) is its description. */
+#define TARGET_WIN64_UNWIND_P 1
+
+enum {
+  WIN64_UWOP_PUSH_NONVOL = 0,
+  WIN64_UWOP_ALLOC_LARGE = 1,
+  WIN64_UWOP_ALLOC_SMALL = 2,
+  WIN64_UWOP_SET_FPREG = 3,
+  WIN64_UWOP_SAVE_NONVOL = 4, /* + 1: the _FAR form */
+  WIN64_UWOP_SAVE_XMM128 = 8, /* + 1: the _FAR form */
+  WIN64_UNW_FLAG_HANDLERS = 3, /* UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER */
+};
+
+typedef struct win64_uwop { /* one operation: its UNWIND_CODE slot, then its operand slots */
+  uint16_t slot[3];
+  uint8_t nslots;
+} win64_uwop_t;
+
+static win64_uwop_t win64_uwop (size_t code_offset, unsigned op, unsigned info) {
+  win64_uwop_t u = {{(uint16_t) (code_offset | (op | info << 4) << 8), 0, 0}, 1};
+
+  return u;
+}
+
+/* An operation with a 32-bit operand VALUE: in one slot scaled by SCALE when
+   that fits, else in two unscaled with NEAR_OP + 1, the far form. */
+static win64_uwop_t win64_uwop_scaled (size_t code_offset, unsigned near_op, unsigned info,
+                                       uint64_t value, unsigned scale) {
+  int far_p = value / scale > 0xffff;
+  win64_uwop_t u = win64_uwop (code_offset, near_op + far_p, info);
+
+  gen_assert (value % scale == 0 && value <= 0xffffffff);
+  if (!far_p) {
+    u.slot[u.nslots++] = (uint16_t) (value / scale);
+  } else {
+    u.slot[u.nslots++] = (uint16_t) value;
+    u.slot[u.nslots++] = (uint16_t) (value >> 16);
+  }
+  return u;
+}
+
+static win64_uwop_t win64_uwop_alloc (size_t code_offset, uint64_t size) {
+  gen_assert (size != 0 && size % 8 == 0 && size <= 0xffffffff);
+  if (size <= 128) return win64_uwop (code_offset, WIN64_UWOP_ALLOC_SMALL, size / 8 - 1);
+  if (size / 8 <= 0xffff) /* OpInfo 0: the size / 8 in one slot */
+    return win64_uwop_scaled (code_offset, WIN64_UWOP_ALLOC_LARGE, 0, size, 8);
+  win64_uwop_t u = win64_uwop (code_offset, WIN64_UWOP_ALLOC_LARGE, 1); /* the size in two */
+
+  u.slot[u.nslots++] = (uint16_t) size;
+  u.slot[u.nslots++] = (uint16_t) (size >> 16);
+  return u;
+}
+
+/* Is SAVE the push of the register FRAME's SP rule moved SP over: made at the
+   same mark, at the new SP. */
+static int win64_push_pair_p (const gen_cfi_rule_t *frame, const gen_cfi_rule_t *save) {
+  return frame->frame_p && frame->dwarf_reg == TARGET_DWARF_SP && !save->frame_p
+         && save->mark == frame->mark && save->offset == -frame->offset;
+}
+
+/* The x64 encoding's number of DWARF register DWARF_REG -- RAX 0 .. R15 15, the
+   hard registers' own order; XMMn n with *XMM_P set. */
+static unsigned win64_unwind_reg (unsigned dwarf_reg, int *xmm_p) {
+  if ((*xmm_p = dwarf_reg >= 17)) return dwarf_reg - 17;
+  for (MIR_reg_t r = 0; r <= R15_HARD_REG; r++)
+    if (target_dwarf_reg (r) == dwarf_reg) return r;
+  gen_assert (FALSE);
+  return 0;
+}
+
+/* After target_translate: append the function's UNWIND_INFO (version 1) to B;
+   FALSE, appending nothing, when it has no frame to describe.  HANDLER_P: the
+   function names a language-specific handler for both dispatch phases
+   (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER), whose RVA and data the caller
+   appends next.  *BASE_BIAS: what the region table's frame base, a DWARF
+   breg form of the body's CFA register, adds when it is read from the
+   establisher frame instead -- the frame register's offset (it sits FO bytes
+   above the establisher frame), else 0 (the establisher frame IS the body's
+   SP). */
+static int target_win64_unwind_info (gen_ctx_t gen_ctx, VARR (uint8_t) * b, int handler_p,
+                                     int64_t *base_bias) {
+  win64_uwop_t ops[24];
+  size_t i, j, rules_num, nops = 0, nslots = 0, prolog = 0;
+  gen_cfi_rule_t *rules = gen_cfi_order_rules (gen_ctx, &rules_num);
+  int64_t sp_cfa = 8, sp_final = 8; /* CFA - SP; at entry the return address */
+  unsigned frame = 0;               /* FrameRegister | FrameOffset / 16 << 4 */
+  int xmm_p;
+
+  /* a jcall/jret frame is not one the codes describe (nor DWARF: gen_cfi_encode) */
+  if (curr_func_item->u.func->jret_p || rules_num == 0) return FALSE;
+  for (i = 0; i < rules_num; i++)
+    if (rules[i].frame_p && rules[i].dwarf_reg == TARGET_DWARF_SP) sp_final = rules[i].offset;
+  for (i = 0; i < rules_num; i++) {
+    const gen_cfi_rule_t *r = &rules[i];
+
+    gen_assert (nops < sizeof (ops) / sizeof (ops[0]));
+    if (r->code_offset > prolog) prolog = r->code_offset;
+    if (r->frame_p && r->dwarf_reg == TARGET_DWARF_SP) {
+      for (j = 0; j < rules_num && !win64_push_pair_p (r, &rules[j]); j++)
+        ;
+      if (j < rules_num) {
+        gen_assert (r->offset - sp_cfa == 8);
+        ops[nops++] = win64_uwop (r->code_offset, WIN64_UWOP_PUSH_NONVOL,
+                                  win64_unwind_reg (rules[j].dwarf_reg, &xmm_p));
+      } else {
+        ops[nops++] = win64_uwop_alloc (r->code_offset, (uint64_t) (r->offset - sp_cfa));
+      }
+      sp_cfa = r->offset;
+    } else if (r->frame_p) {
+      int64_t fo = sp_cfa - r->offset;
+
+      gen_assert (r->dwarf_reg == TARGET_DWARF_FP && 0 <= fo && fo <= 240 && fo % 16 == 0);
+      frame = BP_HARD_REG | (unsigned) (fo / 16) << 4;
+      ops[nops++] = win64_uwop (r->code_offset, WIN64_UWOP_SET_FPREG, 0);
+    } else {
+      for (j = 0; j < rules_num && !win64_push_pair_p (&rules[j], r); j++)
+        ;
+      if (j < rules_num) continue; /* a push: its SP rule's code */
+      unsigned reg = win64_unwind_reg (r->dwarf_reg, &xmm_p);
+
+      gen_assert (r->offset + sp_final >= 0);
+      ops[nops++] = win64_uwop_scaled (r->code_offset,
+                                       xmm_p ? WIN64_UWOP_SAVE_XMM128 : WIN64_UWOP_SAVE_NONVOL,
+                                       reg, (uint64_t) (r->offset + sp_final), xmm_p ? 16 : 8);
+    }
+  }
+  for (i = 0; i < nops; i++) nslots += ops[i].nslots;
+  gen_assert (prolog <= 255 && nslots <= 255);
+  *base_bias = (int64_t) (frame >> 4) * 16;
+  VARR_PUSH (uint8_t, b, (uint8_t) (1 | (handler_p ? WIN64_UNW_FLAG_HANDLERS : 0) << 3));
+  VARR_PUSH (uint8_t, b, (uint8_t) prolog);
+  VARR_PUSH (uint8_t, b, (uint8_t) nslots);
+  VARR_PUSH (uint8_t, b, (uint8_t) frame);
+  for (i = nops; i-- > 0;)
+    for (j = 0; j < ops[i].nslots; j++) {
+      VARR_PUSH (uint8_t, b, (uint8_t) ops[i].slot[j]);
+      VARR_PUSH (uint8_t, b, (uint8_t) (ops[i].slot[j] >> 8));
+    }
+  if (nslots % 2 != 0) { /* the code array is an even number of slots */
+    VARR_PUSH (uint8_t, b, 0);
+    VARR_PUSH (uint8_t, b, 0);
+  }
+  /* the table's base register is the frame register when there is one */
+  gen_assert (!handler_p
+              || curr_func_item->u.func->unwind.base_reg
+                   == (frame != 0 ? TARGET_DWARF_FP : TARGET_DWARF_SP));
+  return TRUE;
+}
+
+/* The jump through which an UNWIND_INFO reaches its language-specific handler
+   (an RVA, so it sits in the image or the JIT's code allocation), into BUF;
+   its length.  `jmp *disp32(%rip)`: over ADDR, the handler's address, with
+   disp32 0 in the JIT (ADDR non-zero); else to the slot holding the address,
+   disp32 (at TARGET_WIN64_HANDLER_JUMP_DISP) relocated by the caller (PC32,
+   addend - 4). */
+#define TARGET_WIN64_HANDLER_JUMP_MAX 14
+#define TARGET_WIN64_HANDLER_JUMP_DISP 2
+static size_t target_win64_handler_jump (uint8_t buf[TARGET_WIN64_HANDLER_JUMP_MAX],
+                                         uint64_t addr) {
+  static const uint8_t jmp[] = {0xff, 0x25, 0, 0, 0, 0};
+
+  memcpy (buf, jmp, sizeof (jmp));
+  if (addr == 0) return sizeof (jmp);
+  memcpy (buf + sizeof (jmp), &addr, sizeof (addr));
+  return sizeof (jmp) + sizeof (addr);
+}
+#endif
+
 static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_regs,
                                        size_t stack_slots_num) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -1524,7 +1743,8 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
 #endif
   MIR_reg_t base_reg;
   int64_t bp_saved_reg_offset, offset;
-  size_t i, service_area_size, saved_hard_regs_size, stack_slots_size, block_size;
+  size_t i, service_area_size, saved_hard_regs_size, stack_slots_size, block_size, body_mark;
+  MIR_insn_t bp_set_insn = NULL;
 
   assert (curr_func_item->item_type == MIR_func_item);
   func = curr_func_item->u.func;
@@ -1539,10 +1759,69 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       saved_hard_regs_size += 16;
 #endif
   if (leaf_p && !alloca_p && !block_arg_func_p && saved_hard_regs_size == 0 && !func->vararg_p
-      && stack_slots_num == 0)
+      && stack_slots_num == 0) {
+    gen_unwind_frame (gen_ctx, -8, 0); /* no frame: SP stays at the return address */
+    /* the frame address its ABI names (SysV: bp as a push would set it;
+       Windows: the establisher frame) and the return address, at SP */
+    gen_lower_frame_queries (gen_ctx, SP_HARD_REG, WIN64_ABI_P ? 0 : -8, SP_HARD_REG, 0, FALSE);
     return;
+  }
+  service_area_size = func->vararg_p ? reg_save_area_size : 0;
+  if (!func->jret_p) service_area_size += 8; /* return address */
+  stack_slots_size = stack_slots_num * 8;
+  if (!keep_fp_p) stack_slots_size = (stack_slots_size + 15) / 16 * 16;
+  /* stack slots, and saved regs as multiple of 16 bytes: */
+  block_size = (stack_slots_size + saved_hard_regs_size + 15) / 16 * 16;
   anchor = DLIST_HEAD (MIR_insn_t, func->insns);
   sp_reg_op = _MIR_new_var_op (ctx, SP_HARD_REG);
+#ifdef _WIN32
+  /* The Windows frame (the x64 prolog rules, as mingw gcc and clang build it):
+     push bp; [probes;] sub N; lea FO(sp), bp with FO = min (N, 240) -- bp sits
+     above the frame's bottom, so the saves lie above the establisher frame
+     (bp - FO) where unwind codes can describe them; the epilogue is lea
+     (N - FO)(bp), sp; pop bp; ret.  The frame's memory is laid out as before
+     (the saved bp at entry SP - 8, the same final SP): only bp's value moves,
+     down by N - FO from the frame's top. */
+  const int win64_frame_p = keep_fp_p && !func->jret_p;
+#else
+  const int win64_frame_p = FALSE;
+#endif
+  int64_t win64_fp_delta = 0;  /* how far bp sits below the frame's top */
+  int64_t win64_fp_offset = 0; /* how far above the establisher frame (FO) */
+#ifdef _WIN32
+  if (win64_frame_p) {
+    const int64_t win64_frame_size /* below the pushed bp */
+      = (int64_t) (block_size + service_area_size) - 8;
+    const int64_t fp_offset = win64_frame_size < 240 ? win64_frame_size : 240;
+    win64_fp_delta = win64_frame_size - fp_offset;
+    win64_fp_offset = fp_offset;
+    win64_rebase_fp (gen_ctx, win64_fp_delta);
+    fp_reg_op = _MIR_new_var_op (ctx, FP_HARD_REG);
+    if (func->vararg_p) /* filling the home area, above the return address */
+      for (i = 0, offset = 8; i < 4; i++, offset += 8)
+        gen_mov (gen_ctx, anchor, MIR_MOV,
+                 _MIR_new_var_mem_op (ctx, MIR_T_I64, offset, SP_HARD_REG, MIR_NON_VAR, 1),
+                 _MIR_new_var_op (ctx, get_int_arg_reg (i)));
+    new_insn = _MIR_new_unspec_insn (ctx, 2, MIR_new_int_op (ctx, PUSH_CODE), fp_reg_op);
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* push bp */
+    size_t push_mark = gen_cfi_mark (gen_ctx, new_insn);
+    gen_cfi_frame (gen_ctx, push_mark, TARGET_DWARF_SP, 16);
+    gen_cfi_save (gen_ctx, push_mark, TARGET_DWARF_FP, -16);
+    win64_probe_frame (gen_ctx, anchor, (size_t) win64_frame_size);
+    if (win64_frame_size != 0) {
+      new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op,
+                               MIR_new_int_op (ctx, win64_frame_size));
+      gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= N */
+      gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_SP,
+                     win64_frame_size + 16);
+    }
+    /* Use add for matching LEA: */
+    new_insn = MIR_new_insn (ctx, MIR_ADD, fp_reg_op, sp_reg_op, MIR_new_int_op (ctx, fp_offset));
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* bp = sp + FO */
+    gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_FP,
+                   win64_fp_delta + 16);
+  } else
+#endif
   if (keep_fp_p) {
     fp_reg_op = _MIR_new_var_op (ctx, FP_HARD_REG);
 #ifdef MIR_NO_RED_ZONE_ABI
@@ -1560,27 +1839,34 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     /* Use add for matching LEA: */
     new_insn = MIR_new_insn (ctx, MIR_ADD, fp_reg_op, sp_reg_op, MIR_new_int_op (ctx, -8));
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* bp = sp - 8 */
+    bp_set_insn = new_insn;
 #endif
   }
+  if (!win64_frame_p) {
 #ifdef _WIN32
-  if (func->vararg_p) { /* filling spill space */
-    assert (keep_fp_p);
-    for (i = 0, offset = 16 /* ret & bp */; i < 4; i++, offset += 8)
-      gen_mov (gen_ctx, anchor, MIR_MOV,
-               _MIR_new_var_mem_op (ctx, MIR_T_I64, offset, FP_HARD_REG, MIR_NON_VAR, 1),
-               _MIR_new_var_op (ctx, get_int_arg_reg (i)));
-  }
+    if (func->vararg_p) { /* filling spill space */
+      assert (keep_fp_p);
+      for (i = 0, offset = 16 /* ret & bp */; i < 4; i++, offset += 8)
+        gen_mov (gen_ctx, anchor, MIR_MOV,
+                 _MIR_new_var_mem_op (ctx, MIR_T_I64, offset, FP_HARD_REG, MIR_NON_VAR, 1),
+                 _MIR_new_var_op (ctx, get_int_arg_reg (i)));
+    }
+    win64_probe_frame (gen_ctx, anchor, block_size + service_area_size);
 #endif
-  service_area_size = func->vararg_p ? reg_save_area_size : 0;
-  if (!func->jret_p) service_area_size += 8; /* return address */
-  stack_slots_size = stack_slots_num * 8;
-  if (!keep_fp_p) stack_slots_size = (stack_slots_size + 15) / 16 * 16;
-  /* stack slots, and saved regs as multiple of 16 bytes: */
-  block_size = (stack_slots_size + saved_hard_regs_size + 15) / 16 * 16;
-  new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op,
-                           MIR_new_int_op (ctx, block_size + service_area_size));
-  gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= block size + service_area_size */
+    new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op,
+                             MIR_new_int_op (ctx, block_size + service_area_size));
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= block size + service_area_size */
+    /* The frame (CFI): after the sp adjustment CFA = sp + the frame + the return
+       address; once bp is set, CFA = bp + 16 with bp saved at CFA - 16.  The
+       saved registers' rules start at the body (body_mark). */
+    if (!keep_fp_p || bp_set_insn == NULL)
+      gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_SP,
+                     (int64_t) (block_size + service_area_size + 8));
+  }
+  body_mark = gen_cfi_mark (gen_ctx, NULL);
   bp_saved_reg_offset = block_size;
+  /* For a stack walk (MIR_unwind_info_t): an ALLOCA's result is the new sp. */
+  gen_unwind_frame (gen_ctx, -(int64_t) (block_size + service_area_size + 8), 0);
 #ifdef MIR_NO_RED_ZONE_ABI
   if (keep_fp_p) {
     new_insn
@@ -1591,6 +1877,7 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* -8(old sp) = bp */
     new_insn = MIR_new_insn (ctx, MIR_MOV, fp_reg_op, temp_reg_op);
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* bp = temp */
+    bp_set_insn = new_insn;
   }
 #endif
 #ifndef _WIN32
@@ -1613,8 +1900,17 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     bp_saved_reg_offset += reg_save_area_size;
   }
 #endif
+  /* cfa_bias turns a save slot's bp|sp offset into its CFA offset */
+  int64_t cfa_bias
+    = keep_fp_p ? -16 - win64_fp_delta : -(int64_t) (block_size + service_area_size + 8);
+  if (keep_fp_p && !win64_frame_p) {
+    size_t bp_mark = gen_cfi_mark (gen_ctx, bp_set_insn);
+
+    gen_cfi_frame (gen_ctx, bp_mark, TARGET_DWARF_FP, 16);
+    gen_cfi_save (gen_ctx, bp_mark, TARGET_DWARF_FP, -16);
+  }
   /* Saving callee saved hard registers: */
-  offset = keep_fp_p ? -bp_saved_reg_offset : (int64_t) stack_slots_size;
+  offset = keep_fp_p ? win64_fp_delta - bp_saved_reg_offset : (int64_t) stack_slots_size;
   base_reg = keep_fp_p ? FP_HARD_REG : SP_HARD_REG;
 #ifdef _WIN32
   for (i = XMM0_HARD_REG; i <= XMM15_HARD_REG; i++)
@@ -1625,6 +1921,7 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
                                                             MIR_NON_VAR, 1),
                                        _MIR_new_var_op (ctx, (MIR_reg_t) i));
       gen_add_insn_before (gen_ctx, anchor, new_insn); /* disp(bp|sp) = saved hard reg */
+      gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg ((MIR_reg_t) i), offset + cfa_bias);
       offset += 16;
     }
 #endif
@@ -1636,15 +1933,29 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
                         _MIR_new_var_mem_op (ctx, MIR_T_I64, offset, base_reg, MIR_NON_VAR, 1),
                         _MIR_new_var_op (ctx, (MIR_reg_t) i));
       gen_add_insn_before (gen_ctx, anchor, new_insn); /* disp(bp|sp) = saved hard reg */
+      gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg ((MIR_reg_t) i), offset + cfa_bias);
       offset += 8;
     }
+  gen_cfi_mark_at (gen_ctx, body_mark, DLIST_PREV (MIR_insn_t, anchor));
+  /* The frame address its ABI names -- SysV: bp, CFA - 16; Windows: the
+     establisher frame, bp - FO or an SP frame's SP -- and the return address
+     at CFA - 8 (an SP frame's CFA is SP + block_size + service_area_size + 8): */
+  if (win64_frame_p)
+    gen_lower_frame_queries (gen_ctx, FP_HARD_REG, -win64_fp_offset, FP_HARD_REG,
+                             win64_fp_delta + 8, FALSE);
+  else if (keep_fp_p)
+    gen_lower_frame_queries (gen_ctx, FP_HARD_REG, 0, FP_HARD_REG, 8, FALSE);
+  else
+    gen_lower_frame_queries (gen_ctx, SP_HARD_REG,
+                             WIN64_ABI_P ? 0 : (int64_t) (block_size + service_area_size) - 8,
+                             SP_HARD_REG, (int64_t) (block_size + service_area_size), FALSE);
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))
     if (anchor->code == MIR_RET || anchor->code == MIR_JRET) break;
   if (anchor == NULL) return;
   /* Restoring hard registers: */
-  offset = keep_fp_p ? -bp_saved_reg_offset : (int64_t) stack_slots_size;
+  offset = keep_fp_p ? win64_fp_delta - bp_saved_reg_offset : (int64_t) stack_slots_size;
 #ifdef _WIN32
   for (i = XMM0_HARD_REG; i <= XMM15_HARD_REG; i++)
     if (!target_call_used_hard_reg_p ((MIR_reg_t) i, MIR_T_UNDEF)
@@ -1670,6 +1981,14 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     new_insn = MIR_new_insn (ctx, MIR_ADD, sp_reg_op, sp_reg_op,
                              MIR_new_int_op (ctx, block_size + service_area_size));
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp += block size + service_area_size */
+#ifdef _WIN32
+  } else if (win64_frame_p) {
+    new_insn
+      = MIR_new_insn (ctx, MIR_ADD, sp_reg_op, fp_reg_op, MIR_new_int_op (ctx, win64_fp_delta));
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp = bp + N - FO: at the saved bp */
+    new_insn = _MIR_new_unspec_insn (ctx, 2, MIR_new_int_op (ctx, POP_CODE), fp_reg_op);
+    gen_add_insn_before (gen_ctx, anchor, new_insn); /* pop bp */
+#endif
   } else {
 #ifdef MIR_NO_RED_ZONE_ABI
     new_insn = MIR_new_insn (ctx, MIR_MOV, temp_reg_op, fp_reg_op);
@@ -1705,6 +2024,7 @@ struct pattern {
          .mir.addrpool slot ('p' replacement) instead of an in-text imm64
      s - immediate 1, 2, 4, or 8 (scale)
      c<number> - immediate integer <number>
+     g - immediate ALLOCA size that rounds (to 16) below a page: 0..4080
      m[0-3] - int (signed or unsigned) type memory of size 8,16,32,64-bits
      ms[0-3] - signed int type memory of size 8,16,32,64-bits
      mu[0-3] - unsigned int type memory of size 8,16,32,64-bits
@@ -1990,6 +2310,16 @@ static struct pattern patterns[] = {
   {MIR_UNSPEC, "c" STR_VAL (MOVDQA_CODE) " r r", "66 Y 0F 6F r1 R2", 0},  /* movdqa r0,r1 */
   {MIR_UNSPEC, "c" STR_VAL (MOVDQA_CODE) " r md", "66 Y 0F 6F r1 m2", 0}, /* movdqa r0,m128 */
   {MIR_UNSPEC, "c" STR_VAL (MOVDQA_CODE) " md r", "66 Y 0F 7F r2 m1", 0}, /* movdqa m128,r0 */
+#ifdef _WIN32
+  {MIR_UNSPEC, "c" STR_VAL (PUSH_CODE) " h5", "55", 0}, /* push bp */
+  {MIR_UNSPEC, "c" STR_VAL (POP_CODE) " h5", "5D", 0},  /* pop bp */
+  /* the frame's stack probe, op1 = -size: mov $-4096,ax; 1: test ax,(sp,ax); sub $4096,ax;
+     cmp $op1,ax; jg 1b; test ax,op1(sp) */
+  {MIR_UNSPEC, "c" STR_VAL (PROBE_CODE) " i2",
+   "X C7 /0 H00 VFFFFF000; X 85 04 04; X 81 /5 H00 V00001000; X 81 /7 H00 I1; 7F EC; "
+   "X 85 84 24 I1",
+   0},
+#endif
 
   {MIR_EXT8, "r r", "X 0F BE r0 R1", 0},    /* movsx r0,r1 */
   {MIR_EXT8, "r m0", "X 0F BE r0 m1", 0},   /* movsx r0,m1 */
@@ -2057,9 +2387,27 @@ static struct pattern patterns[] = {
   {MIR_D2LD, "mld r", "F2 Y 0F 11 r1 mt; DD /0 mt; DB /7 m0", 0},
   {MIR_D2LD, "mld md", "DD /0 m1; DB /7 m0", 0}, /* fldl m1; fstp m0 */
 
+#ifdef _WIN32
+  /* Windows commits a thread's stack a guard page at a time, so an alloca of
+     a page or more touches every page in order as SP moves down (gcc and
+     clang call ___chkstk_ms; MIR links nothing, so the loop is inline; every
+     insn below has a fixed length, the jumps' displacements with it):
+       L: cmp r0, 4096; jb D; sub sp, 4096; test (sp), sp; sub r0, 4096; jmp L
+       D: sub sp, r0; test (sp), sp; mov r0, sp
+     ("X 85 24 24" is test (sp), sp: ModRM 24 and SIB 24 name (rsp).) */
+#define WIN64_ALLOCA_PROBE_LOOP                                                           \
+  "X 81 /7 R0 V00001000; 72 14; X 81 /5 H04 V00001000; X 85 24 24; X 81 /5 R0 V00001000; " \
+  "EB E3; X 2B h04 R0; X 85 24 24; X 8B r0 H04"
+  /* lea r0, 15(r1); and r0, r0, -16; the probe loop: */
+  {MIR_ALLOCA, "r r", "Y 8D r0 adF; X 81 /4 R0 VFFFFFFF0; " WIN64_ALLOCA_PROBE_LOOP, 0},
+  {MIR_ALLOCA, "r g", "X 81 /5 H04 I1; X 8B r0 H04", 0}, /* sub sp, g; mov r0, sp */
+  {MIR_ALLOCA, "r i2", "X C7 /0 R0 I1; " WIN64_ALLOCA_PROBE_LOOP, 0}, /* mov r0, i2; the loop */
+#undef WIN64_ALLOCA_PROBE_LOOP
+#else
   /* lea r0, 15(r1); and r0, r0, -16; sub sp, r0; mov r0, sp: */
   {MIR_ALLOCA, "r r", "Y 8D r0 adF; X 81 /4 R0 VFFFFFFF0; X 2B h04 R0; X 8B r0 H04", 0},
   {MIR_ALLOCA, "r i2", "X 81 /5 H04 I1; X 8B r0 H04", 0}, /* sub sp, i2; mov r0, sp */
+#endif
 
   {MIR_BSTART, "r", "X 8B r0 H4", 0}, /* r0 = sp */
   {MIR_BEND, "r", "X 8B h4 R0", 0},   /* sp = r0 */
@@ -2385,45 +2733,18 @@ static uint64_t read_dec (const char **ptr) {
   return res;
 }
 
-static int pattern_index_cmp (const void *a1, const void *a2) {
-  int i1 = *(const int *) a1, i2 = *(const int *) a2;
-  int c1 = (int) patterns[i1].code, c2 = (int) patterns[i2].code;
-
-  return c1 != c2 ? c1 - c2 : (long) i1 - (long) i2;
-}
-
 static int get_max_insn_size (gen_ctx_t gen_ctx, const char *replacement);
 
-static void patterns_init (gen_ctx_t gen_ctx) {
-  MIR_alloc_t alloc = gen_alloc (gen_ctx);
-  int i, ind, n = sizeof (patterns) / sizeof (struct pattern);
-  MIR_insn_code_t prev_code, code;
-  insn_pattern_info_t *info_addr;
-  insn_pattern_info_t pinfo = {0, 0};
+/* The maximal code size of pattern IND, found when the pattern is first used:
+   most patterns never are in a run.  Every context stores the same value. */
+static int pattern_max_insn_size (gen_ctx_t gen_ctx, int ind) {
+  if (patterns[ind].max_insn_size == 0)
+    patterns[ind].max_insn_size = get_max_insn_size (gen_ctx, patterns[ind].replacement);
+  return patterns[ind].max_insn_size;
+}
 
-  VARR_CREATE (int, pattern_indexes, alloc, 0);
-  for (i = 0; i < n; i++) {
-    patterns[i].max_insn_size = get_max_insn_size (gen_ctx, patterns[i].replacement);
-#if 0
-    fprintf (stderr, "size of \"%s\" = %d\n", patterns[i].replacement,
-	     patterns[i].max_insn_size);
-#endif
-    VARR_PUSH (int, pattern_indexes, i);
-  }
-  qsort (VARR_ADDR (int, pattern_indexes), n, sizeof (int), pattern_index_cmp);
-  VARR_CREATE (insn_pattern_info_t, insn_pattern_info, alloc, 0);
-  for (i = 0; i < MIR_INSN_BOUND; i++) VARR_PUSH (insn_pattern_info_t, insn_pattern_info, pinfo);
-  info_addr = VARR_ADDR (insn_pattern_info_t, insn_pattern_info);
-  for (prev_code = MIR_INSN_BOUND, i = 0; i < n; i++) {
-    ind = VARR_GET (int, pattern_indexes, i);
-    if ((code = patterns[ind].code) != prev_code) {
-      if (i != 0) info_addr[prev_code].num = i - info_addr[prev_code].start;
-      info_addr[code].start = i;
-      prev_code = code;
-    }
-  }
-  assert (prev_code != MIR_INSN_BOUND);
-  info_addr[prev_code].num = n - info_addr[prev_code].start;
+static void patterns_init (gen_ctx_t gen_ctx) {
+  GEN_INDEX_PATTERNS (gen_ctx, patterns, MIR_INSN_BOUND, &pattern_indexes, &insn_pattern_info);
 }
 
 static int64_t int_value (gen_ctx_t gen_ctx, const MIR_op_t *op) {
@@ -2498,6 +2819,10 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
     case 's':
       if ((op_ref->mode != MIR_OP_INT && op_ref->mode != MIR_OP_UINT)
           || (op_ref->u.i != 1 && op_ref->u.i != 2 && op_ref->u.i != 4 && op_ref->u.i != 8))
+        return FALSE;
+      break;
+    case 'g':
+      if ((op_ref->mode != MIR_OP_INT && op_ref->mode != MIR_OP_UINT) || op_ref->u.u > 4080)
         return FALSE;
       break;
     case 'c': {
@@ -2578,10 +2903,16 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
     case 'l':
       if (op_ref->mode != MIR_OP_LABEL) return FALSE;
       if (!try_short_jump_p) return FALSE; /* we are in size estimation mode */
-      int64_t disp = ((int64_t) get_label_disp (gen_ctx, op_ref->u.label)
-                      - (int64_t) VARR_LENGTH (uint8_t, result_code));
+      int64_t pc = (int64_t) VARR_LENGTH (uint8_t, result_code);
+      int64_t label_disp = (int64_t) get_label_disp (gen_ctx, op_ref->u.label);
+      /* A label not emitted yet still holds its size-pass estimate, which
+         counts every earlier loop head at its padding bound; the heads
+         already emitted are known exactly (madc fork). */
+      if (label_disp > pc) label_disp -= (int64_t) label_pad_slack;
+      int64_t disp = label_disp - pc;
       /* short->long (+1 for long jump prefix +3 for offset), minimal jump is 2 bytes: */
-      disp = disp < 0 ? disp - (pat->max_insn_size + 4) : disp - 2;
+      disp = disp < 0 ? disp - (pattern_max_insn_size (gen_ctx, (int) (pat - patterns)) + 4)
+                      : disp - 2;
       if (-128 <= disp && disp < 128) break;
       return FALSE;
     case '0':
@@ -2633,7 +2964,8 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
   return TRUE;
 }
 
-static int find_insn_pattern (gen_ctx_t gen_ctx, MIR_insn_t insn, int *size) {
+/* inline: the per-insn size estimation in target_translate is its hot caller */
+static inline int find_insn_pattern (gen_ctx_t gen_ctx, MIR_insn_t insn, int *size) {
   int i, ind;
   const struct pattern *pat;
   insn_pattern_info_t info = VARR_GET (insn_pattern_info_t, insn_pattern_info, insn->code);
@@ -2642,7 +2974,7 @@ static int find_insn_pattern (gen_ctx_t gen_ctx, MIR_insn_t insn, int *size) {
     ind = VARR_GET (int, pattern_indexes, info.start + i);
     pat = &patterns[ind];
     if (pattern_match_p (gen_ctx, pat, insn, size == NULL)) {
-      if (size != NULL) *size = patterns[ind].max_insn_size;
+      if (size != NULL) *size = pattern_max_insn_size (gen_ctx, ind);
       return ind;
     }
   }
@@ -3405,6 +3737,7 @@ static void translate_init (gen_ctx_t gen_ctx) {
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
   VARR_TRUNC (text_ref_t, text_refs, 0);
   VARR_TRUNC (switch_table_desc_t, switch_table_descs, 0);
+  label_pad_slack = 0;
 }
 
 static uint8_t *translate_finish (gen_ctx_t gen_ctx, size_t *len) {
@@ -3446,7 +3779,19 @@ static uint8_t *translate_finish (gen_ctx_t gen_ctx, size_t *len) {
 
 static void target_split_insns (gen_ctx_t gen_ctx MIR_UNUSED) {}
 
-#define LOOP_ALIGN 8
+/* Loop-head alignment (madc fork): an innermost loop's head starts a 32-byte
+   block, so a loop of up to 32 bytes runs from one fetch block wherever its
+   function lands; any other loop head goes to 16 when that costs at most 10
+   bytes of padding, else to 8 (gcc -O2's .p2align 4,,10 / .p2align 3; clang
+   pads loop heads to 16).  Absolute, because every function starts on
+   MIR_TARGET_CODE_ALIGN. */
+#define INNER_LOOP_ALIGN 32
+#define LOOP_ALIGN 16
+#define LOOP_ALIGN_MAX_SKIP 10
+#define LOOP_ALIGN_MIN 8
+#if MIR_TARGET_CODE_ALIGN < INNER_LOOP_ALIGN
+#error "x86-64 loop-head alignment needs functions aligned at least as strictly"
+#endif
 
 static const char *nop_pats[] = {
   "",
@@ -3457,7 +3802,30 @@ static const char *nop_pats[] = {
   "\x0f\x1f\x44\x00\x00" /* 5: nopl 0x0(%rax,%rax,1) */,
   "\x66\x0f\x1f\x44\x00\x00" /* 6: nopw   0x0(%rax,%rax,1) */,
   "\x0f\x1f\x80\x00\x00\x00\x00" /* 7: nopl 0x0(%rax) */,
+  "\x0f\x1f\x84\x00\x00\x00\x00\x00" /* 8: nopl 0x0(%rax,%rax,1) */,
+  "\x66\x0f\x1f\x84\x00\x00\x00\x00\x00" /* 9: nopw 0x0(%rax,%rax,1) */,
 };
+#define MAX_NOP_LEN ((int) (sizeof (nop_pats) / sizeof (char *)) - 1)
+
+static int align_pad (size_t pc, int align) { return (int) ((align - pc % align) % align); }
+
+/* the padding ahead of LABEL at code offset PC; with PC unknown (the size
+   estimation pass), its upper bound */
+static int loop_head_pad (gen_ctx_t gen_ctx, MIR_insn_t label, size_t pc, int bound_p) {
+  if (!gen_loop_label_p (gen_ctx, label)) return 0;
+  if (gen_nested_loop_label_p (gen_ctx, label))
+    return bound_p ? INNER_LOOP_ALIGN - 1 : align_pad (pc, INNER_LOOP_ALIGN);
+  if (bound_p) return LOOP_ALIGN_MAX_SKIP;
+  int pad = align_pad (pc, LOOP_ALIGN);
+  return pad <= LOOP_ALIGN_MAX_SKIP ? pad : align_pad (pc, LOOP_ALIGN_MIN);
+}
+
+static void put_nops (gen_ctx_t gen_ctx, int n) {
+  for (int len; n > 0; n -= len) {
+    len = n < MAX_NOP_LEN ? n : MAX_NOP_LEN;
+    VARR_PUSH_ARR (uint8_t, result_code, (uint8_t *) nop_pats[len], len);
+  }
+}
 
 static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -3472,7 +3840,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     if (insn->code == MIR_LABEL) {
-      if (gen_nested_loop_label_p (gen_ctx, insn)) curr_size += LOOP_ALIGN;
+      curr_size += loop_head_pad (gen_ctx, insn, 0, TRUE);
       set_label_disp (gen_ctx, insn, curr_size); /* estimation */
     } else if (insn->code != MIR_USE) {
       ind = find_insn_pattern (gen_ctx, insn, &max_insn_size);
@@ -3482,35 +3850,34 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         exit (1);
       }
       curr_size += max_insn_size;
-      if (insn->code == MIR_SWITCH) curr_size += (insn->nops - 1) * 8; /* label addresses */
+      if (insn->code == MIR_SWITCH) /* label addresses after up to 7 bytes aligning them */
+        curr_size += (insn->nops - 1) * 8 + 7;
       VARR_PUSH (int, insn_pattern_indexes, ind);
     }
   }
+  gen_start_code_pass (gen_ctx);
   for (n = 0, insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
+    gen_cfi_note_insn (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
     if (insn->code == MIR_LABEL) {
-      if (gen_nested_loop_label_p (gen_ctx, insn)) {
-        int padn = LOOP_ALIGN - (int) (VARR_LENGTH (uint8_t, result_code) % LOOP_ALIGN);
-        if (padn == LOOP_ALIGN) padn = 0;
-        gen_assert ((size_t) padn < sizeof (nop_pats) / sizeof (char *));
-        if (padn != 0) VARR_PUSH_ARR (uint8_t, result_code, (uint8_t *) nop_pats[padn], padn);
-      }
+      int pad = loop_head_pad (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code), FALSE);
+      label_pad_slack += (size_t) (loop_head_pad (gen_ctx, insn, 0, TRUE) - pad);
+      put_nops (gen_ctx, pad);
       set_label_disp (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code));
     } else if (insn->code != MIR_USE) {
       ind = VARR_GET (int, insn_pattern_indexes, n++);
       if (MIR_branch_code_p (insn->code)) /* possible replacement change */
         ind = find_insn_pattern (gen_ctx, insn, NULL);
       gen_assert (ind >= 0);
-      gen_record_line (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
-#ifndef NDEBUG
-      size_t len_before = VARR_LENGTH (uint8_t, result_code);
-#endif
+      size_t insn_start = VARR_LENGTH (uint8_t, result_code);
+      gen_record_line (gen_ctx, insn_start, insn);
       out_insn (gen_ctx, insn, patterns[ind].replacement, NULL);
+      gen_record_call (gen_ctx, insn_start, VARR_LENGTH (uint8_t, result_code), insn);
 #ifndef NDEBUG
-      size_t insn_len = VARR_LENGTH (uint8_t, result_code) - len_before;
-      if (insn_len > (size_t) patterns[ind].max_insn_size && insn->code != MIR_SWITCH) {
+      size_t insn_len = VARR_LENGTH (uint8_t, result_code) - insn_start;
+      if (insn_len > (size_t) pattern_max_insn_size (gen_ctx, ind) && insn->code != MIR_SWITCH) {
         fprintf (stderr, "\"%s\" max size(%d) < real size(%d)\n", patterns[ind].replacement,
-                 patterns[ind].max_insn_size, (int) insn_len);
+                 pattern_max_insn_size (gen_ctx, ind), (int) insn_len);
         gen_assert (FALSE);
       }
 #endif
@@ -3581,7 +3948,7 @@ static void target_rebase (gen_ctx_t gen_ctx, uint8_t *base) {
    silent text relocation.  The JIT-only change_calls / call_refs (redef)
    machinery is skipped: the emitted module is emit-final. */
 #define TARGET_HAS_OBJECT_CAPTURE 1
-static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
+static size_t target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code_len) {
   MIR_context_t ctx = gen_ctx->ctx;
   MIR_object_t obj = gen_object;
   size_t i, j;
@@ -3665,6 +4032,7 @@ static void target_object_capture (gen_ctx_t gen_ctx, uint8_t *code, size_t code
                                  curr_func_item->u.func->name);
   VARR_TRUNC (MIR_code_reloc_t, relocs, 0);
   gen_obj_record_lrefs (gen_ctx, func_off);
+  return func_off;
 }
 
 static void target_change_to_direct_calls (MIR_context_t ctx) {
@@ -3844,6 +4212,14 @@ static void target_init (gen_ctx_t gen_ctx) {
   MIR_type_t res = MIR_T_D;
   MIR_var_t args[] = {{MIR_T_D, "src", 0}};
   _MIR_register_unspec_insn (gen_ctx->ctx, MOVDQA_CODE, "movdqa", 1, &res, 1, FALSE, args);
+#ifdef _WIN32
+  MIR_type_t bp_type = MIR_T_I64;
+  MIR_var_t bp_args[] = {{MIR_T_I64, "bp", 0}};
+  _MIR_register_unspec_insn (gen_ctx->ctx, PUSH_CODE, "push", 0, NULL, 1, FALSE, bp_args);
+  _MIR_register_unspec_insn (gen_ctx->ctx, POP_CODE, "pop", 1, &bp_type, 0, FALSE, NULL);
+  MIR_var_t probe_args[] = {{MIR_T_I64, "size", 0}};
+  _MIR_register_unspec_insn (gen_ctx->ctx, PROBE_CODE, "probe", 0, NULL, 1, FALSE, probe_args);
+#endif
   patterns_init (gen_ctx);
   temp_jump = MIR_new_insn (ctx, MIR_JMP, MIR_new_label_op (ctx, NULL));
   temp_jump_pat_ind = find_insn_pattern (gen_ctx, temp_jump, NULL);

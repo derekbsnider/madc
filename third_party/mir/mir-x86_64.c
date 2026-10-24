@@ -3,6 +3,7 @@
 */
 
 #include "mir-x86_64.h"
+#include "mir-x86_64-calls.c" /* va_arg_builtin, va_block_arg_builtin, mir_arg_memcpy */
 
 /* RBLK args are always passed by address.
    BLK0 first is copied on the caller stack and passed implicitly.
@@ -39,103 +40,6 @@ void *_MIR_get_bend_builtin (MIR_context_t ctx) {
 }
 
 #ifndef _WIN32
-struct x86_64_va_list {
-  uint32_t gp_offset, fp_offset;
-  uint64_t *overflow_arg_area, *reg_save_area;
-};
-
-void *va_arg_builtin (void *p, uint64_t t) {
-  struct x86_64_va_list *va = p;
-  MIR_type_t type = t;
-  /* the SSE class: float, double and the 128-bit vector (__m128) -- each xmm
-     register is saved in a 16-byte slot of the register save area */
-  int fp_p = type == MIR_T_F || type == MIR_T_D || MIR_vector_type_p (type);
-  int size16_p = type == MIR_T_LD || MIR_vector_type_p (type);
-  void *a;
-
-  if (fp_p && va->fp_offset <= 160) {
-    a = (char *) va->reg_save_area + va->fp_offset;
-    va->fp_offset += 16;
-  } else if (!fp_p && type != MIR_T_LD && va->gp_offset <= 40) {
-    a = (char *) va->reg_save_area + va->gp_offset;
-    va->gp_offset += 8;
-  } else {
-    /* a 16-byte argument takes a 16-byte ALIGNED slot of the overflow area
-       (SysV 3.5.7 step 7: the alignment of the type, 16 for long double and
-       __m128) */
-    if (size16_p)
-      va->overflow_arg_area = (uint64_t *) (((uint64_t) va->overflow_arg_area + 15) / 16 * 16);
-    a = va->overflow_arg_area;
-    va->overflow_arg_area += size16_p ? 2 : 1;
-  }
-  return a;
-}
-
-void va_block_arg_builtin (void *res, void *p, size_t s, uint64_t ncase) {
-  struct x86_64_va_list *va = p;
-  size_t size = ((s + 7) / 8) * 8;
-  void *a = va->overflow_arg_area;
-  union {
-    uint64_t i;
-    double d;
-  } u[2];
-
-  switch (ncase) {
-  case 1:
-    if (va->gp_offset + size > 48) break;
-    u[0].i = *(uint64_t *) ((char *) va->reg_save_area + va->gp_offset);
-    va->gp_offset += 8;
-    if (size > 8) {
-      u[1].i = *(uint64_t *) ((char *) va->reg_save_area + va->gp_offset);
-      va->gp_offset += 8;
-    }
-    if (res != NULL) memcpy (res, &u, s);
-    return;
-  case 2:
-    /* Register-exhaustion demotion (SysV): the caller passes the block in
-       XMM registers only when EVERY eightbyte fits (mir-gen-x86_64.c
-       machinize: fp_arg_num and fp_arg_num+1 both available), otherwise the
-       WHOLE block goes to the overflow area and the fp counter is left for
-       later smaller args.  The fp save area is 128 bytes at offsets
-       48..176, one 16-byte slot per XMM, so a one-eightbyte block needs
-       fp_offset <= 160 and a two-eightbyte block fp_offset <= 144.  This
-       case had NO check (cases 1/3/4 have theirs), so the 9th SSE eightbyte
-       of a vararg call read past the save area (c-testsuite 00204: the
-       fifth float-pair struct printed garbage).  */
-    if (va->fp_offset + (size > 8 ? 32 : 16) > 176) break;
-    u[0].d = *(double *) ((char *) va->reg_save_area + va->fp_offset);
-    va->fp_offset += 16;
-    if (size > 8) {
-      u[1].d = *(double *) ((char *) va->reg_save_area + va->fp_offset);
-      va->fp_offset += 16;
-    }
-    if (res != NULL) memcpy (res, &u, s);
-    return;
-  case 3:
-  case 4:
-    if (va->fp_offset > 160 || va->gp_offset > 40) break;
-    if (ncase == 3) {
-      u[0].i = *(uint64_t *) ((char *) va->reg_save_area + va->gp_offset);
-      u[1].d = *(double *) ((char *) va->reg_save_area + va->fp_offset);
-    } else {
-      u[0].d = *(double *) ((char *) va->reg_save_area + va->fp_offset);
-      u[1].i = *(uint64_t *) ((char *) va->reg_save_area + va->gp_offset);
-    }
-    /* An SSE eightbyte occupies a 16-byte slot in the register save area
-       (each XMM is stored in 16 bytes), so fp_offset must advance by 16 --
-       matching the SSE-only path (case 2) and va_arg_builtin.  Advancing by
-       only 8 made the next mixed-class struct's SSE field read an
-       overlapping/stale slot.  The INTEGER eightbyte is 8 bytes. */
-    va->fp_offset += 16;
-    va->gp_offset += 8;
-    if (res != NULL) memcpy (res, &u, s);
-    return;
-  default: break;
-  }
-  if (res != NULL) memcpy (res, a, s);
-  va->overflow_arg_area += size / 8;
-}
-
 void va_start_interp_builtin (MIR_context_t ctx MIR_UNUSED, void *p, void *a) {
   struct x86_64_va_list *va = p;
   va_list *vap = a;
@@ -148,8 +52,8 @@ void va_start_interp_builtin (MIR_context_t ctx MIR_UNUSED, void *p, void *a) {
 /* AOT object mode: generated code calls these through the "mir.va_arg" /
    "mir.va_block_arg" import items (mir-gen-x86_64.c), which become undefined
    symbols in an emitted .o -- export them from libmir under those exact ELF
-   names so the link resolves ("mir.arg_memcpy" gets the same treatment in
-   mir-gen-x86_64.c).  The _WIN32 half below carries its own copy for ITS
+   names so the link resolves ("mir.arg_memcpy" gets the same treatment
+   below).  The _WIN32 half below carries its own copy for ITS
    va_arg_builtin: this whole half never compiles on Windows. */
 extern __typeof (va_arg_builtin) mir_va_arg_obj_export asm ("mir.va_arg")
   __attribute__ ((alias ("va_arg_builtin"), used));
@@ -171,24 +75,6 @@ void mir_va_block_arg_obj_export (void *res, void *p, size_t s, uint64_t ncase) 
 
 #else
 
-struct x86_64_va_list {
-  uint64_t *arg_area;
-};
-
-void *va_arg_builtin (void *p, uint64_t t) {
-  struct x86_64_va_list *va = p;
-  void *a = va->arg_area;
-  va->arg_area++;
-  return a;
-}
-
-void va_block_arg_builtin (void *res, void *p, size_t s, uint64_t ncase) {
-  struct x86_64_va_list *va = p;
-  void *a = s <= 8 ? va->arg_area : *(void **) va->arg_area; /* pass by pointer */
-  if (res != NULL) memcpy (res, a, s);
-  va->arg_area++;
-}
-
 void va_start_interp_builtin (MIR_context_t ctx, void *p, void *a) {
   struct x86_64_va_list **va = p;
   va_list *vap = a;
@@ -208,6 +94,23 @@ extern __typeof (va_block_arg_builtin) mir_va_block_arg_obj_export asm ("mir.va_
   __attribute__ ((alias ("va_block_arg_builtin"), used));
 #endif
 
+#endif
+
+#if (defined(__ELF__) || defined(_WIN32)) && defined(__GNUC__)
+/* "mir.arg_memcpy" (block-argument copies, mir-gen-x86_64.c) is bound to libc
+   memcpy at gen time; an emitted object's import of it resolves here.
+   mingw/PE takes the same shape -- dotted asm labels + alias are
+   probe-verified on gas/COFF. */
+extern __typeof (mir_arg_memcpy) mir_arg_memcpy_obj_export asm ("mir.arg_memcpy")
+  __attribute__ ((alias ("mir_arg_memcpy"), used));
+#elif defined(__APPLE__) && defined(__GNUC__)
+/* The same export on Mach-O: a wrapper under the '_'-prefixed label (see
+   mir-aot-export.h), as Mach-O has no alias attribute. */
+void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n)
+  asm (MIR_AOT_SYM ("mir.arg_memcpy")) __attribute__ ((used));
+void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n) {
+  return mir_arg_memcpy (dest, src, n);
+}
 #endif
 
 void va_end_interp_builtin (MIR_context_t ctx MIR_UNUSED, void *p MIR_UNUSED) {}

@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <iostream>
@@ -23,12 +24,13 @@
 #include <stack>
 #include <functional>
 #include <chrono>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_builtin_registry.h"	// MadcBuiltinEntry: an imported module's declarations
+#include "madc_module.h"		// MadcModuleDescription: what a module describes
 #include "madc_modules.h"	// import: the module map + the one library-spelling owner
 #include "madc_posix_io.h"	// resolve_real_path (canonical_path_for_compare's primitive)
 #include "madc_pch.h"
@@ -52,6 +54,7 @@ void madcdis_mapwrite_trap_hit(const char *key)
 #include "madcdis/text_utf16.h"	// line_layout: THE screen layout of a line (B8)
 #include "madc_console.h"	// colour_reaches: colour only when the stream shows it
 #include "madc_theme.h"		// theme_marks: the echoed line's colours (1B.9)
+#include "madc_cli.h"		// madc_cli_standard_of: the shebang's --std= / -std= word
 #include "madcdis/ui_sgr.h"	// terminal_colour_depth
 
 // Stage-2 cooperative parse: yield-point cadence for the token pumps (a
@@ -101,6 +104,10 @@ using namespace std;
 // scan over macro/fragment spelling delegates here — defined with the macro
 // expansion machinery below.
 static std::vector<Program::MacroDef::ReplacementToken> tokenize_macro_spelling(const std::string &text);
+
+// K2: a bind walk's undo log notes each write's prior state (set_macro, the
+// one writer) — defined with the walk.
+static void forest_macro_undo_note(Program &pgm, uint32_t sid);
 
 // R4-full shared prelude cache. A cached image is immutable lexer output plus
 // the exact post-preprocessor state produced by ONE pure embedded fragment.
@@ -162,8 +169,16 @@ struct MadcSharedPreludeCache
 	out.append(value.data(), value.size());
     }
 
+    // one_mutation_per_name: the cache's final-state replay needs a single
+    // textual write per name; the pack freeze's arm state (skip_capturing_arm)
+    // and the bind's arm run only need the names written — and take a
+    // #pragma push_macro / pop_macro pair that the text closes itself (each
+    // pop restores a push of the same text, none is left behind), whose
+    // name is a write, and an #include (K2d: the walk binds the header as an
+    // edge where the arm reads it; its writes are that unit's events).
     static bool embedded_fragment_is_pure(
-	const madc::dis::istring &text, std::vector<madc::dis::istring> *mutations = NULL)
+	const madc::dis::istring &text, std::vector<madc::dis::istring> *mutations = NULL,
+	bool one_mutation_per_name = true)
     {
 	// Only conditional/object-macro directives have state fully represented
 	// by define_map/macro_map below. Includes, loads, pragmas, and line/error
@@ -171,6 +186,7 @@ struct MadcSharedPreludeCache
 	if ( text.find("_Pragma") != madc::dis::istring::npos )
 	    return false;
 	std::set<madc::dis::istring> seen_mutations;
+	std::map<madc::dis::istring, int> pushed;	// open push_macro saves per name
 	if ( mutations )
 	    mutations->clear();
 	for ( size_t pos = 0; pos < text.size(); )
@@ -190,6 +206,48 @@ struct MadcSharedPreludeCache
 		while ( p < end && (isalpha((unsigned char)text[p]) || text[p] == '_') )
 		    ++p;
 		madc::dis::istring directive = text.substr(word_at, p - word_at);
+		if ( directive == "pragma" && !one_mutation_per_name )
+		{
+		    // #pragma push_macro("NAME") / pop_macro("NAME"), nothing else.
+		    while ( p < end && (text[p] == ' ' || text[p] == '\t') )
+			++p;
+		    size_t op_at = p;
+		    while ( p < end && (isalpha((unsigned char)text[p]) || text[p] == '_') )
+			++p;
+		    const madc::dis::istring op = text.substr(op_at, p - op_at);
+		    if ( op != "push_macro" && op != "pop_macro" )
+			return false;
+		    while ( p < end && (text[p] == ' ' || text[p] == '\t') )
+			++p;
+		    if ( p == end || text[p] != '(' )
+			return false;
+		    ++p;
+		    while ( p < end && (text[p] == ' ' || text[p] == '\t') )
+			++p;
+		    if ( p == end || text[p] != '"' )
+			return false;
+		    size_t name_at = ++p;
+		    while ( p < end && text[p] != '"' )
+			++p;
+		    if ( p == end || p == name_at )
+			return false;
+		    madc::dis::istring name = text.substr(name_at, p - name_at);
+		    if ( op == "push_macro" )
+		    {
+			++pushed[name];
+			if ( seen_mutations.insert(name).second && mutations )
+			    mutations->push_back(name);
+		    }
+		    else if ( pushed[name]-- <= 0 )
+			return false;	// restores a save made outside the text
+		    pos = end < text.size() ? end + 1 : end;
+		    continue;
+		}
+		if ( directive == "include" && !one_mutation_per_name )
+		{
+		    pos = end < text.size() ? end + 1 : end;
+		    continue;	// K2d: the walk binds it as an edge (forest_arm_include)
+		}
 		if ( directive != "define" && directive != "undef"
 		  && directive != "if" && directive != "ifdef"
 		  && directive != "ifndef" && directive != "elif"
@@ -211,13 +269,20 @@ struct MadcSharedPreludeCache
 		    // A single textual mutation per name makes final-state replay
 		    // equivalent to directive-event replay, including inactive arms.
 		    if ( !seen_mutations.insert(name).second )
-			return false;
-		    if ( mutations )
+		    {
+			if ( one_mutation_per_name )
+			    return false;
+		    }
+		    else if ( mutations )
 			mutations->push_back(name);
 		}
 	    }
 	    pos = end < text.size() ? end + 1 : end;
 	}
+	for ( std::map<madc::dis::istring, int>::const_iterator pi = pushed.begin();
+	      pi != pushed.end(); ++pi )
+	    if ( pi->second )
+		return false;	// leaves a save behind
 	return true;
     }
 
@@ -249,18 +314,7 @@ struct MadcSharedPreludeCache
     static bool collect_identifiers(const madc::dis::istring &text,
 				    std::set<madc::dis::istring> &names)
     {
-	typedef Program::MacroDef::ReplacementToken T;
-	const std::vector<T> tokens = tokenize_macro_spelling(text);
-	bool has_paste = false;
-	for ( size_t i = 0; i < tokens.size(); ++i )
-	{
-	    if ( tokens[i].kind == T::rtIdentifier )
-		names.insert(text.substr(tokens[i].begin,
-					 tokens[i].end - tokens[i].begin));
-	    else if ( tokens[i].kind == T::rtPaste )
-		has_paste = true;
-	}
-	return has_paste;
+	return source_spelled_names(text, names);
     }
 
     static bool macro_equal(const Program::MacroDef &a,
@@ -388,6 +442,59 @@ struct MadcSharedPreludeCache
 	return key;
     }
 
+    static bool same_macro_state(const MacroState &a, const MacroState &b)
+    {
+	return a.kind == b.kind
+	    && (a.kind != MacroState::object || a.value == b.value)
+	    && (a.kind != MacroState::function || macro_equal(a.macro, b.macro));
+    }
+
+    // Set one name's macro state on the live tables — the writer the #define /
+    // #undef handlers, the bind walk's event replay and every MacroState
+    // restore share, so a walk's undo log sees each of them (an object-like
+    // body re-applies its std ABI note). Neither body: undefined. A
+    // redefinition replaces the other kind too, as gcc's does.
+    static void set_macro(Program &pgm, const madc::dis::istring &name,
+			  const std::string *object,
+			  const Program::MacroDef *function)
+    {
+	set_macro_id(pgm, pgm.strpool.intern(name.str()), object, function);
+    }
+
+    // The same by the name's spelling id (pgm.strpool): every table write
+    // goes by the id, so a frozen event's name is never interned as an
+    // istring.
+    static void set_macro_id(Program &pgm, uint32_t sid,
+			     const std::string *object,
+			     const Program::MacroDef *function)
+    {
+	if ( pgm.forest_macro_undo )
+	    forest_macro_undo_note(pgm, sid);
+	if ( object )
+	{
+	    pgm.macro_map.erase(sid);
+	    pgm.define_map[sid] = *object;
+	    pgm.note_std_abi_define(pgm.strpool.c_str(sid), *object);
+	}
+	else if ( function )
+	{
+	    pgm.define_map.erase(sid);
+	    pgm.macro_map[sid] = *function;
+	}
+	else
+	{
+	    pgm.define_map.erase(sid);
+	    pgm.macro_map.erase(sid);
+	}
+    }
+
+    static void set_macro_state(Program &pgm, const MacroState &state)
+    {
+	set_macro(pgm, state.name,
+		  state.kind == MacroState::object ? &state.value.str() : NULL,
+		  state.kind == MacroState::function ? &state.macro : NULL);
+    }
+
     static MacroState macro_state(Program &pgm, const madc::dis::istring &name)
     {
 	MacroState state;
@@ -415,10 +522,7 @@ struct MadcSharedPreludeCache
 	{
 	    const MacroState &old = before[i];
 	    MacroState now = macro_state(pgm, old.name);
-	    if ( old.kind == now.kind
-	      && (now.kind != MacroState::object || old.value == now.value)
-	      && (now.kind != MacroState::function
-		  || macro_equal(old.macro, now.macro)) )
+	    if ( same_macro_state(old, now) )
 		continue;
 	    Entry::MacroDelta delta;
 	    delta.name = now.name;
@@ -604,15 +708,9 @@ struct MadcSharedPreludeCache
 	for ( size_t i = 0; i < entry.macro_deltas.size(); ++i )
 	{
 	    const Entry::MacroDelta &delta = entry.macro_deltas[i];
-	    pgm.define_map.erase(delta.name);
-	    pgm.macro_map.erase(delta.name);
-	    if ( delta.kind == Entry::MacroDelta::define_object )
-	    {
-		pgm.define_map[delta.name] = delta.value;
-		pgm.note_std_abi_define(delta.name, delta.value);
-	    }
-	    else if ( delta.kind == Entry::MacroDelta::define_function )
-		pgm.macro_map[delta.name] = delta.macro;
+	    set_macro(pgm, delta.name,
+		      delta.kind == Entry::MacroDelta::define_object ? &delta.value.str() : NULL,
+		      delta.kind == Entry::MacroDelta::define_function ? &delta.macro : NULL);
 	}
 	pgm.included_files[entry.include_key] = true;
 	// The restored tokens ENTERED this TU's live stream — record it
@@ -648,6 +746,114 @@ struct MadcSharedPreludeCache
     }
 };
 
+// One macro's state as a hash (the same in every process): what the freeze
+// records for each macro an #if / #elif consulted and the bind compares before
+// re-evaluating the condition (CIR_COND_CONSULT_*). `sid` is the name's
+// spelling id in pgm.strpool. Bytes mix 8 at a time (little-endian, like the
+// container), the tail FNV-1a.
+static uint64_t forest_macro_state_hash(Program &pgm, uint32_t sid)
+{
+    uint64_t h = 1469598103934665603ULL;
+    auto mix = [&h](const char *p, size_t n) {
+	for ( ; n >= 8; p += 8, n -= 8 )
+	{
+	    uint64_t v;
+	    memcpy(&v, p, 8);
+	    h = (h ^ v) * 0x9E3779B97F4A7C15ULL;
+	    h ^= h >> 29;
+	}
+	for ( ; n; ++p, --n )
+	{
+	    h ^= (unsigned char)*p;
+	    h *= 1099511628211ULL;
+	}
+    };
+    auto mark = [&h](unsigned char c) { h ^= c; h *= 1099511628211ULL; };
+    if ( const std::string *object = pgm.define_map.find_readonly(sid) )
+    {
+	mark('=');
+	mix(object->data(), object->size());
+	return h;
+    }
+    if ( const Program::MacroDef *m = pgm.macro_map.find_readonly(sid) )
+    {
+	mark('(');
+	for ( size_t i = 0; i < m->params.size(); ++i )
+	{
+	    mix(m->params[i].data(), m->params[i].size());
+	    mark(',');
+	}
+	mark(m->variadic ? 'v' : 'f');
+	mix(m->variadic_param.data(), m->variadic_param.size());
+	mark(')');
+	mix(m->body.data(), m->body.size());
+	return h;
+    }
+    mark('-');
+    return h;
+}
+
+// One spelling of the named macros' states, in order — what the freeze records
+// for a skipped arm's writes (CIR_COND_ARM_STATE) and what the bind walk
+// compares after running that arm. Fields are \x1f-separated, names
+// \x1e-separated: "-NAME" undefined, "=NAME\x1fBODY" object-like,
+// "(NAME\x1fP1,P2\x1fVARIADIC\x1fBODY" function-like.
+static std::string forest_macro_state_spelling(Program &pgm,
+					       const std::vector<madc::dis::istring> &names)
+{
+    typedef MadcSharedPreludeCache::MacroState MacroState;
+    std::string out;
+    auto add = [&out](const madc::dis::istring &text) { out.append(text.data(), text.size()); };
+    for ( size_t i = 0; i < names.size(); ++i )
+    {
+	const MacroState st = MadcSharedPreludeCache::macro_state(pgm, names[i]);
+	if ( i )
+	    out += '\x1e';
+	out += st.kind == MacroState::absent ? '-' : st.kind == MacroState::object ? '=' : '(';
+	add(names[i]);
+	if ( st.kind == MacroState::absent )
+	    continue;
+	out += '\x1f';
+	if ( st.kind == MacroState::object )
+	{
+	    add(st.value);
+	    continue;
+	}
+	for ( size_t p = 0; p < st.macro.params.size(); ++p )
+	{
+	    if ( p )
+		out += ',';
+	    add(st.macro.params[p]);
+	}
+	out += '\x1f';
+	if ( st.macro.variadic )
+	{
+	    add(st.macro.variadic_param);
+	    out += "...";
+	}
+	out += '\x1f';
+	out += st.macro.body;
+    }
+    return out;
+}
+
+// A forest_macro_state_spelling's entries ("\x1e"-separated).
+static std::vector<std::string> forest_state_entries(const std::string &state)
+{
+    std::vector<std::string> entries;
+    for ( size_t at = 0; !state.empty(); )
+    {
+	size_t end = state.find('\x1e', at);
+	if ( end == std::string::npos )
+	    end = state.size();
+	entries.push_back(state.substr(at, end - at));
+	if ( end == state.size() )
+	    break;
+	at = end + 1;
+    }
+    return entries;
+}
+
 static bool find_filesystem_precompiled_header(Program &pgm,
 					       const madc::dis::istring &incfile,
 					       bool is_system,
@@ -659,7 +865,8 @@ static bool push_precompiled_header_tokens(Program &pgm,
 					   std::deque<TokenBase *> &pch_tokens);
 static bool named_include_provider_exists(Program &pgm,
 					  const madc::dis::istring &incfile,
-					  madc::dis::istring &pch_path);
+					  madc::dis::istring &pch_path,
+					  bool include_next);
 
 static DataDef *get_complex_compat_type(DataDef *base_type)
 {
@@ -1276,7 +1483,8 @@ GnuAttributeKind madc_gnu_attribute_kind(const madc::dis::istring &name)
 	{ "optimize", GnuAttributeKind::Optimize },
 	{ "using_if_exists", GnuAttributeKind::UsingIfExists },
 	{ "weak", GnuAttributeKind::Weak },
-	{ "cleanup", GnuAttributeKind::Cleanup }
+	{ "cleanup", GnuAttributeKind::Cleanup },
+	{ "noinline", GnuAttributeKind::NoInline }
     };
     for ( size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i )
 	if ( madc_gnu_attribute_word_is(name, entries[i].name) )
@@ -1430,7 +1638,7 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
 }
 
 // THE identifier -> header table of the auto-include scan (madc dialect only;
-// auto_includes_enabled gates the scan). The scan's lookup below and the
+// dialect_surface_enabled gates the scan). The scan's lookup below and the
 // REPL's completion (Program::auto_include_words, plan §41.7a) read it.
 static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_identifier_headers()
 {
@@ -1460,14 +1668,9 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 
 	// (std::format / std::print / std::println have no row: they are
 	// madc's always-included intrinsics, declared by the compiler itself —
-	// Program::add_format_intrinsics.)
-
-	// The stdio streams: std::print(stderr, ...) in a zero-include
-	// script needs stderr's lazy registration, which rides the
-	// stdio.h include flag.
-	{"stderr", "stdio.h"},
-	{"stdout", "stdio.h"},
-	{"stdin", "stdio.h"},
+	// Program::add_format_intrinsics. Nor have stdin / stdout / stderr:
+	// the dialect hard-codes its stdio streams as it does println —
+	// Program::add_stdio_streams — so naming one pulls no <stdio.h>.)
 
 	{"php", "ns_php"},
 	{"perl", "ns_perl"},
@@ -1477,23 +1680,7 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 	{"rust", "ns_rust"},
 	{"madc", "ns_madc"},
 	{"ui", "ns_ui"},
-	{"ui_web", "ns_ui_web"},
 	{"ui_ws", "ns_ui_ws"},
-	// The git:: namespace (Nexus L4a → the V6 seam): the madcgit MODULE's
-	// dialect face — <ns_git> imports the module and wraps its C API.
-	{"git", "ns_git"},
-	// The markdown:: namespace (plan §7d): the madcmark MODULE's dialect
-	// face — <ns_markdown> imports the module and wraps its C API.
-	{"markdown", "ns_markdown"},
-	// The web UI LEVEL's enumerator (ui::WEB, <bits/ui_enums>): a program
-	// that names the level it wants (`ui::open(ui::WEB)`, `lvl = ui::WEB`)
-	// wants the target that serves it — <ns_ui_web>, whose initializer
-	// registers the host. The same row `ui_web` served while programs
-	// spelled the target's NAME; the enumerator is the program's
-	// declaration of need (enums, not strings — owner law 2026-09-09). A
-	// MEMBER row (the word is not the fragment's own head) fires only
-	// QUALIFIED by its namespace head — a bare `WEB` is the user's word.
-	{"WEB", "ns_ui_web"},
 	// The madc:: faces a HOST program uses (<ns_madc_host>: a document's
 	// parse handle and language services, the tool host, the ex core, the
 	// colour theme, discovery's claims, the REPL history store): MEMBER rows, so only a
@@ -1595,7 +1782,7 @@ static const char *auto_include_header_for_identifier(const madc::dis::istring &
 }
 
 // A dialect fragment's MEMBER row: the word is not the fragment's own head
-// (`WEB` for ns_ui_web), so it answers only QUALIFIED by a dialect head.
+// (`doc_parse` for ns_madc_host), so it answers only QUALIFIED by a dialect head.
 static bool auto_include_member_row(const madc::dis::istring &word, const char *header)
 {
     return strncmp(header, "ns_", 3) == 0 && word != header + 3;
@@ -1626,10 +1813,7 @@ static std::vector<madc::dis::istring> ordered_auto_include_headers(const std::s
 	"ns_madc",
 	"ns_madc_host",
 	"ns_ui",
-	"ns_ui_web",
 	"ns_ui_ws",
-	"ns_git",
-	"ns_markdown",
 	NULL
     };
 
@@ -1683,8 +1867,6 @@ void Program::mark_embedded_include_flag(const madc::dis::istring &incfile)
 	_include_iostream = true;
 	_include_string = true;
     }
-    if ( incfile == "stdio.h" )
-	_include_stdio = true;
     if ( incfile == "string" )
 	_include_string = true;
     if ( incfile == "ns_madc" )
@@ -1731,8 +1913,8 @@ static bool fragment_may_pull_header(const char *header, bool qualified_use)
     if ( !header )
 	return false;
     madc::dis::istring h(header);
-    // A sibling dialect fragment (ns_madc from <ns_ui_web>'s
-    // madc::module_available) is a zero-include surface too — an EMBEDDED
+    // A sibling dialect fragment (ns_madc from another fragment's
+    // `madc::` use) is a zero-include surface too — an EMBEDDED
     // extensionless file — but only a QUALIFIED use (`madc::x`) names it:
     // bits/value_stream DEFINES `namespace madc {`, and reading that as a
     // pull gave every iostream program the sys object (and the darwin
@@ -1742,9 +1924,10 @@ static bool fragment_may_pull_header(const char *header, bool qualified_use)
     // (madcide paid the whole libstdc++ parse for it). A bits/* fragment is
     // no namespace surface: any mention reaches it. print/println/format need
     // no provider at all — the compiler declares them
-    // (Program::add_format_intrinsics) — so <ns_ui_web>'s `println(stderr,
-    // ...)` compiles in a program that says no println itself, its `stderr`
-    // pulling stdio.h.
+    // (Program::add_format_intrinsics) — and neither do the stdio streams
+    // they write to (Program::add_stdio_streams), so a fragment's
+    // `println(stderr, ...)` compiles in a program that says neither println
+    // nor stderr itself, and pulls no header.
     if ( embedded_dialect_fragment_p(h) && find_embedded_header(h) )
 	return qualified_use || h.compare(0, 3, "ns_") != 0;
     return h.size() > 2 && h.compare(h.size() - 2, 2, ".h") == 0;
@@ -1756,7 +1939,7 @@ bool Program::auto_include_standard_identifier(const madc::dis::istring &word,
 {
     if ( skip_includes )
 	return false;
-    if ( !auto_includes_enabled() )
+    if ( !dialect_surface_enabled() )
 	return false;
     if ( suppress_auto_include_scan )
 	return false;
@@ -1766,8 +1949,8 @@ bool Program::auto_include_standard_identifier(const madc::dis::istring &word,
     // (gcc 20010409-1.c typedefs size_t, then uses it in `extern size_t
     // strlen(...)`; pulling <stddef.h> in as well would redeclare it). The
     // TU's words, for the TU's mentions: a dialect FRAGMENT's mentions are
-    // the fragment's own — <ns_ui_web>'s `js::stringify` means the js
-    // surface even when the TU named a parameter `js` (testuihostfake) —
+    // the fragment's own — a fragment's `js::stringify` means the js
+    // surface even when the TU named a parameter `js` —
     // so the TU's declared words never shadow a fragment scan.
     if ( !auto_include_fragment_scan && auto_include_declared_words.count(word) )
 	return false;
@@ -1841,13 +2024,13 @@ bool Program::auto_include_standard_identifier(const madc::dis::istring &word,
     const char *header = auto_include_header_for_identifier(word);
     if ( !header )
 	return false;
-    // A fragment never pulls ITSELF: <ns_ui_web>'s own `ui::WEB` (its
-    // register_host line) names the fragment being tokenized.
+    // A fragment never pulls ITSELF: its own qualified mention of its
+    // surface names the fragment being tokenized.
     if ( auto_include_fragment_scan && auto_include_fragment_name == header )
 	return false;
     // A MEMBER row of a dialect fragment (the word is not the fragment's own
-    // head: `WEB` for ns_ui_web) fires only when QUALIFIED by a dialect
-    // namespace head (`ui::WEB`) — a bare `WEB` is the user's word. And a
+    // head: `doc_parse` for ns_madc_host) fires only when QUALIFIED by a dialect
+    // namespace head (`madc::doc_parse`) — a bare `doc_parse` is the user's word. And a
     // name qualified by a dialect head may pull only a dialect FRAGMENT its
     // own row names — never a std header: `ui::set` stays the ui surface's
     // own, `madc::getline` never pulls <string>, a user qualifier
@@ -1863,8 +2046,8 @@ bool Program::auto_include_standard_identifier(const madc::dis::istring &word,
 	    return false;
     }
     // Inside a dialect fragment only the bits/* and C-header providers
-    // answer (fragment_may_pull_header) — a fragment's `println(stderr,
-    // ...)` pulls stdio.h; its `getline` never pulls <string>.
+    // answer (fragment_may_pull_header) — a fragment's `getline` never
+    // pulls <string>.
     if ( auto_include_fragment_scan && !fragment_may_pull_header(header, qualified_use) )
 	return false;
 
@@ -1904,7 +2087,7 @@ bool Program::auto_include_permitted(const madc::dis::istring &word, const char 
 // Empty outside the madc dialect, where the scan never runs.
 void Program::auto_include_words(std::vector<madc::dis::istring> &out)
 {
-    if ( !auto_includes_enabled() )
+    if ( !dialect_surface_enabled() )
 	return;
     // The always-included intrinsics complete like the scan's words.
     size_t nfi = 0;
@@ -1920,8 +2103,9 @@ void Program::auto_include_words(std::vector<madc::dis::istring> &out)
 	    out.push_back(it->first);
 }
 
-std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string &value,
-							       const TokenBase *origin)
+std::vector<TokenBase *> Program::tokenize_text_run(const std::string &value,
+						    const TokenBase *origin,
+						    const char *fname)
 {
     std::vector<TokenBase *> replacement;
     if ( value.empty() )
@@ -1931,7 +2115,7 @@ std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string
     bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
     suppress_auto_include_scan = true;
     source = Source();
-    source.fname(origin && origin->file ? origin->file : "<auto-include>");
+    source.fname(origin && origin->file ? origin->file : fname ? fname : "<auto-include>");
     source.str(value);
 
     try
@@ -2077,30 +2261,25 @@ TokenBase *Program::tokenize_import_directive()
     finish_semicolon();
     if ( !is_dynamic_library_loading_enabled() )
 	Throw << "import: library binding is disabled by registration policy" << flush;
+    // A madc MODULE (madc_module.h): found by name on the module path, it
+    // describes itself — no row, nothing in the core. The alias form binds a
+    // library's exports, never a module.
+    std::string not_found;
+    if ( alias.empty() )
+    {
+	ModuleImport got = import_module(madc::dis::istring(name), not_found);
+	if ( got == ModuleImport::imported )
+	    return getToken();
+	if ( got == ModuleImport::refused )
+	    Throw << "import: " << not_found << flush;
+    }
     const MadcModuleSpec *row = madc_module_find(name);
     madc::dis::istring spelling = madc_module_library_spelling(name);
-    if ( alias.empty() && !(row && row->interface) )
+    if ( alias.empty() && !row )
+	Throw << "import: " << not_found << flush;
+    if ( alias.empty() && !row->interface )
 	Throw << "import: module '" << name << "' has no interface; bind it with"
 	      << " `import " << name << " as <alias>;`" << flush;
-    // A LAZY row's interface form binds nothing at parse and joins no link
-    // closure: its interface is served between the synthetic module markers,
-    // so every prototype in it becomes a typed first-call slot against the
-    // row's spelling (parseFunction + CirBuilder::dyn_module_callee). The
-    // program compiles and runs without the library and asks
-    // madc::module_available before using it. The alias form keeps the
-    // eager binding (a namespace needs the exports to answer member lookups).
-    // A bound unit replays it from its frozen PP events (pack_record_import).
-    if ( alias.empty() && row && (row->flags & MADC_MODULE_LAZY) )
-    {
-	adopt_lazy_module_import(name);
-	pack_record_import(name);
-	DBG(std::cout << "import " << name << " -> " << spelling << " (lazy)" << std::endl);
-	source.pushback_reread(std::string("#pragma madc module_begin(\"") + spelling
-			       + "\")\n#include <" + row->interface + ">\n"
-			       + "#pragma madc module_end\n");
-	return getToken();
-    }
-    adopt_module_flags(name);
     std::string err;
     if ( !bind_module_namespace(alias, spelling, /*link_form=*/alias.empty(), err) )
 	Throw << "import: cannot load '" << spelling << "': " << err << flush;
@@ -2150,22 +2329,125 @@ bool Program::bind_module_namespace(const madc::dis::istring &ns, const madc::di
     return true;
 }
 
-// The row's flags are module-map DATA (Rule 7): a GUI module lifts the memory
-// guard at run start — recorded here, acted on by the driver.
-void Program::adopt_module_flags(const madc::dis::istring &module)
+// Where `import NAME;` looks, in order (Python's sys.path): the program's own
+// directory (its main source's — "." for a bare file name), then each
+// module_search_dirs entry (--module-path); madc_module_find_file appends
+// madc's own module directory.
+std::vector<std::string> Program::module_search_path() const
 {
-    const MadcModuleSpec *row = madc_module_find(module);
-    if ( row && (row->flags & MADC_MODULE_GUI) )
-	bound_gui_module = true;
+    std::vector<std::string> dirs;
+    if ( !forest_root_file.empty() )
+    {
+	std::string own = madc::detail::host_path_dirname(forest_root_file.c_str());
+	dirs.push_back(own.empty() ? std::string(".") : own);
+    }
+    dirs.insert(dirs.end(), module_search_dirs.begin(), module_search_dirs.end());
+    return dirs;
 }
 
-// A LAZY row's import binds nothing and links nothing: its spelling joins the
-// object's manifest as OPTIONAL (the loader opens what it can, never fails on
-// it). Shared by the directive and the replay of a bound unit's peImport event.
-void Program::adopt_lazy_module_import(const madc::dis::istring &module)
+// A madc module's import, at LEX time: opened once per Program (a second
+// import of the same name is the first), its description read through the
+// entry point named after it, its ABI checked, the module recorded. Its
+// declarations register when the parser's state exists
+// (register_imported_modules), each function stamped as the module's member,
+// so a call reaches the module's code through the slot binding in every lane.
+// The unit's module list names it (the CIR builder reads imported_modules), so
+// a native program opens it at start.
+bool Program::import_madc_module(const madc::dis::istring &name, const std::string &path,
+				 std::string &err)
 {
-    adopt_module_flags(module);
-    module_optional_libs.push_back(madc_module_library_spelling(module));
+    err.clear();
+    void *handle = madc_module_open(path, err);
+    if ( !handle )
+	return false;
+    const MadcModuleDescription *d = madc_module_describe(handle, name.c_str(), path, err);
+    if ( !d )
+	return false;
+    ImportedModule im;
+    im.name = name;
+    im.path = madc::dis::istring(path.c_str());
+    im.desc = d;
+    im.registered = false;
+    imported_modules.push_back(im);
+    if ( d->flags & mdGui )
+	bound_gui_module = true;
+    return true;
+}
+
+madc::dis::istring Program::ImportedModule::reference() const
+{
+    return madc::dis::istring(madc_module_reference(name.c_str(), path.c_str(),
+						    desc && (desc->flags & mdGui)).c_str());
+}
+
+// THE import of a madc module by name — the directive's and --import's. A
+// name this Program already imported is that import (no second search); else
+// the module path is searched and the module opened (import_madc_module).
+Program::ModuleImport Program::import_module(const madc::dis::istring &name, std::string &err)
+{
+    err.clear();
+    for ( size_t i = 0; i < imported_modules.size(); ++i )
+	if ( imported_modules[i].name == name )
+	    return ModuleImport::imported;
+    std::string path = madc_module_find_file(name.c_str(), module_search_path());
+    if ( path.empty() )
+    {
+	err = std::string("no module named '") + name.c_str() + "'";
+	return ModuleImport::not_found;
+    }
+    // The file as a program records it (its module reference): absolute, so
+    // the program opens it from wherever it runs.
+    std::string real = madc::detail::resolve_real_path(path.c_str());
+    if ( !real.empty() )
+	path = real;
+    std::string why;
+    if ( !import_madc_module(name, path, why) )
+    {
+	err = std::string("module '") + name.c_str() + "': " + why;
+	return ModuleImport::refused;
+    }
+    DBG(std::cout << "import " << name << " -> " << path << " (module)" << std::endl);
+    return ModuleImport::imported;
+}
+
+// --import=NAME, ahead of the unit's first token (lex_main_unit) and of an
+// interactive session's first entry: as if the source began with
+// `import NAME;`. A failure is the import error, at the command line (gcc's
+// <command-line> spelling).
+bool Program::import_command_line_modules()
+{
+    for ( size_t i = 0; i < command_line_imports.size(); ++i )
+    {
+	std::string err;
+	if ( import_module(command_line_imports[i], err) != ModuleImport::imported )
+	{
+	    record_frontend_error(Program::DiagnosticPhase::lexer, "import: " + err,
+				  "<command-line>", 0, 0);
+	    return false;
+	}
+    }
+    return true;
+}
+
+// The imported modules' declarations, registered once the parser's state
+// exists — _parser_init for a unit (the import ran at LEX time, before it),
+// lex_entry for an interactive entry's import: each module not yet
+// registered, its table in order, each function stamped as its module's
+// member.
+void Program::register_imported_modules()
+{
+    const ImportedModule *was = registering_module;
+    for ( size_t m = 0; m < imported_modules.size(); ++m )
+    {
+	if ( imported_modules[m].registered )
+	    continue;
+	const MadcModuleDescription *d = imported_modules[m].desc;
+	registering_module = &imported_modules[m];
+	for ( size_t i = 0; i < d->ndeclarations; ++i )
+	    d->declarations[i].build(*this);
+	imported_modules[m].registered = true;
+    }
+    registering_module = was;
 }
 
 void Program::tokenize_embedded_header_text(const madc::dis::istring &name,
@@ -2211,6 +2493,7 @@ void Program::tokenize_embedded_header_text(const madc::dis::istring &name,
 			pack_unit_subtree[pack_unit_stack[si]].insert(interned);
 		pack_unit_subtree[interned].insert(interned);
 		pack_unit_stack.push_back(interned);
+		pack_unit_enter(interned);
 	}
 	size_t groups_at_entry = cond_groups.size();
 	while ( (itb = getRealToken()) )
@@ -2220,7 +2503,10 @@ void Program::tokenize_embedded_header_text(const madc::dis::istring &name,
 	}
 	refuse_open_conditional_groups(groups_at_entry);
 	if ( pack_recording && !protocol_visit )
+	{
 		pack_unit_stack.pop_back();
+		pack_unit_leave(interned);
+	}
 	source = std::move(saved);
 	suppress_auto_include_scan = saved_suppress_auto_include_scan;
 	auto_include_fragment_scan = saved_fragment_scan;
@@ -2273,7 +2559,120 @@ void Program::maybe_inject_value_stream_operator()
 TokenBase *Program::include_completed_token()
 {
     maybe_inject_value_stream_operator();
+    // B198: the directive's serving ends HERE, before getToken() lexes on —
+    // a next #include read by that call is its own directive, after this
+    // range.
+    if ( !include_serving.empty() )
+    {
+	include_serving.back().served = true;
+	include_serving.back().end = tokens.size();
+    }
     return getToken();
+}
+
+// B198: one #include directive in flight (Program::include_serving). The
+// scope closes on every exit of the directive's handler — served, skipped,
+// deferred or thrown.
+namespace {
+struct IncludeServingScope {
+    Program &pgm;
+    explicit IncludeServingScope(Program &p) : pgm(p)
+    {
+	Program::IncludeServing s = { p.tokens.size(), p.tokens.size(),
+				      madc::dis::istring(), false };
+	p.include_serving.push_back(s);
+    }
+    ~IncludeServingScope() { pgm.end_include_serving(); }
+};
+}
+
+// A served FIRST inclusion lexed in the unit's own pass keeps its token range
+// under the once-only key its serving was gated on — the prelude's
+// parse-order rule reads it (relocate_include_for_prelude). Only a dialect
+// unit has a prelude; the prelude's own includes are never recorded.
+void Program::end_include_serving()
+{
+    const IncludeServing done = include_serving.back();
+    include_serving.pop_back();
+    if ( done.served && !done.key.empty() && done.end > done.start
+      && !prelude_relocation.active && dialect_surface_enabled() )
+    {
+	IncludeRange r = { done.key, done.start, done.end };
+	include_first_ranges.push_back(r);
+    }
+}
+
+// B198: `path`'s once-only key — "<name>" for a named include, else the path
+// in the canonicalization the search-dir prefixes get (they are compared
+// against each other, so one owner, canonical_path_for_compare, or they
+// drift) — noted as the key the directive in flight is served under.
+madc::dis::istring Program::note_include_once_key(const madc::dis::istring &path)
+{
+    madc::dis::istring key = path;
+    if ( !path.empty() && path[0] != '<' )
+	key = canonical_include_key(path);
+    include_once_key = key;
+    if ( !include_serving.empty() )
+	include_serving.back().key = key;
+    return key;
+}
+
+// The once-only key a bound unit's include is served under — the key a later
+// include of the same header checks: its path, or the name of a named one.
+// Only a dialect unit's own includes keep a range (end_include_serving).
+void Program::note_bound_include_key(const char *unit_name, const madc::dis::istring &incfile)
+{
+    if ( !dialect_surface_enabled() || prelude_relocation.active )
+	return;
+    if ( unit_name && madc::detail::host_path_absolute(unit_name) )
+	note_include_once_key(unit_name);
+    else
+	note_include_once_key("<" + incfile.str() + ">");
+}
+
+// B198: the prelude skipped `key` as already included, but its first
+// inclusion lies in the unit AFTER the prelude's position — in parse order the
+// prelude's include is the first. Lexing in parse order would put that
+// header's tokens here, so they move here: [s, e) goes to the tail, the
+// unit's tokens after it close up, and every recorded range follows (a range
+// inside [s, e) moves with it, one around it shrinks, one after it shifts).
+// Nested headers ride inside the range. False when there is nothing to move.
+bool Program::relocate_include_for_prelude(const madc::dis::istring &key)
+{
+    if ( !prelude_relocation.active )
+	return false;
+    size_t first = 0;
+    while ( first < include_first_ranges.size() && include_first_ranges[first].key != key )
+	++first;
+    if ( first == include_first_ranges.size() )
+	return false;
+    const size_t s = include_first_ranges[first].start, e = include_first_ranges[first].end;
+    if ( s >= e || s < prelude_relocation.insert_at || e > prelude_relocation.main_end )
+	return false;
+    const size_t len = e - s;
+    const size_t to = tokens.size() - len;	// the range's start once moved
+    tokens.move_range_to_end(s, e);
+    for ( size_t ri = 0; ri < include_first_ranges.size(); ++ri )
+    {
+	size_t &a = include_first_ranges[ri].start, &b = include_first_ranges[ri].end;
+	if ( a >= s && b <= e )
+	{
+	    a = a - s + to;
+	    b = b - s + to;
+	}
+	else if ( a >= e )
+	{
+	    a -= len;
+	    b -= len;
+	}
+	else if ( a < s && b >= e )
+	    b -= len;
+    }
+    prelude_relocation.main_end -= len;
+    prelude_relocation.moved += len;
+    DBG(std::cout << "auto-include prelude: " << key.c_str() << " moved from the unit ("
+	<< len << " tokens)" << std::endl);
+    return true;
 }
 
 void Program::expand_pending_auto_include_macros(size_t original_start)
@@ -2297,7 +2696,7 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
 		if ( di != define_map.end() )
 		{
 		    std::vector<TokenBase *> repl =
-			tokenize_auto_include_define(*di, tb);
+			tokenize_text_run(*di, tb);
 		    rewritten.insert(rewritten.end(), repl.begin(), repl.end());
 		    continue;
 		}
@@ -2317,6 +2716,63 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
 // never a C++ system header). Whatever it queues joins `batch` and is
 // itself scanned, to closure. Positional=false: a fragment's own
 // declarators never suppress (they are recorded for nothing here either).
+// The one reader of a fragment's text for its prerequisites: each distinct
+// identifier the provider table names (no other word can pull a header — the
+// scan's lookup answers it before anything else), with whether a use of it is
+// QUALIFIED (`word ::`). A word right after `namespace` is a definition
+// (`namespace madc {`), unless `using namespace`. Comments and literals are
+// skipped.
+void dialect_fragment_scan_words(const std::string &t,
+				 std::vector<std::pair<madc::dis::istring, bool> > &out)
+{
+    std::set<std::pair<madc::dis::istring, bool> > seen;
+    madc::dis::istring prev_word, prev_prev_word;
+    for ( size_t i = 0; i < t.size(); )
+    {
+	char c = t[i];
+	if ( c == '/' && i + 1 < t.size() && t[i + 1] == '/' )
+	{
+	    while ( i < t.size() && t[i] != '\n' )
+		++i;
+	    continue;
+	}
+	if ( c == '/' && i + 1 < t.size() && t[i + 1] == '*' )
+	{
+	    size_t e = t.find("*/", i + 2);
+	    i = e == std::string::npos ? t.size() : e + 2;
+	    continue;
+	}
+	if ( c == '"' || c == '\'' )
+	{
+	    char q = c;
+	    ++i;
+	    while ( i < t.size() && t[i] != q )
+		i += (t[i] == '\\' && i + 1 < t.size()) ? 2 : 1;
+	    ++i;
+	    continue;
+	}
+	if ( isalpha((unsigned char)c) || c == '_' )
+	{
+	    size_t b = i;
+	    while ( i < t.size() && (isalnum((unsigned char)t[i]) || t[i] == '_') )
+		++i;
+	    madc::dis::istring word = t.substr(b, i - b);
+	    size_t k = i;
+	    while ( k < t.size() && (t[k] == ' ' || t[k] == '\t') )
+		++k;
+	    bool qualified = k + 1 < t.size() && t[k] == ':' && t[k + 1] == ':';
+	    const bool definition = prev_word == "namespace" && prev_prev_word != "using";
+	    prev_prev_word = prev_word;
+	    prev_word = word;
+	    if ( !definition && auto_include_header_for_identifier(word)
+	      && seen.insert(std::make_pair(word, qualified)).second )
+		out.push_back(std::make_pair(word, qualified));
+	    continue;
+	}
+	++i;
+    }
+}
+
 void Program::queue_fragment_prerequisites(std::set<madc::dis::istring> &batch)
 {
     std::set<madc::dis::istring> scanned;
@@ -2335,61 +2791,19 @@ void Program::queue_fragment_prerequisites(std::set<madc::dis::istring> &batch)
 	for ( size_t ti = 0; ti < todo.size(); ++ti )
 	{
 	    scanned.insert(todo[ti]);
-	    const std::string *text = find_embedded_header(todo[ti]);
-	    if ( !text )
-		continue;
-	    const std::string &t = *text;
-	    madc::dis::istring prev_word, prev_prev_word;
-	    for ( size_t i = 0; i < t.size(); )
+	    // The words the build read from the fragment's text (the generated
+	    // table); its text, scanned here, only where the table has none
+	    // (stage one of the build: the generator's own parse).
+	    std::vector<std::pair<madc::dis::istring, bool> > words;
+	    if ( !generated_fragment_words(todo[ti], words) )
 	    {
-		char c = t[i];
-		if ( c == '/' && i + 1 < t.size() && t[i + 1] == '/' )
-		{
-		    while ( i < t.size() && t[i] != '\n' )
-			++i;
+		const std::string *text = find_embedded_header(todo[ti]);
+		if ( !text )
 		    continue;
-		}
-		if ( c == '/' && i + 1 < t.size() && t[i + 1] == '*' )
-		{
-		    size_t e = t.find("*/", i + 2);
-		    i = e == madc::dis::istring::npos ? t.size() : e + 2;
-		    continue;
-		}
-		if ( c == '"' || c == '\'' )
-		{
-		    char q = c;
-		    ++i;
-		    while ( i < t.size() && t[i] != q )
-			i += (t[i] == '\\' && i + 1 < t.size()) ? 2 : 1;
-		    ++i;
-		    continue;
-		}
-		if ( isalpha((unsigned char)c) || c == '_' )
-		{
-		    size_t b = i;
-		    while ( i < t.size() && (isalnum((unsigned char)t[i]) || t[i] == '_') )
-			++i;
-		    madc::dis::istring word = t.substr(b, i - b);
-		    // A word right after `namespace` is a definition (`namespace
-		    // madc {`), unless `using namespace`; a namespace surface is
-		    // pulled only by a QUALIFIED use — `word ::`.
-		    size_t k = i;
-		    while ( k < t.size() && (t[k] == ' ' || t[k] == '\t') )
-			++k;
-		    bool qualified = k + 1 < t.size() && t[k] == ':' && t[k + 1] == ':';
-		    if ( prev_word == "namespace" && prev_prev_word != "using" )
-		    {
-			prev_prev_word = prev_word;
-			prev_word = word;
-			continue;
-		    }
-		    prev_prev_word = prev_word;
-		    prev_word = word;
-		    auto_include_standard_identifier(word, false, qualified);
-		    continue;
-		}
-		++i;
+		dialect_fragment_scan_words(*text, words);
 	    }
+	    for ( size_t wi = 0; wi < words.size(); ++wi )
+		auto_include_standard_identifier(words[wi].first, false, words[wi].second);
 	}
 	if ( !pending_auto_include_headers.empty() )
 	{
@@ -2405,12 +2819,126 @@ void Program::queue_fragment_prerequisites(std::set<madc::dis::istring> &batch)
     suppress_auto_include_scan = saved_suppress;
 }
 
+// The dialect's roots (the builtin-registry generator's): the fragment heads
+// the provider table names (embedded_dialect_fragment_p — the fragment
+// owner), their prerequisites queued by the auto-include's own scan
+// (queue_fragment_prerequisites) and ordered by its own table
+// (ordered_auto_include_headers) — so the generator parses exactly what a
+// dialect compile's auto-include includes, in the order it includes it.
+bool Program::dialect_image_roots(std::vector<madc::dis::istring> &out)
+{
+    out.clear();
+    if ( !dialect_surface_enabled() || skip_includes )
+	return false;
+    std::set<madc::dis::istring> batch;
+    const std::map<madc::dis::istring, madc::dis::istring> &providers =
+	auto_include_identifier_headers();
+    for ( std::map<madc::dis::istring, madc::dis::istring>::const_iterator it = providers.begin();
+	  it != providers.end(); ++it )
+	if ( embedded_dialect_fragment_p(it->second) && find_embedded_header(it->second) )
+	    batch.insert(it->second);
+    // The scan notes the words it matched for the injector's macro pass; a
+    // roots query injects nothing, so it leaves that state as it found it.
+    std::set<madc::dis::istring> saved_words = pending_auto_include_identifiers;
+    queue_fragment_prerequisites(batch);
+    pending_auto_include_identifiers.swap(saved_words);
+    out = ordered_auto_include_headers(batch);
+    return !out.empty();
+}
+
+// A dialect NAMESPACE fragment (`ns_*` at the top of include/madc/): a
+// namespace surface the auto-include serves by its provider row — never a
+// bits/* fragment.
+static bool dialect_namespace_fragment_p(const madc::dis::istring &name)
+{
+    return strncmp(name.c_str(), "ns_", 3) == 0 && embedded_dialect_fragment_p(name);
+}
+
+// The dialect is builtin (R4c): under --std=madc a dialect fragment the
+// auto-include or a written #include would serve is the generated table's,
+// never its text. The serving is decided once per program, at its first
+// fragment: a program that has <string> by then (the stdlib's own guard, the
+// fragments' interop guard) is served the fragments' TEXT, as before — their
+// std::string interop declarations exist only there, their mangling the
+// stdlib flavor's — and the two never mix. A table fragment records the
+// dialect namespaces it heads (its provider row: `ns_php` heads `php`), and
+// those its own text names, to closure (queue_fragment_prerequisites, the scan
+// its text serving runs): the namespaces whose names a lookup may build
+// (dialect_demand). It sets the include flag the text serving set
+// (`_include_ns_madc`: the __madc_sys_init injection).
+bool Program::dialect_fragment_from_table(const madc::dis::istring &header)
+{
+    // The namespace surfaces (`ns_*`): what the table carries. A bits/*
+    // fragment keeps its text — the value inserter and the std::format
+    // declarations are no table's, and the table's own bits/* arrive through
+    // the ns_* fragment that includes them.
+    if ( !dialect_surface_enabled() || !dialect_namespace_fragment_p(header)
+      || !find_embedded_header(header) || !is_embedded_header_allowed(header) )
+	return false;
+    if ( dialect_serving == DialectServing::Undecided )
+	dialect_serving = macro_name_defined("_GLIBCXX_STRING")
+			  || macro_name_defined("_LIBCPP_STRING")
+	    ? DialectServing::Text : DialectServing::Table;
+    if ( dialect_serving != DialectServing::Table )
+	return false;
+    if ( dialect_fragments.count(header) )
+	return true;
+    // The closure scan queues through the auto-include's pending state; the
+    // program's own pending headers and words are left as found.
+    std::set<madc::dis::istring> batch, saved_headers;
+    batch.insert(header);
+    std::set<madc::dis::istring> saved_words = pending_auto_include_identifiers;
+    saved_headers.swap(pending_auto_include_headers);
+    queue_fragment_prerequisites(batch);
+    pending_auto_include_headers.swap(saved_headers);
+    pending_auto_include_identifiers.swap(saved_words);
+    for ( std::set<madc::dis::istring>::const_iterator it = batch.begin(); it != batch.end(); ++it )
+    {
+	if ( !dialect_namespace_fragment_p(*it) || !dialect_fragments.insert(*it).second )
+	    continue;
+	mark_embedded_include_flag(*it);
+	const char *h = it->c_str();
+	const char *head = strncmp(h, "ns_", 3) == 0 ? h + 3 : NULL;
+	const char *row = head ? auto_include_header_for_identifier(head) : NULL;
+	// The host's per-namespace switch (is_namespace_registration_enabled)
+	// holds for the table as for the scan (auto_include_permitted).
+	if ( row && *it == row && is_namespace_registration_enabled(head)
+	  && !dialect_namespace_named(head) )
+	    dialect_named.push_back(head);
+    }
+    return true;
+}
+
+bool Program::dialect_namespace_named(const madc::dis::istring &ns) const
+{
+    for ( size_t i = 0; i < dialect_named.size(); ++i )
+	if ( dialect_named[i] == ns )
+	    return true;
+    return false;
+}
+
+void Program::register_dialect_namespaces()
+{
+    for ( size_t i = 0; i < dialect_named.size(); ++i )
+	namespace_variables_for_write(dialect_named[i]);
+}
+
 void Program::inject_pending_auto_includes()
 {
     static const bool prelude_probe = getenv("MADC_PRELUDE_CACHE_PROBE") != NULL;
+    // B198: the unit's include ranges and the prelude's relocation state end
+    // with this call, on every exit (a refused REPL entry included).
+    struct PreludeLexScope {
+	Program &p;
+	~PreludeLexScope()
+	{
+	    p.prelude_relocation.active = false;
+	    p.include_first_ranges.clear();
+	}
+    } prelude_lex_scope = { *this };
     if ( skip_includes )
 	return;
-    if ( !auto_includes_enabled() )
+    if ( !dialect_surface_enabled() )
     {
 	pending_auto_include_headers.clear();
 	pending_auto_include_identifiers.clear();
@@ -2423,6 +2951,26 @@ void Program::inject_pending_auto_includes()
     size_t insert_at = auto_include_insertion_index(tokens, include_start,
 						    source.fname(),
 						    auto_include_user_units);
+    // B198: the prelude's once-only state follows parse order. A header the
+    // unit first included AFTER insert_at that the prelude skips as already
+    // included moves to the prelude's tail (relocate_include_for_prelude).
+    // Only a unit with such an include arms it; its prelude is lexed, never
+    // served from the shared cache (whose key cannot see where the unit's
+    // includes sit).
+    bool late_first_includes = false;
+    for ( size_t ri = 0; ri < include_first_ranges.size(); ++ri )
+	if ( include_first_ranges[ri].start >= insert_at )
+	{
+	    late_first_includes = true;
+	    break;
+	}
+    if ( late_first_includes )
+    {
+	prelude_relocation.active = true;
+	prelude_relocation.insert_at = insert_at;
+	prelude_relocation.main_end = include_start;
+	prelude_relocation.moved = 0;
+    }
 
     while ( !pending_auto_include_headers.empty() )
     {
@@ -2441,14 +2989,14 @@ void Program::inject_pending_auto_includes()
 	      hi != ordered.end(); ++hi )
 	{
 	    const madc::dis::istring &header = *hi;
-	    // A dialect fragment the carrier froze binds directly — no #include
-	    // (pack-slices design §7); the C/C++ headers below stay includes.
-	    if ( forest_bind_dialect_fragment(header) )
+	    // A dialect fragment is the generated table's — no #include, no text
+	    // (R4c); the C/C++ headers below stay includes.
+	    if ( dialect_fragment_from_table(header) )
 		continue;
 	    MadcSharedPreludeCache *preludes = NULL;
 	    madc::dis::istring prelude_key;
 	    std::vector<MadcSharedPreludeCache::MacroState> prelude_before_macros;
-	    if ( MadcSharedPreludeCache::candidate(*this, header) )
+	    if ( !late_first_includes && MadcSharedPreludeCache::candidate(*this, header) )
 	    {
 		if ( !compile_group->shared_preludes )
 		    compile_group->shared_preludes.reset(new MadcSharedPreludeCache());
@@ -2480,7 +3028,7 @@ void Program::inject_pending_auto_includes()
 	    size_t fragment_start = tokens.size();
 	    uint32_t boundary_spelling = fragment_start
 		? tokens[fragment_start - 1]->rec.spelling_id : 0;
-	    size_t forest_units_before = forest_chain_set.size();
+	    size_t forest_units_before = forest_system.chain_set.size();
 	    // Delegate to the LITERAL include owner: feed a synthetic
 	    // `#include <hdr>` line through the real directive handler, so
 	    // forest bind, PCH discovery, embedded text, the filesystem
@@ -2490,7 +3038,9 @@ void Program::inject_pending_auto_includes()
 	    // arms silently dropped every header without a named provider,
 	    // which is how retiring the embedded <string>/<sstream> twins
 	    // broke the C++ arm of auto-include unnoticed.
+	    const size_t moved_before = prelude_relocation.moved;
 	    tokenize_synthetic_system_include(header, "<auto-include>");
+	    fragment_start -= prelude_relocation.moved - moved_before;	// B198
 
 	    // A direct embedded serving is pure lexer/preprocessor work. Cache its
 	    // immutable output only when the literal owner confirms that no forest
@@ -2498,7 +3048,8 @@ void Program::inject_pending_auto_includes()
 	    // the captured range. Forest/PCH/nested-include paths stay authoritative.
 	    bool boundary_unchanged = !fragment_start
 		|| tokens[fragment_start - 1]->rec.spelling_id == boundary_spelling;
-	    if ( preludes && forest_chain_set.size() == forest_units_before
+	    if ( preludes
+	      && forest_system.chain_set.size() == forest_units_before
 	      && boundary_unchanged )
 	    {
 		MadcSharedPreludeCache::Entry entry;
@@ -2520,6 +3071,11 @@ void Program::inject_pending_auto_includes()
     // here). Appending before the move keeps the fragment inside the
     // relocated prelude range.
     maybe_inject_value_stream_operator();
+    if ( late_first_includes )
+    {
+	include_start = prelude_relocation.main_end;	// the unit's tokens closed up
+	prelude_relocation.active = false;
+    }
 
     if ( tokens.size() > include_start )
     {
@@ -2634,37 +3190,30 @@ static bool macro_body_space(char c)
 
 typedef Program::MacroDef::ReplacementToken MacroReplacementToken;
 
+// Does a string literal or character constant start at `pos`: an optional
+// encoding prefix (u8 u U L), an optional R (raw: a string only), then the
+// quote ([lex.string], [lex.ccon]). `quote` is the quote's offset.
 static bool pp_literal_start(const std::string &text, size_t pos,
 			     size_t &quote, bool &raw)
 {
-    static const char *const raw_prefixes[] = { "u8R", "uR", "UR", "LR", "R" };
-    static const char *const prefixes[] = { "u8", "u", "U", "L", "" };
-
-    for ( size_t i = 0; i < sizeof(raw_prefixes) / sizeof(raw_prefixes[0]); ++i )
+    size_t p = pos;
+    const char c = text[p];
+    if ( c == 'u' )
     {
-	size_t n = strlen(raw_prefixes[i]);
-	if ( text.compare(pos, n, raw_prefixes[i]) == 0
-	  && pos + n < text.size() && text[pos + n] == '"' )
-	{
-	    quote = pos + n;
-	    raw = true;
-	    return true;
-	}
+	++p;
+	if ( p < text.size() && text[p] == '8' )
+	    ++p;
     }
-    for ( size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i )
-    {
-	size_t n = strlen(prefixes[i]);
-	if ( text.compare(pos, n, prefixes[i]) != 0 || pos + n >= text.size() )
-	    continue;
-	char q = text[pos + n];
-	if ( q == '"' || q == '\'' )
-	{
-	    quote = pos + n;
-	    raw = false;
-	    return true;
-	}
-    }
-    return false;
+    else if ( c == 'U' || c == 'L' )
+	++p;
+    const bool r = p < text.size() && text[p] == 'R';
+    if ( r )
+	++p;
+    if ( p >= text.size() || (text[p] != '"' && (r || text[p] != '\'')) )
+	return false;
+    quote = p;
+    raw = r;
+    return true;
 }
 
 static std::vector<MacroReplacementToken>
@@ -2672,6 +3221,9 @@ tokenize_macro_spelling(const std::string &text)
 {
     typedef MacroReplacementToken T;
     std::vector<T> tokens;
+    // Sized once for the common spellings (a token, a separator); a run of
+    // one-character tokens grows it.
+    tokens.reserve(text.size() / 2 + 1);
     for ( size_t i = 0; i < text.size(); )
     {
 	size_t start = i;
@@ -2679,7 +3231,7 @@ tokenize_macro_spelling(const std::string &text)
 	{
 	    while ( i < text.size() && macro_body_space(text[i]) )
 		++i;
-	    tokens.push_back(T(T::rtWhitespace, start, i));
+	    tokens.emplace_back(T::rtWhitespace, start, i);
 	    continue;
 	}
 	if ( text[i] == '/' && i + 1 < text.size() && text[i + 1] == '/' )
@@ -2687,7 +3239,7 @@ tokenize_macro_spelling(const std::string &text)
 	    i += 2;
 	    while ( i < text.size() && text[i] != '\n' && text[i] != '\r' )
 		++i;
-	    tokens.push_back(T(T::rtComment, start, i));
+	    tokens.emplace_back(T::rtComment, start, i);
 	    continue;
 	}
 	if ( text[i] == '/' && i + 1 < text.size() && text[i + 1] == '*' )
@@ -2698,7 +3250,7 @@ tokenize_macro_spelling(const std::string &text)
 		++i;
 	    if ( i < text.size() )
 		++i;
-	    tokens.push_back(T(T::rtComment, start, i));
+	    tokens.emplace_back(T::rtComment, start, i);
 	    continue;
 	}
 
@@ -2708,25 +3260,39 @@ tokenize_macro_spelling(const std::string &text)
 	{
 	    if ( raw )
 	    {
-		size_t open = text.find('(', quote + 1);
-		if ( open != madc::dis::istring::npos && open - quote - 1 <= 16 )
+		// A raw string's delimiter: at most 16 characters, none of
+		// space, a quote, a backslash, a parenthesis or a new-line,
+		// then '(' ([lex.string]/2). Anything else is no raw string —
+		// its prefix is a name (`R"x"` in C), the quote a literal.
+		size_t open = quote + 1;
+		while ( open < text.size() && open - quote - 1 <= 16 && text[open] != '('
+		     && !strchr(" \t\v\f\n\r\"\\)", text[open]) )
+		    ++open;
+		if ( open >= text.size() || text[open] != '(' || open - quote - 1 > 16 )
 		{
-		    madc::dis::istring close = ")" + text.substr(quote + 1,
-							 open - quote - 1) + "\"";
-		    size_t end = text.find(close, open + 1);
-		    i = end == madc::dis::istring::npos ? text.size() : end + close.size();
+		    tokens.emplace_back(T::rtIdentifier, start, quote);
+		    i = quote;
+		    continue;
 		}
-		else
-		    i = text.size();
+		madc::dis::istring close = ")" + text.substr(quote + 1,
+						     open - quote - 1) + "\"";
+		size_t end = text.find(close, open + 1);
+		i = end == madc::dis::istring::npos ? text.size() : end + close.size();
 	    }
 	    else
 	    {
+		// An ordinary literal ends at its closing quote — or, never
+		// closed, at the line's end (gcc: "missing terminating
+		// character"); it holds no new-line ([lex.ccon], [lex.string]).
 		char q = text[quote];
 		i = quote + 1;
 		bool escaped = false;
 		while ( i < text.size() )
 		{
-		    char c = text[i++];
+		    char c = text[i];
+		    if ( !escaped && (c == '\n' || c == '\r') )
+			break;
+		    ++i;
 		    if ( escaped )
 			escaped = false;
 		    else if ( c == '\\' )
@@ -2735,16 +3301,15 @@ tokenize_macro_spelling(const std::string &text)
 			break;
 		}
 	    }
-	    tokens.push_back(T(T::rtLiteral, start, i));
+	    tokens.emplace_back(T::rtLiteral, start, i);
 	    continue;
 	}
-	if ( text[i] == '_' || isalpha((unsigned char)text[i]) )
+	if ( is_ident_start((unsigned char)text[i]) )
 	{
 	    ++i;
-	    while ( i < text.size()
-		 && (text[i] == '_' || isalnum((unsigned char)text[i])) )
+	    while ( i < text.size() && is_ident_char((unsigned char)text[i]) )
 		++i;
-	    tokens.push_back(T(T::rtIdentifier, start, i));
+	    tokens.emplace_back(T::rtIdentifier, start, i);
 	    continue;
 	}
 	if ( isdigit((unsigned char)text[i])
@@ -2755,8 +3320,7 @@ tokenize_macro_spelling(const std::string &text)
 	    while ( i < text.size() )
 	    {
 		char c = text[i];
-		if ( c == '_' || c == '.' || c == '\''
-		  || isalnum((unsigned char)c) )
+		if ( c == '.' || c == '\'' || is_ident_char((unsigned char)c) )
 		{
 		    ++i;
 		    continue;
@@ -2770,7 +3334,7 @@ tokenize_macro_spelling(const std::string &text)
 		}
 		break;
 	    }
-	    tokens.push_back(T(T::rtPpNumber, start, i));
+	    tokens.emplace_back(T::rtPpNumber, start, i);
 	    continue;
 	}
 	if ( text[i] == '#' )
@@ -2778,19 +3342,142 @@ tokenize_macro_spelling(const std::string &text)
 	    if ( i + 1 < text.size() && text[i + 1] == '#' )
 	    {
 		i += 2;
-		tokens.push_back(T(T::rtPaste, start, i));
+		tokens.emplace_back(T::rtPaste, start, i);
 	    }
 	    else
 	    {
 		++i;
-		tokens.push_back(T(T::rtHash, start, i));
+		tokens.emplace_back(T::rtHash, start, i);
 	    }
 	    continue;
 	}
 	++i;
-	tokens.push_back(T(T::rtPunct, start, i));
+	tokens.emplace_back(T::rtPunct, start, i);
     }
     return tokens;
+}
+
+// A directive's word as an enum, read once from its spelling (enum over
+// strings): the words a skipped group acts on, and the define / include words
+// source_spelled_names reads; any other is Other.
+enum class PpDirectiveWord : unsigned char { Other, If, Ifdef, Ifndef, Elif, Else, Endif,
+					     Define, Include };
+
+static PpDirectiveWord pp_directive_word(const char *w, size_t n)
+{
+    typedef PpDirectiveWord W;
+    switch ( n )
+    {
+    case 2:
+	return memcmp(w, "if", 2) == 0 ? W::If : W::Other;
+    case 4:
+	return memcmp(w, "else", 4) == 0 ? W::Else
+	     : memcmp(w, "elif", 4) == 0 ? W::Elif : W::Other;
+    case 5:
+	return memcmp(w, "ifdef", 5) == 0 ? W::Ifdef
+	     : memcmp(w, "endif", 5) == 0 ? W::Endif : W::Other;
+    case 6:
+	return memcmp(w, "ifndef", 6) == 0 ? W::Ifndef
+	     : memcmp(w, "define", 6) == 0 ? W::Define
+	     : memcmp(w, "import", 6) == 0 ? W::Include : W::Other;
+    case 7:
+	return memcmp(w, "include", 7) == 0 ? W::Include : W::Other;
+    case 12:
+	return memcmp(w, "include_next", 12) == 0 ? W::Include : W::Other;
+    default:
+	return W::Other;
+    }
+}
+
+bool source_spelled_names(const std::string &text, std::set<madc::dis::istring> &names,
+			  std::set<madc::dis::istring> *content)
+{
+    typedef MacroReplacementToken T;
+    typedef PpDirectiveWord W;
+    const std::vector<T> tokens = tokenize_macro_spelling(text);
+    bool has_paste = false;
+    // Where a name stands (content: the names a macro expands there — text,
+    // a #define body, a computed #include): a line opens as text; `#` first
+    // on it opens a directive, whose word picks the rest.
+    enum class At : unsigned char { Text, DirectiveWord, Directive, DefineName,
+				    DefineParams, DefineBody, IncludeOperand };
+    At at = At::Text;
+    std::vector<madc::dis::istring> params;	// the #define in hand's parameters
+    bool bol = true;		// no token yet on this logical line
+    bool continued = false;	// the last token is a backslash: the line goes on
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	const T &t = tokens[i];
+	const char *s = text.data() + t.begin;
+	const size_t n = t.end - t.begin;
+	if ( t.kind == T::rtWhitespace )
+	{
+	    if ( memchr(s, '\n', n) && !continued )
+	    {
+		at = At::Text;
+		bol = true;
+	    }
+	    continued = false;
+	    continue;
+	}
+	if ( t.kind == T::rtComment )
+	    continue;
+	continued = t.kind == T::rtPunct && n == 1 && *s == '\\';
+	if ( continued )
+	    continue;
+	if ( bol && t.kind == T::rtHash )
+	{
+	    at = At::DirectiveWord;
+	    bol = false;
+	    continue;
+	}
+	bol = false;
+	if ( t.kind == T::rtPaste )
+	    has_paste = true;
+	if ( at == At::DirectiveWord )
+	{
+	    const W word = t.kind == T::rtIdentifier ? pp_directive_word(s, n) : W::Other;
+	    at = word == W::Define ? At::DefineName
+	       : word == W::Include ? At::IncludeOperand : At::Directive;
+	    if ( t.kind == T::rtIdentifier )
+		names.insert(madc::dis::istring(s, n));
+	    continue;
+	}
+	if ( at == At::IncludeOperand )	// a header-name, or a computed include
+	    at = (t.kind == T::rtPunct && *s == '<') || t.kind == T::rtLiteral
+		? At::Directive : At::DefineBody;
+	if ( at == At::DefineParams && t.kind == T::rtPunct && *s == ')' )
+	{
+	    at = At::DefineBody;
+	    continue;
+	}
+	if ( t.kind != T::rtIdentifier )
+	{
+	    if ( at == At::DefineName )
+		at = At::DefineBody;
+	    continue;
+	}
+	const madc::dis::istring name(s, n);
+	names.insert(name);
+	if ( at == At::DefineName )
+	{
+	    // The macro's own name; a `(` touching it opens the parameters.
+	    params.clear();
+	    at = i + 1 < tokens.size() && tokens[i + 1].kind == T::rtPunct
+		 && text[tokens[i + 1].begin] == '('
+		? At::DefineParams : At::DefineBody;
+	    if ( at == At::DefineParams )
+		++i;
+	    continue;
+	}
+	if ( at == At::DefineParams )
+	    params.push_back(name);
+	else if ( content && (at == At::Text
+			      || (at == At::DefineBody
+				  && std::find(params.begin(), params.end(), name) == params.end())) )
+	    content->insert(name);	// a body's parameter is the argument, never a macro
+    }
+    return has_paste;
 }
 
 static bool macro_token_space(const MacroReplacementToken &token)
@@ -2878,10 +3565,109 @@ static void trim_macro_argument(std::string &s)
 	s.pop_back();
 }
 
+// The trim above, keeping an argument's paint stretches (Source::PaintSeg)
+// on the characters they covered: offsets move with the leading cut, and a
+// stretch the cut emptied is dropped. The trimmed text starts with a
+// non-blank character and only blanks precede it, so its first occurrence
+// in the untrimmed text is where the cut fell.
+static void trim_macro_argument(std::string &s, std::vector<Source::PaintSeg> &segs)
+{
+    if ( segs.size() <= 1 )
+    {
+	trim_macro_argument(s);
+	if ( !segs.empty() )
+	    segs[0].off = 0;
+	return;
+    }
+    std::string untrimmed = s;
+    trim_macro_argument(s);
+    if ( s.empty() )
+    {
+	segs.clear();
+	return;
+    }
+    size_t lead = untrimmed.find(s);
+    std::vector<Source::PaintSeg> kept;
+    for ( size_t i = 0; i < segs.size(); ++i )
+    {
+	size_t off = segs[i].off > lead ? segs[i].off - lead : 0;
+	if ( off >= s.size() )
+	    break;
+	if ( !kept.empty() && kept.back().off == off )
+	    kept.pop_back();		// the cut emptied the earlier stretch
+	if ( !kept.empty() && kept.back().paint == segs[i].paint )
+	    continue;			// one stretch, painted alike
+	kept.push_back(segs[i]);
+	kept.back().off = off;
+    }
+    segs.swap(kept);
+}
+
+// One macro argument's paint stretches (Source::PaintSeg) as it is collected.
+// Only an argument read from differently painted regions has more than one;
+// the first stretch is held in place and the vector starts at the second, so
+// an argument painted alike throughout -- nearly every one -- allocates
+// nothing.
+class ArgPaintStretches
+{
+    Source::PaintSeg _first;
+    std::vector<Source::PaintSeg> _segs;	// every stretch, once there are two
+    bool _started = false;
+public:
+    // The argument's characters from offset `off` on were served under `paint`.
+    // Unpainted text after unpainted text -- nearly every call -- returns at
+    // once; the rest is note_paint below.
+    void note(size_t off, const std::set<madc::dis::istring> &paint)
+    {
+	if ( _started && paint.empty()
+	  && (_segs.empty() ? _first.paint : _segs.back().paint).empty() )
+	    return;
+	note_paint(off, paint);
+    }
+private:
+    void note_paint(size_t off, const std::set<madc::dis::istring> &paint)
+    {
+	if ( !_started )
+	{
+	    _first.off = off;
+	    _first.paint = paint;
+	    _started = true;
+	    return;
+	}
+	if ( (_segs.empty() ? _first.paint : _segs.back().paint) == paint )
+	    return;
+	if ( _segs.empty() )
+	    _segs.push_back(_first);
+	_segs.push_back(Source::PaintSeg());
+	_segs.back().off = off;
+	_segs.back().paint = paint;
+    }
+public:
+    // The argument is complete: trim it (the trim owner above) and, when it
+    // is still read across more than one stretch, move the stretches to
+    // `out` and answer true. Ready for the next argument either way.
+    bool finish(std::string &arg, std::vector<Source::PaintSeg> &out)
+    {
+	_started = false;
+	if ( _segs.empty() )
+	{
+	    trim_macro_argument(arg);
+	    return false;
+	}
+	trim_macro_argument(arg, _segs);
+	const bool stretched = _segs.size() > 1;
+	if ( stretched )
+	    out.swap(_segs);
+	_segs.clear();
+	return stretched;
+    }
+};
+
 // The one token-to-source spelling owner lives with reconstruct_source below.
 // Macro argument pre-expansion also needs it: its temporary token stream must
 // round-trip literals without changing their value or type.
 madc::dis::istring madc_token_spelling(TokenBase *tb);  // fwd (the one spelling owner, defined below)
+static madc::dis::istring madc_c_escape_wide_string(const char *s, size_t len);  // fwd (its wide escape, below)
 
 static std::string stringify_macro_arg(const std::string &raw)
 {
@@ -3282,8 +4068,6 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
     if ( pack_protocol_unit )	// __need serving: the includer owns this token
 	pack_protocol_token_owner[tb] = pack_protocol_unit;	// (identity-keyed)
     pin_pending_pack_ops(tb);
-    if ( !lazy_module_spelling.empty() )	// inside a LAZY row's interface
-	_lazy_module_tokens[tb] = lazy_module_spelling;
 }
 
 // Pin queued #pragma pack ops to the first real token emitted after the
@@ -3384,7 +4168,6 @@ void Program::_tokenizer_init()
     deferred_function_body_sink = NULL;
     parsing_cpp_struct_class = false;
     _include_iostream = false;
-    _include_stdio = false;
     _include_string = false;
     _include_ns_madc = false;
     _value_stream_operator_injected = false;
@@ -3397,11 +4180,15 @@ void Program::_tokenizer_init()
     suppress_auto_include_scan = false;
     auto_include_fragment_scan = false;
     bound_gui_module = false;
-    module_optional_libs.clear();
-    lazy_module_spelling.clear();
-    _lazy_module_tokens.clear();
-    pending_no_strict_aliasing = false;
-    pending_weak_binding = false;
+    imported_modules.clear();
+    registering_module = NULL;
+    dialect_serving = registration_policy.enable_dialect_table
+	? DialectServing::Undecided : DialectServing::Text;
+    dialect_named.clear();
+    dialect_fragments.clear();
+    dialect_built.clear();
+    dialect_builds = 0;
+    clear_pending_function_attributes();
     pending_specifier_weak = false;
     while ( !_pack_stack.empty() )
 	_pack_stack.pop();
@@ -3477,9 +4264,9 @@ void Program::_tokenizer_init()
     define_map["__LDBL_DIG__"] = "15";
     define_map["__BIGGEST_ALIGNMENT__"] = "16";
 
-    // GCC predefined macros for C compatibility
-    define_map["__DATE__"] = "\"" __DATE__ "\"";
-    define_map["__TIME__"] = "\"" __TIME__ "\"";
+    // __DATE__ / __TIME__ are the TRANSLATION's date and time, and __TIMESTAMP__
+    // the current file's modification time, computed when
+    // first expanded (builtin_macro_text) — never a table entry.
     // Built-in release-version string literal. MADC_VERSION_STR is supplied by
     // the build (-DMADC_VERSION_STR='"x.y.z"' from ../VERSION); the value stored
     // here keeps its quotes so the macro substitutes as a const char* literal.
@@ -3702,11 +4489,14 @@ void Program::_tokenizer_init()
     define_map["__builtin_strnlen"] = "strnlen";
     // bswap builtins: these don't exist in glibc as functions, but the
     // GCC testsuite uses them. Map to helpers exported by the madc binary.
+    // glibc's own __bswap_16/32/64 are NOT renamed: <bits/byteswap.h>
+    // defines them as static inline functions over these builtins, and the
+    // rename made that definition `__madc_bswap32(x) { return
+    // __madc_bswap32(x); }` — a TU-local function calling itself, which
+    // shadowed the helper (SQLite's sqlite3Get4byte recursed to SIGSEGV).
     define_map["__builtin_bswap16"] = "__madc_bswap16";
     define_map["__builtin_bswap32"] = "__madc_bswap32";
     define_map["__builtin_bswap64"] = "__madc_bswap64";
-    define_map["__bswap_16"] = "__madc_bswap16";
-    define_map["__bswap_32"] = "__madc_bswap32";
 
     // __builtin_add/sub/mul_overflow pass through to CIR as real c2mir
     // builtins (handled natively at every width incl. __int128); the old
@@ -3815,14 +4605,6 @@ void Program::_tokenizer_init()
 	m.params = {"__cond", "__true_expr", "__false_expr"};
 	m.body = "((__cond) ? (__true_expr) : (__false_expr))";
 	macro_map["__builtin_choose_expr"] = m;
-    }
-    // __builtin_return_address(level) — unsupported, but many GCC
-    // torture tests only need a stable sentinel value.
-    {
-	MacroDef m;
-	m.params = {"__level"};
-	m.body = "0";
-	macro_map["__builtin_return_address"] = m;
     }
     // __builtin_unreachable() — map to abort()
     define_map["__builtin_unreachable"] = "abort";
@@ -3937,18 +4719,24 @@ void Program::_tokenizer_init()
 	// pattern is the double one in a long double-typed union — gcc/clang
 	// there print nansl 7ff4000000000000; the x87 pair written into an
 	// 8-byte union would overrun it (darwin D4: testsignalingnan printed
-	// 0000a000000000000000 on an M-series Mac). sizeof(long double) is
-	// the target's, read off the compiler building this madc for it
-	// (the DataDefLDOUBLE rule).
+	// 0000a000000000000000 on an M-series Mac). The SIZE does not name the
+	// format: aarch64-linux, riscv64 and s390x long double is IEEE binary128,
+	// 16 bytes like x87, where the sNaN is the high word 0x7fff4000... (and
+	// the x87 pair reads as a small finite value). So the body keys on the
+	// format the program itself sees, the target's __LDBL_MANT_DIG__ (64 x87,
+	// 113 binary128, 53 binary64, 106 IBM double-double — whose high double,
+	// first in memory, carries the NaN), and binary128's word order on
+	// __BYTE_ORDER__. A 16-byte union serves every format; the conditions fold.
 	MacroDef nansl;
 	nansl.params = {"__tag"};
-	if ( sizeof(long double) == 8 )
-	    nansl.body = "(__extension__ ({ union { unsigned long long __i; long double __l; } __u;"
-			 " __u.__i = 0x7ff4000000000000ULL; __u.__l; }))";
-	else
-	    nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
-			 " __u.__i[0] = 0xa000000000000000ULL; __u.__i[1] = 0x7fffULL;"
-			 " __u.__l; }))";
+	nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
+		     " __u.__i[0] = __LDBL_MANT_DIG__ == 64 ? 0xa000000000000000ULL"
+		     " : __LDBL_MANT_DIG__ != 113 ? 0x7ff4000000000000ULL"
+		     " : __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ ? 0ULL : 0x7fff400000000000ULL;"
+		     " __u.__i[1] = __LDBL_MANT_DIG__ == 64 ? 0x7fffULL"
+		     " : __LDBL_MANT_DIG__ != 113 ? 0ULL"
+		     " : __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ ? 0x7fff400000000000ULL : 0ULL;"
+		     " __u.__l; }))";
 	macro_map["__builtin_nansl"] = nansl;
     }
     {
@@ -4009,7 +4797,6 @@ void Program::_tokenizer_init()
     define_map["__builtin___memmove_chk"] = "__madc_builtin_memmove_chk";
     define_map["__builtin___mempcpy_chk"] = "__madc_builtin_mempcpy_chk";
     define_map["__builtin___memset_chk"] = "__madc_builtin_memset_chk";
-    define_map["__builtin_frame_address"] = "__madc_builtin_frame_address";
     define_map["__builtin_setjmp"] = "__madc_builtin_setjmp";
     define_map["__builtin_longjmp"] = "__madc_builtin_longjmp_val";
     define_map["__builtin_uabs"] = "__madc_builtin_uabs";
@@ -4118,7 +4905,7 @@ void Program::_tokenizer_init()
     for ( const std::pair<madc::dis::istring,madc::dis::istring> &d : cli_defines )
     {
 	define_map[d.first] = d.second;
-	note_std_abi_define(d.first, d.second);
+	note_std_abi_define(d.first.c_str(), d.second);
     }
 }
 
@@ -4150,6 +4937,61 @@ static double forest_stat_now(void)
     return tv.tv_sec + tv.tv_usec / 1e6;
 }
 
+// This compile's reader already opened on (image, profile length); NULL if
+// none (Program::forest_reader opens one).
+static CirFrozenForest *forest_reader_opened(const Program &prog, const void *image,
+					     size_t len)
+{
+    for ( size_t i = 0; i < prog._forest_readers.size(); ++i )
+	if ( prog._forest_readers[i]->opened_from(image, len) )
+	    return prog._forest_readers[i].get();
+    return NULL;
+}
+
+// The role filter for one profile of a discovery walk taking `role`: true
+// when the profile is another role's — `below` then the carrier length
+// beneath it (0: none). The role is the opened reader's, else a profile this
+// compile skipped before, else its footer and segment table read through
+// `peek` (`peeked`: left open for the reader to adopt — never its forest
+// directory). Each profile's table is scanned once per compile.
+static bool forest_profile_skipped(Program &prog, const void *image, size_t len,
+				   uint32_t role, madc::dis::snapshot_reader &peek,
+				   bool &peeked, size_t &below)
+{
+    peeked = false;
+    below = 0;
+    if ( CirFrozenForest *f = forest_reader_opened(prog, image, len) )
+    {
+	if ( f->role() == role )
+	    return false;
+	if ( !f->previous_image_len(below) )
+	    below = 0;
+	return true;
+    }
+    for ( size_t i = 0; i < prog._forest_skipped_profiles.size(); ++i )
+    {
+	const Program::ForestSkippedProfile &k = prog._forest_skipped_profiles[i];
+	if ( k.image == image && k.len == len && k.role != role )
+	{
+	    below = k.below;
+	    return true;
+	}
+    }
+    uint32_t profile_role = CIR_FOREST_ROLE_SYSTEM;
+    if ( !peek.open(image, len) || !cir_forest_read_role(peek, profile_role) )
+	return false;		// not a container: the reader's open reports it
+    peeked = true;
+    if ( profile_role == role )
+	return false;		// the reader adopts `peek`
+    if ( !peek.previous_image_len(below) )
+	below = 0;
+    // Skipped: no reader holds its role, so this compile's later walks of
+    // this role read it here.
+    Program::ForestSkippedProfile k = { image, len, profile_role, below };
+    prog._forest_skipped_profiles.push_back(k);
+    return true;
+}
+
 // One discovery arm: map `path` (NULL = the running self-image: ELF trailer /
 // Mach-O __MADC,__forest section) and open it as a forest container. Returns
 // the opened forest, or NULL to fall through to the next arm. quiet_missing
@@ -4166,12 +5008,15 @@ static double forest_stat_now(void)
 // segments (the AOT ledger) live outside the groves, so a consumer that only
 // wants those must not be made to bind the frozen string pool / arena into
 // live parse state it does not have (the .o link lane never parses).
+// `role` filters the stack: a profile of another role is skipped from its
+// footer and segment table (forest_profile_skipped) — its forest directory
+// never opens.
 static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 					 const char *arm, bool quiet_missing,
 					 bool &config_mismatch,
 					 double &map_secs, double &open_secs,
 					 Program::ForestConfigMatch config_match,
-					 bool header_only = false)
+					 bool header_only, uint32_t role)
 {
     double _t0 = forest_stat_now();
     const void *image = NULL;
@@ -4188,7 +5033,25 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
     for (;;)
     {
 	double _t1 = forest_stat_now();
-	CirFrozenForest *f = prog->forest_reader(image, candidate_len, quiet_missing);
+	size_t below = 0;
+	madc::dis::snapshot_reader peek;
+	bool peeked = false;
+	if ( forest_profile_skipped(*prog, image, candidate_len, role, peek, peeked,
+				    below) )
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    DBG(std::cout << "forest-bind: [" << arm << "] a profile of another"
+		" role skipped (the walk takes role " << role << ")" << std::endl);
+	    // A container this compile does not take, as a config miss is.
+	    if ( config_match == Program::forestMatchExact )
+		config_mismatch = true;
+	    if ( !below )
+		return NULL;
+	    candidate_len = below;
+	    continue;
+	}
+	CirFrozenForest *f = prog->forest_reader(image, candidate_len, quiet_missing,
+						 peeked ? &peek : NULL);
 	if ( !f )
 	{
 	    open_secs += forest_stat_now() - _t1;
@@ -4201,12 +5064,21 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	bool matches = config_match == Program::forestMatchAny;
 	// Exact: the profile was frozen under the consumer's config — its own
 	// header's pair, or a label the pack stamped after proving that config's
-	// frozen content identical (CIR_FOREST_SEG_SHARED_CONFIGS).
+	// frozen content identical (CIR_FOREST_SEG_SHARED_CONFIGS) — or (B1)
+	// the consumer's -D defines name nothing a frozen unit spells.
 	if ( config_match == Program::forestMatchExact )
-	    matches = f->serves_config(consumer_config, madc_forest_defines_hash(prog));
+	    matches = f->serves_consumer(consumer_config, madc_forest_defines_hash(prog),
+					 prog->cli_defines);
 	else if ( config_match == Program::forestMatchStdlibFlavor )
 	    matches = (producer_config & CIR_FOREST_CONFIG_STDLIB_MASK)
 		   == (consumer_config & CIR_FOREST_CONFIG_STDLIB_MASK);
+	else if ( config_match == Program::forestMatchLedger )
+	    matches = f->has_ledger();
+	// The two packs: a C++ or madc compile never reads the C layer, in any
+	// mode — the division is this rule, not the stack's order.
+	if ( matches
+	  && !cir_forest_profile_serves_family(producer_config, consumer_config) )
+	    matches = false;
 
 	if ( !matches )
 	{
@@ -4235,13 +5107,13 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 }
 
 CirFrozenForest *Program::forest_reader(const void *image, size_t len,
-				       bool quiet_missing)
+				       bool quiet_missing,
+				       madc::dis::snapshot_reader *opened)
 {
-    for ( size_t i = 0; i < _forest_readers.size(); ++i )
-	if ( _forest_readers[i]->opened_from(image, len) )
-	    return _forest_readers[i].get();
+    if ( CirFrozenForest *f = forest_reader_opened(*this, image, len) )
+	return f;
     std::shared_ptr<CirFrozenForest> f(new CirFrozenForest());
-    if ( !f->open_header(image, len, quiet_missing) )
+    if ( !f->open_header(image, len, quiet_missing, opened) )
 	return NULL;
     _forest_readers.push_back(f);
     return f.get();
@@ -4264,7 +5136,8 @@ std::shared_ptr<CirFrozenForest> Program::forest_reader_holder(CirFrozenForest *
 // walker keeps both arm order and within-arm profile order in one place.
 CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 					     bool &cfg_mismatch,
-					     bool header_only)
+					     bool header_only,
+					     uint32_t role)
 {
     // Arm 0: an explicit --forest-bind=PATH is the whole search (CLI beats
     // every discovery arm).
@@ -4273,7 +5146,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 				"explicit", /*quiet_missing=*/false,
 				cfg_mismatch, _forest_map_seconds,
 				_forest_open_seconds, config_match,
-				header_only);
+				header_only, role);
 
     // Arm 1: self-image — the running binary's own carrier (ELF trailer /
     // Mach-O __MADC,__forest section). An unpacked dev binary misses quietly.
@@ -4281,7 +5154,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 					  /*quiet_missing=*/true, cfg_mismatch,
 					  _forest_map_seconds, _forest_open_seconds,
 					  config_match,
-					  header_only);
+					  header_only, role);
     // Arm 2 (forest-carriers S4): library image — in the SHARED shape the
     // forest rides libmadc's own image, so ONE container serves the thin CLI
     // and every embedding host. dladdr on a libmadc symbol resolves the image
@@ -4298,7 +5171,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 			     /*quiet_missing=*/true, cfg_mismatch,
 			     _forest_map_seconds, _forest_open_seconds,
 			     config_match,
-			     header_only);
+			     header_only, role);
     if ( !f && registration_policy.enable_external_forest )
     {
 	// Arm 3: sidecar container beside an image (<exe>.forest, then
@@ -4310,13 +5183,13 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 				 "sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
 				 _forest_open_seconds, config_match,
-				 header_only);
+				 header_only, role);
 	if ( !f && have_lib_image )
 	    f = forest_probe_arm(this, (lib + ".forest").c_str(),
 				 "lib-sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
 				 _forest_open_seconds, config_match,
-				 header_only);
+				 header_only, role);
 	// Arm 4: MADC_FOREST environment variable (a configured path; env
 	// outranks the madc.ini key per the config precedence rule
 	// CLI > environment > madc.ini > baked defaults).
@@ -4326,7 +5199,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 				 /*quiet_missing=*/false, cfg_mismatch,
 				 _forest_map_seconds, _forest_open_seconds,
 				 config_match,
-				 header_only);
+				 header_only, role);
 	// Arm 5 (forest-carriers S6): the madc.ini `forest =` key — the LAST
 	// arm, because a configured default must lose to everything more
 	// specific. The CLI parses the file and hands the path down through
@@ -4337,7 +5210,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 				 "madc.ini", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
 				 _forest_open_seconds, config_match,
-				 header_only);
+				 header_only, role);
     }
     return f;
 }
@@ -4354,58 +5227,58 @@ madc::dis::istring Program::forest_probed_arms() const
     return arms;
 }
 
-// The exact-config bind carrier, opened to its DIRECTORY: discovery, a
-// sibling TU's shared instance, and the missing-container policy. "Does this
-// include name a grove unit" reads only this (the directory is the pack's
-// index); ensure_bind_forest completes it for an actual bind, so a compile
-// that binds nothing — a dialect compile whose fragments the pack does not
-// carry — never decodes the string pool or the arena.
-CirFrozenForest *Program::bind_forest_directory()
+// The side's carrier, opened to its DIRECTORY: discovery (the profiles of the
+// side's role under the exact config), a sibling TU's shared instance, and
+// the missing-container policy. "Does this include name a grove unit" reads
+// only this (the directory is the pack's index); forest_bound completes it
+// for an actual bind, so a compile that binds nothing never decodes the
+// string pool or the arena.
+CirFrozenForest *Program::forest_directory(ForestSide &s)
 {
-    if ( bind_directory_tried )
-	return _bind_directory;
-    bind_directory_tried = true;
+    if ( s.directory_tried )
+	return s.directory;
+    s.directory_tried = true;
 
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
-    // S3 (R4-lite): a sibling TU adopts the group's instance for this dialect
-    // — the (config word, -D hash) pair IS the probe's own config gate, so a
-    // group hit is exactly what the probe would re-open.
-    std::pair<uint32_t, uint32_t> group_key(0, 0);
+    // S3 (R4-lite): a sibling TU adopts the group's instance for this role
+    // and dialect — the (config word, -D hash) pair IS the probe's own config
+    // gate, so a group hit is exactly what the probe would re-open.
+    std::tuple<uint32_t, uint32_t, uint32_t> group_key(s.role, 0, 0);
     if ( compile_group )
     {
-	group_key = std::make_pair(madc_forest_config_word(this),
-				   madc_forest_defines_hash(this));
-	std::map<std::pair<uint32_t, uint32_t>,
+	group_key = std::make_tuple(s.role, madc_forest_config_word(this),
+				    madc_forest_defines_hash(this));
+	std::map<std::tuple<uint32_t, uint32_t, uint32_t>,
 		 std::shared_ptr<CirFrozenForest> >::iterator gi =
 	    compile_group->bind_forests.find(group_key);
 	if ( gi != compile_group->bind_forests.end() )
 	{
-	    _bind_forest_holder = gi->second;
-	    _bind_directory = _bind_forest_holder.get();
+	    s.holder = gi->second;
+	    s.directory = s.holder.get();
 	    // This compile's other roles share it too (forest_reader).
-	    if ( !forest_reader_holder(_bind_directory) )
-		_forest_readers.push_back(_bind_forest_holder);
-	    return _bind_directory;
+	    if ( !forest_reader_holder(s.directory) )
+		_forest_readers.push_back(s.holder);
+	    return s.directory;
 	}
     }
     bool cfg_mismatch = false;
-    _bind_directory = probe_forest_chain(forestMatchExact, cfg_mismatch,
-					 /*header_only=*/true);
-    if ( _bind_directory )
+    s.directory = probe_forest_chain(forestMatchExact, cfg_mismatch,
+				     /*header_only=*/true, s.role);
+    if ( s.directory )
     {
-	_bind_forest_holder = forest_reader_holder(_bind_directory);
+	s.holder = forest_reader_holder(s.directory);
 	if ( compile_group )
-	    compile_group->bind_forests[group_key] = _bind_forest_holder;
+	    compile_group->bind_forests[group_key] = s.holder;
 	// The pack step's read recorder starts with the bind's container, not
 	// its full open: a root that binds no frozen table (a pragma-only
 	// header, served as source alone) still writes its log, so the log
 	// exists exactly when the bind opened the container
 	// (forest_pack_layout.sh).
 	if ( !forest_touch_log.empty()
-	     && !_bind_directory->record_touches(forest_touch_log.c_str()) )
+	     && !s.directory->record_touches(forest_touch_log.c_str()) )
 	    std::cerr << "madc: --forest-touch-log: cannot write '"
 		      << forest_touch_log << "'" << std::endl;
-	return _bind_directory;
+	return s.directory;
     }
 
     // A named container that fails to open falls back to live parse LOUDLY
@@ -4429,11 +5302,11 @@ CirFrozenForest *Program::bind_forest_directory()
     return NULL;
 }
 
-CirFrozenForest *Program::ensure_bind_forest()
+CirFrozenForest *Program::forest_bound(ForestSide &s)
 {
-    if ( bind_forest_tried )
-	return bind_forest;
-    bind_forest_tried = true;
+    if ( s.tried )
+	return s.forest;
+    s.tried = true;
 
     // task #25 slice D: the full open under the forest-work clock; a bound
     // forest gets the clock installed so its own on-demand entries (unit
@@ -4441,23 +5314,29 @@ CirFrozenForest *Program::ensure_bind_forest()
     // The clock pointers re-install per adopter (sequential compile: the
     // forest's on-demand work accumulates on whoever is currently compiling).
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
-    CirFrozenForest *f = bind_forest_directory();
+    CirFrozenForest *f = forest_directory(s);
     const double t0 = forest_stat_now();
     const bool opened = f && f->complete_open(/*c2m=*/NULL);
     _forest_open_seconds += forest_stat_now() - t0;
     if ( !opened )
 	return NULL;
-    bind_forest = f;
+    s.forest = f;
     DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
 	<< " units)" << std::endl);
-    bind_forest->_work_secs = &_forest_work_seconds;
-    bind_forest->_work_depth = &_forest_work_depth;
-    return bind_forest;
+    s.forest->_work_secs = &_forest_work_seconds;
+    s.forest->_work_depth = &_forest_work_depth;
+    return s.forest;
 }
 
+// The side's role code, spelled in madc.h without cir_freeze.h.
+static_assert(CIR_FOREST_ROLE_SYSTEM == 0u,
+	      "Program::forest_system names this role code");
+
 // The carrier the AOT ledger is read from (-static-libmadc, S5). The grove
-// bind's container when it opened one — same file, already mapped — else the
-// SAME chain walked with the producer-config gate OFF, because a compile whose
+// bind's container when it carries the ledger — same file, already mapped —
+// else the SAME chain walked for the first profile that carries it, with the
+// producer-config gate OFF (the C layer carries no ledger: a C compile bound
+// to it reads the C++ profile's), because a compile whose
 // dialect cannot bind the groves must still be able to link madc's runtime.
 // enable_forest_bind is likewise not consulted: --no-forest-bind says "parse
 // the headers live", not "leave the runtime out of my binary".
@@ -4468,9 +5347,9 @@ CirFrozenForest *Program::ensure_ledger_forest()
     if ( ledger_forest_tried )
 	return ledger_forest;
     ledger_forest_tried = true;
-    if ( bind_forest )
+    if ( forest_system.forest && forest_system.forest->has_ledger() )
     {
-	ledger_forest = bind_forest;
+	ledger_forest = forest_system.forest;
 	return ledger_forest;
     }
     bool cfg_mismatch = false;
@@ -4478,23 +5357,30 @@ CirFrozenForest *Program::ensure_ledger_forest()
     // is the whole requirement — binding the frozen string pool and arena is
     // grove work, and it needs live parse state this consumer may not have
     // (the .o link lane links precompiled objects: no lexer, no pool).
-    ledger_forest = probe_forest_chain(forestMatchAny,
+    ledger_forest = probe_forest_chain(forestMatchLedger,
 				       cfg_mismatch, /*header_only=*/true);
     DBG(std::cout << "ledger: carrier "
 	<< (ledger_forest ? "opened" : "not found") << std::endl);
     return ledger_forest;
 }
 
+// The carrier a header's packed TEXT is read from: the newest profile of the
+// selected stdlib flavor — the walk's own order — never the bound profile for
+// being bound. The pack's source arm (every system header as text,
+// --freeze-sources) rides the C++ profile, and the C layer below it carries
+// only its own units' text (docs/plans/2026-10-18-c-pack-layer.md); a reader
+// already open for that profile is reused (forest_reader). The bound profile
+// answers only when the walk finds none.
 CirFrozenForest *Program::ensure_source_forest()
 {
     if ( source_forest_tried )
 	return source_forest;
     source_forest_tried = true;
-    if ( bind_forest )
-    {
-	source_forest = bind_forest;
-	return source_forest;
-    }
+    // --no-embedded-headers: the core system headers come from disk alone, so
+    // no image the discovery chain finds serves their text — only a container
+    // the command line names (--forest-bind=FILE).
+    if ( system_headers_from_disk_only() && forest_bind_path.empty() )
+	return NULL;
 
     // Raw source ignores producer std/-D/posix config because these bytes are
     // re-tokenized under THIS Program's live policy, but it must match the
@@ -4505,6 +5391,8 @@ CirFrozenForest *Program::ensure_source_forest()
     bool cfg_mismatch = false;
     source_forest = probe_forest_chain(forestMatchStdlibFlavor,
 				       cfg_mismatch, /*header_only=*/true);
+    if ( !source_forest )
+	source_forest = forest_system.forest;
     if ( source_forest )
     {
 	source_forest->_work_secs = &_forest_work_seconds;
@@ -4517,19 +5405,17 @@ CirFrozenForest *Program::ensure_source_forest()
 // dir, then every directory of the selected flavor's table — past the
 // toolchain-only view's cut (--no-sysroot-includes) too, since a packed header
 // is madc's own, named under the root the build gave it, whichever roots this
-// compile searches on disk. The step before a bare path-tail match, which
-// cannot tell <search.h> from libc++'s __algorithm/search.h. -1: none.
+// compile searches on disk. A C compile's roots are still the C view's (B199):
+// libstdc++'s c++/NN/stdlib.h is a packed unit, never a C program's <stdlib.h>.
+// The step before a bare path-tail match, which cannot tell <search.h> from
+// libc++'s __algorithm/search.h. -1: none.
 int Program::forest_unit_under_build_roots(CirFrozenForest *f,
 					   const madc::dis::istring &incfile)
 {
     if ( !f || incfile.empty() || madc::detail::host_path_absolute(incfile) )
 	return -1;
-    std::vector<madc::dis::istring> roots(include_paths.begin(), include_paths.end());
-    const madc_stdlib_flavor *fl = active_stdlib_flavor();
-    const char *const *table = fl && fl->paths && fl->paths[0]
-	? fl->paths : sys_include_paths();
-    for ( ; *table; ++table )
-	roots.push_back(*table);
+    std::vector<madc::dis::istring> roots;
+    build_include_roots(roots);
     for ( size_t i = 0; i < roots.size(); ++i )
     {
 	std::string candidate = roots[i];
@@ -4543,19 +5429,68 @@ int Program::forest_unit_under_build_roots(CirFrozenForest *f,
     return -1;
 }
 
+void Program::build_include_roots(std::vector<madc::dis::istring> &roots) const
+{
+    roots.assign(include_paths.begin(), include_paths.end());
+    for ( const char *const *table = search_view(is_c_mode(), /*toolchain_only=*/false);
+	  *table; ++table )
+	roots.push_back(*table);
+}
+
+// B199: a path inside a directory of the flavor's table that this compile's
+// LANGUAGE view leaves out — the C++ standard library's tree under C. A C
+// program's search never reaches those directories, so no pack unit there is
+// one of its headers (the toolchain-only cut is not a language view: past it a
+// packed header is still madc's own).
+bool Program::path_outside_language_view(const char *path) const
+{
+    if ( !path || !*path || !is_c_mode() )
+	return false;
+    const char *const *view = search_view(/*c_view=*/true, /*toolchain_only=*/false);
+    const madc::dis::istring file(path);
+    for ( const char *const *dir = search_view(false, false); *dir; ++dir )
+    {
+	bool in_view = false;
+	for ( const char *const *v = view; *v && !in_view; ++v )
+	    in_view = strcmp(*v, *dir) == 0;
+	if ( !in_view && madc::detail::host_path_within(*dir, file) )
+	    return true;
+    }
+    return false;
+}
+
+// The source arm's unit for a spelling: the exact unit name, then (allow_tail)
+// under a build include root, then the path-tail match — never a unit this
+// compile's language view leaves out. -1: none, or no source text.
+int Program::forest_source_unit(CirFrozenForest *f, const madc::dis::istring &spelling,
+				bool allow_tail)
+{
+    int unit = f->find_unit(spelling);
+    if ( unit < 0 && allow_tail )
+	unit = forest_unit_under_build_roots(f, spelling);
+    if ( unit < 0 && allow_tail )
+	unit = f->find_unit_path_tail(spelling, [this](const char *nm) {
+	    return !path_outside_language_view(nm);
+	});
+    if ( unit < 0 || !f->unit_has_source((uint32_t)unit) )
+	return -1;
+    return unit;
+}
+
 bool Program::forest_source_path(const std::string &candidate,
 				 bool allow_tail, madc::dis::istring &resolved)
 {
     CirFrozenForest *forest = ensure_source_forest();
-    if ( !forest )
-	return false;
-    int unit = forest->find_unit(candidate);
-    if ( unit < 0 && allow_tail )
-	unit = forest_unit_under_build_roots(forest, candidate);
-    if ( unit < 0 && allow_tail )
-	unit = forest->find_unit_path_tail(candidate);
-    if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
-	return false;
+    int unit = forest ? forest_source_unit(forest, candidate, allow_tail) : -1;
+    if ( unit < 0 )
+    {
+	// A freeze's staged source arm is libmadc's too (pack_stage_source_list).
+	const long s = staged_source_unit(candidate, allow_tail);
+	if ( s < 0 )
+	    return false;
+	resolved = staged_sources[(size_t)s].first;
+	return true;
+    }
     const char *name = forest->unit_name((uint32_t)unit);
     if ( !name || !*name )
 	return false;
@@ -4566,15 +5501,12 @@ bool Program::forest_source_path(const std::string &candidate,
 bool Program::forest_source_text(const madc::dis::istring &path, std::string &text)
 {
     CirFrozenForest *forest = ensure_source_forest();
-    if ( !forest )
-	return false;
-    int unit = forest->find_unit(path);
+    int unit = forest ? forest_source_unit(forest, path, /*allow_tail=*/true) : -1;
     if ( unit < 0 )
-	unit = forest_unit_under_build_roots(forest, path);
-    if ( unit < 0 )
-	unit = forest->find_unit_path_tail(path);
-    if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
-	return false;
+    {
+	const long s = staged_source_unit(path, /*allow_tail=*/true);
+	return s >= 0 && staged_source_text((size_t)s, text);
+    }
     std::map<uint32_t, madc::dis::istring>::iterator cached =
 	forest_source_cache.find((uint32_t)unit);
     if ( cached == forest_source_cache.end() )
@@ -4592,7 +5524,7 @@ bool Program::forest_source_text(const madc::dis::istring &path, std::string &te
 // The discovery chain ended with no usable container: apply the failure
 // policy (forest-carriers S3 — the G2 lesson: no SILENT degradation unless
 // silent is the configured contract). Called at most once per Program
-// (bind_forest_tried gates the caller). strict_require raises through the
+// (ForestSide::directory_tried gates the caller). strict_require raises through the
 // standard Throw path so an embedding host sees it as a compile error.
 //
 // config_mismatch = a container WAS found but its producer config (std/-D)
@@ -4649,25 +5581,25 @@ Program::ForestBindStats Program::forest_bind_stats() const
     s.bind_secs    = _forest_bind_seconds;
     s.restore_secs = _forest_restore_seconds;
     s.declidx_secs = _forest_declidx_seconds;
-    s.units_bound  = forest_chain.size();
+    s.units_bound  = forest_system.chain.size();
     s.funcs_eager = _forest_funcs_eager;
     s.funcs_deferred = _forest_funcs_deferred;
     s.funcs_activated = _forest_funcs_activated;
     s.funcs_remaining = forest_deferred_funcs.size();
-    if ( bind_forest )
+    if ( CirFrozenForest *sf = forest_system.forest )
     {
 	s.opened         = true;
-	s.units_total    = bind_forest->unit_count();
-	s.unitload_secs  = bind_forest->_stat_unitload_secs;
-	s.unitload_count = bind_forest->_stat_unitload_count;
-	bind_forest->node_record_counts(s.unit_records, s.unit_records_materialized, &s.unit_rows);
-	s.mat_secs       = bind_forest->_stat_mat_secs;
-	s.zstd_frames    = bind_forest->stat_zstd_frames();
-	s.zstd_bytes     = bind_forest->stat_zstd_bytes_out();
-	s.zstd_secs      = bind_forest->stat_zstd_secs();
-	s.copy_calls     = bind_forest->stat_copy_calls();
-	s.copy_bytes     = bind_forest->stat_copy_bytes();
-	s.block_rows     = bind_forest->block_stats(s.blocks_decoded, s.blocks_total);
+	s.units_total    = sf->unit_count();
+	s.unitload_secs  = sf->_stat_unitload_secs;
+	s.unitload_count = sf->_stat_unitload_count;
+	sf->node_record_counts(s.unit_records, s.unit_records_materialized, &s.unit_rows);
+	s.mat_secs       = sf->_stat_mat_secs;
+	s.zstd_frames    = sf->stat_zstd_frames();
+	s.zstd_bytes     = sf->stat_zstd_bytes_out();
+	s.zstd_secs      = sf->stat_zstd_secs();
+	s.copy_calls     = sf->stat_copy_calls();
+	s.copy_bytes     = sf->stat_copy_bytes();
+	s.block_rows     = sf->block_stats(s.blocks_decoded, s.blocks_total);
     }
     return s;
 }
@@ -4709,44 +5641,16 @@ bool Program::need_protocol_macro_live()
 int Program::forest_unit_for_include(const madc::dis::istring &incfile)
 {
     const int u = forest_unit_named_by_include(incfile);
-    if ( u < 0 || !_bind_directory->unit_has_frozen_surface((uint32_t)u) )
+    if ( u < 0 || !forest_system.directory->unit_has_frozen_surface((uint32_t)u) )
 	return -1;
-    // A dialect fragment's unit was frozen under the madc dialect's parse;
-    // the profile's C++ labels hold for C++ headers (one parse under either
-    // standard), never for it. A strict-std include of one parses its text.
-    const char *uname = _bind_directory->unit_name((uint32_t)u);
-    if ( language_std != STD_MADC && uname && embedded_dialect_fragment_p(uname) )
+    // A dialect fragment never binds: the dialect is builtin (the generated
+    // table) or served as text — a carrier that froze one (a pack before
+    // list v10) binds only its C/C++ headers.
+    const char *uname = forest_system.directory->unit_name((uint32_t)u);
+    if ( uname && embedded_dialect_fragment_p(uname) )
 	return -1;
     // Only a unit this include binds opens the frozen content.
     return ensure_bind_forest() ? u : -1;
-}
-
-// The dialect surface binds DIRECTLY (pack-slices design §7): under
-// --std=madc a fragment the carrier froze binds as its unit — no #include,
-// whatever the system-header bind policy (the dialect is the compiler's own,
-// never forest-bind-dependent). Its frozen branch decisions are always
-// verified (forest_bind_env_ok): a fragment frozen without its <string>
-// conveniences declines for a program that has <string>. False = the caller
-// serves the fragment's text.
-bool Program::forest_bind_dialect_fragment(const madc::dis::istring &name)
-{
-    if ( language_std != STD_MADC || !embedded_dialect_fragment_p(name) )
-	return false;
-    CirFrozenForest *dir = bind_forest_directory();
-    const int u = dir ? dir->find_unit(name) : -1;
-    if ( u < 0 || !dir->unit_has_frozen_surface((uint32_t)u) || !ensure_bind_forest() )
-	return false;
-    if ( !forest_chain_set.count((uint32_t)u) && !forest_bind_env_ok((uint32_t)u) )
-    {
-	DBG(std::cout << "dialect: <" << name << "> declined (forest_bind_env_ok)"
-	    " — serving its text" << std::endl);
-	return false;
-    }
-    DBG(std::cout << "dialect: <" << name << "> bound directly to grove unit "
-	<< u << std::endl);
-    forest_bind_include((uint32_t)u);
-    mark_embedded_include_flag(name);
-    return true;
 }
 
 int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
@@ -4790,7 +5694,9 @@ int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
     u = forest_unit_under_build_roots(f, incfile);
     if ( u >= 0 )
 	return u;
-    u = f->find_unit_path_tail(incfile);
+    u = f->find_unit_path_tail(incfile, [this](const char *nm) {
+	return !path_outside_language_view(nm);
+    });
     // posix/<name> is an internal storage key, never an alternate tail match
     // for an ordinary native header. Whole providers map to it explicitly at
     // the include site after proving that the native provider is absent.
@@ -4816,280 +5722,859 @@ int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
     return u;
 }
 
-// v40 bind eligibility (task #57): every unit in the root's closure must
-// find its frozen EXTERNAL branch dependencies reproduced by the consumer's
-// live macro tables. A mismatch means the frozen unit's PP conditionals took
-// different arms than a live parse here would — binding it silently loses
-// (or gains) declarations: mingw stdlib.h defined errno before errno.h
-// parsed in the pack TU, so errno.h froze with its own errno define SKIPPED;
-// a consumer including <errno.h> alone must live-parse it instead. Units
-// already bound by an earlier include pass trivially — their state IS the
-// live state their own check ran against.
-// Does this unit's own frozen PP-event stream (re)define `nm`? The
-// include-once prune's test: an undefined-at-freeze dep that is defined HERE
-// and that the unit itself defines is the unit's own GUARD — the consumer
-// already holds this unit's content (an earlier declined root live-parsed
-// it), so the unit prunes as satisfied exactly like a live re-include.
-bool Program::forest_unit_defines_macro(uint32_t unit, const char *nm)
-{
-    std::set<madc::dis::istring> defines;
-    forest_unit_defined_macros(unit, defines);
-    return nm && defines.count(nm) != 0;
-}
+// ---------------------------------------------------------------------------
+// The bind walk (K2, docs/plans/2026-10-18-verified-cxx-bind.md). A root binds
+// by walking its closure in the freeze's ITEM ORDER — each unit's PP events,
+// include edges and recorded conditionals (forest v68 / v69) — applying the
+// events to the live tables and re-evaluating every conditional the freeze
+// evaluated over an EXTERNAL macro, in the consumer's state at that position.
+// The root binds when each one takes the frozen arm, or the difference is one
+// the walk reproduces exactly: a sub-block guard the consumer already passed,
+// or a skipped arm that, run here, leaves the frozen state. Otherwise the root
+// declines to a live parse and the walk's writes are undone. Thread contract:
+// per Program (ForestSide), on its thread; the walk is a local of the bind.
 
-// Every macro this unit's own frozen PP-event stream (re)defines — the one
-// walk of that stream for the guard tests above and below.
-void Program::forest_unit_defined_macros(uint32_t unit,
-					 std::set<madc::dis::istring> &out)
+// The macro undo log of one walk: each write's prior state, restored in
+// reverse when the walk declines — the earliest state of a name is restored
+// last, so no write needs deduplicating.
+struct ForestMacroUndo
 {
-    std::vector<uint32_t> ev;
-    if ( !bind_forest->unit_pp_events(unit, ev) )
-	return;
-    for ( size_t k = 0; k + 5 <= ev.size(); )
+    struct Prior
     {
-	uint32_t name_id = ev[k], tag_flags = ev[k + 1], nparams = ev[k + 4];
-	uint8_t tag = (uint8_t)(tag_flags & 0xff);
-	const char *enm = bind_forest->pool_str(name_id);
-	if ( enm && PackMacroEvent::defines_macro(tag) )
-	    out.insert(enm);
-	k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
+	uint32_t sid = 0;		// the name's spelling id (pgm.strpool)
+	enum Kind : uint8_t { absent, object, function } kind = absent;
+	uint32_t macro = 0;		// function-like: its definition in `macros`
+	std::string value;		// object-like: its body
+    };
+    std::vector<Prior> saved;
+    std::vector<Program::MacroDef> macros;
+
+    // The walk's own logging is off by now; an enclosing walk's log, if any,
+    // notes these writes as its own.
+    void restore(Program &pgm)
+    {
+	for ( size_t i = saved.size(); i-- > 0; )
+	{
+	    const Prior &p = saved[i];
+	    MadcSharedPreludeCache::set_macro_id(pgm, p.sid,
+		p.kind == Prior::object ? &p.value : NULL,
+		p.kind == Prior::function ? &macros[p.macro] : NULL);
+	}
+    }
+};
+
+// set_macro overwrites or erases both of the name's entries right after this,
+// so the prior value moves out of its table instead of being copied.
+static void forest_macro_undo_note(Program &pgm, uint32_t sid)
+{
+    ForestMacroUndo &undo = *pgm.forest_macro_undo;
+    undo.saved.emplace_back();
+    ForestMacroUndo::Prior &p = undo.saved.back();
+    p.sid = sid;
+    if ( std::string *object = pgm.define_map.find(sid) )
+    {
+	p.kind = ForestMacroUndo::Prior::object;
+	p.value.swap(*object);
+    }
+    else if ( Program::MacroDef *function = pgm.macro_map.find(sid) )
+    {
+	p.kind = ForestMacroUndo::Prior::function;
+	p.macro = (uint32_t)undo.macros.size();
+	undo.macros.push_back(std::move(*function));
     }
 }
 
-// A unit-granular live include is safe only for a standalone HEADER husk, not
-// for a contextual fragment such as glibc bits/libc-header-start.h or
-// bits/mathcalls.h. The format already carries both facts needed to tell them
-// apart without names or thresholds: a husk has no frozen declaration surface,
-// and a standalone header consulted an undefined-at-entry macro that its own PP
-// stream defines (its include guard). Context-only fragments have no such guard;
-// non-husks have a non-empty declaration index and stay on the broad rollout
-// path even when one conditional branch was absent at freeze.
-bool Program::forest_unit_is_standalone_husk(
-	uint32_t unit, const std::vector<uint32_t> &deps)
+// One frozen PP event decoded: the macro it names and the state it leaves — an
+// object-like body, a function-like definition, or neither (#undef). The
+// event stream is flat u32 — [name_id, tag_flags, body_id, variadic_param_id,
+// nparams, <nparams ids>]... — with the low byte of tag_flags the
+// PackMacroEvent tag and CIR_FOREST_PP_VARIADIC the variadic flag; pool ids
+// resolve through the container's own string pool.
+struct ForestEvent
 {
-    std::vector<cir_forest_decl_entry> decls;
-    if ( !bind_forest->unit_decl_index(unit, decls) || !decls.empty() )
-	return false;
-    std::set<madc::dis::istring> defines;	// read once for every dep below
-    forest_unit_defined_macros(unit, defines);
-    for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
+    typedef MadcSharedPreludeCache::MacroState MacroState;
+    const char *name = NULL;
+    MacroState::Kind kind = MacroState::absent;
+    const char *body = NULL;	// object-like (NULL: empty)
+    Program::MacroDef macro;	// function-like
+};
+
+static void forest_event_read(CirFrozenForest *f, const std::vector<uint32_t> &ev,
+			      size_t k, ForestEvent &e)
+{
+    e.name = f->pool_str(ev[k]);
+    const uint32_t tag_flags = ev[k + 1], body_id = ev[k + 2], vpar_id = ev[k + 3];
+    const uint8_t tag = (uint8_t)(tag_flags & 0xff);
+    const char *body = body_id ? f->pool_str(body_id) : NULL;
+    if ( tag == Program::PackMacroEvent::peDefine )
     {
-	if ( deps[k + 1] & (CIR_BRANCH_DEP_DEFINED | CIR_BRANCH_DEP_PP_ARM) )
-	    continue;
-	const char *nm = bind_forest->pool_str(deps[k]);
-	if ( nm && defines.count(nm) )
+	e.kind = ForestEvent::MacroState::object;
+	e.body = body;
+    }
+    else if ( tag == Program::PackMacroEvent::peDefineFn )
+    {
+	e.kind = ForestEvent::MacroState::function;
+	for ( uint32_t p = 0; p < ev[k + 4]; ++p )
+	    if ( const char *pn = f->pool_str(ev[k + 5 + p]) )
+		e.macro.params.push_back(pn);
+	e.macro.variadic = (tag_flags & CIR_FOREST_PP_VARIADIC) != 0;
+	if ( const char *vp = vpar_id ? f->pool_str(vpar_id) : NULL )
+	    e.macro.variadic_param = vp;
+	if ( body )
+	    e.macro.body = body;
+    }
+}
+
+// The event as the macro state it leaves (the arm-guard check compares states).
+static MadcSharedPreludeCache::MacroState forest_event_state(CirFrozenForest *f,
+							     const std::vector<uint32_t> &ev,
+							     size_t k)
+{
+    ForestEvent e;
+    forest_event_read(f, ev, k, e);
+    MadcSharedPreludeCache::MacroState st;
+    if ( e.name )
+	st.name = e.name;
+    st.kind = e.kind;
+    if ( e.kind == ForestEvent::MacroState::object )
+	st.value = e.body ? e.body : "";
+    else if ( e.kind == ForestEvent::MacroState::function )
+	st.macro = std::move(e.macro);
+    return st;
+}
+
+// The event applied to the live tables (the walk's replay), through set_macro.
+static void forest_apply_event(Program &pgm, CirFrozenForest *f,
+			       const std::vector<uint32_t> &ev, size_t k)
+{
+    ForestEvent e;
+    forest_event_read(f, ev, k, e);
+    if ( !e.name || !*e.name )
+	return;
+    const std::string body = e.kind == ForestEvent::MacroState::object && e.body
+			     ? e.body : std::string();
+    MadcSharedPreludeCache::set_macro_id(pgm, pgm.strpool.intern(e.name),
+	e.kind == ForestEvent::MacroState::object ? &body : NULL,
+	e.kind == ForestEvent::MacroState::function ? &e.macro : NULL);
+}
+
+// One unit's frozen items: its PP events, include edges, and its conditions
+// slot (v68 / v69 / v71) read in place — each edge's place among the events,
+// the condition records, where each inclusion ends, the #if / #elif consults
+// and the expansion points.
+struct ForestUnitItems
+{
+    bool read = false;
+    std::vector<uint32_t> ev;		// the flat PP-event stream (forest_event_state)
+    std::vector<uint32_t> edges;
+    std::vector<uint32_t> words;	// the conditions slot
+    uint32_t nevents = 0;
+    size_t edge_pos_at = 0, nedge_pos = 0;
+    size_t conds_at = 0, nconds = 0;
+    size_t incl_at = 0, nincl_recorded = 0;
+    size_t consults_at = 0, nconsult_words = 0;
+    size_t points_at = 0, npoints = 0;
+    // An edge with no recorded place goes ahead of the events — the pre-v68
+    // children-first order.
+    uint32_t edge_pos(size_t e) const { return e < nedge_pos ? words[edge_pos_at + e] : 0; }
+    const uint32_t *cond(size_t c) const { return &words[conds_at + c * CIR_COND_WORDS]; }
+    // No recorded inclusions: one over everything.
+    size_t nincl() const { return nincl_recorded ? nincl_recorded : 1; }
+    // v75: inclusion i (enter order) — where its events, edges and records
+    // begin and end, within the unit's totals; the one that ended last ends
+    // at them.
+    uint32_t last_end[3] = { 0, 0, 0 };	// the latest recorded end (forest_unit_items)
+    void inclusion_range(size_t i, uint32_t lo[3], uint32_t hi[3]) const
+    {
+	const uint32_t total[3] = { nevents, (uint32_t)edges.size(), (uint32_t)nconds };
+	const uint32_t *r = nincl_recorded ? &words[incl_at + i * CIR_INCL_WORDS] : NULL;
+	for ( uint32_t k = 0; k < 3; ++k )
+	{
+	    lo[k] = r ? std::min<uint32_t>(r[CIR_INCL_EV_BEGIN + k], total[k]) : 0;
+	    hi[k] = !r || r[CIR_INCL_EV_END + k] >= last_end[k] ? total[k]
+		  : std::min<uint32_t>(r[CIR_INCL_EV_END + k], total[k]);
+	}
+    }
+    // Does recorded inclusion i begin at (ev, ed, rec)?
+    bool inclusion_begins_at(size_t i, uint32_t ev, uint32_t ed, uint32_t rec) const
+    {
+	if ( i >= nincl_recorded )
+	    return false;
+	uint32_t lo[3], hi[3];
+	inclusion_range(i, lo, hi);
+	return lo[0] == ev && lo[1] == ed && lo[2] == rec;
+    }
+    // Does (ev, ed, rec) lie at or past where recorded inclusion i begins? The
+    // walk's cursor and every inclusion's begin lie on the freeze's one
+    // ordered path, so a begin is either at, behind or ahead of it.
+    bool inclusion_begun(size_t i, uint32_t ev, uint32_t ed, uint32_t rec) const
+    {
+	uint32_t lo[3], hi[3];
+	inclusion_range(i, lo, hi);
+	return lo[0] <= ev && lo[1] <= ed && lo[2] <= rec;
+    }
+    // The first recorded inclusion after i that is not nested inside it.
+    size_t inclusion_after(size_t i) const
+    {
+	uint32_t lo[3], hi[3], mlo[3], mhi[3];
+	inclusion_range(i, lo, hi);
+	size_t m = i + 1;
+	for ( ; m < nincl_recorded; ++m )
+	{
+	    inclusion_range(m, mlo, mhi);
+	    bool inside = true;
+	    for ( uint32_t k = 0; k < 3 && inside; ++k )
+		inside = lo[k] <= mlo[k] && mhi[k] <= hi[k];
+	    if ( !inside )
+		break;
+	}
+	return m;
+    }
+    // Consulted macro k: [name pool id, hash low, hash high], or NULL.
+    const uint32_t *consult(size_t k) const
+    {
+	return (k + 1) * CIR_CONSULT_WORDS <= nconsult_words
+	    ? &words[consults_at + k * CIR_CONSULT_WORDS] : NULL;
+    }
+    const uint32_t *point(size_t k) const { return &words[points_at + k * CIR_POINT_WORDS]; }
+};
+
+// A forward cursor over a unit's PP events: the word offset of event `index`.
+struct ForestEventCursor
+{
+    explicit ForestEventCursor(const std::vector<uint32_t> &e) : ev(e) {}
+    const std::vector<uint32_t> &ev;
+    uint32_t index = 0;
+    size_t word = 0;
+    void seek(uint32_t to)
+    {
+	while ( index < to && word + 5 <= ev.size() )
+	{
+	    word += 5 + ev[word + 4];
+	    ++index;
+	}
+    }
+};
+
+static void forest_unit_items(CirFrozenForest *f, uint32_t unit, ForestUnitItems &it)
+{
+    it.read = true;
+    f->unit_pp_events(unit, it.ev);
+    ForestEventCursor count(it.ev);
+    count.seek(0xffffffffu);
+    it.nevents = count.index;
+    f->unit_edges(unit, it.edges);
+    if ( !f->unit_conditions(unit, it.words) )
+	return;
+    const std::vector<uint32_t> &w = it.words;
+    size_t at = 0;
+    // Each section: a count, then its words, clipped to what is there.
+    auto section = [&w, &at](size_t per, size_t &begin, size_t &n) {
+	const size_t count = at < w.size() ? w[at++] : 0;
+	n = std::min<size_t>(count * per, w.size() - at) / per;
+	begin = at;
+	at += n * per;
+    };
+    section(1, it.edge_pos_at, it.nedge_pos);
+    section(CIR_COND_WORDS, it.conds_at, it.nconds);
+    section(CIR_INCL_WORDS, it.incl_at, it.nincl_recorded);
+    for ( size_t i = 0; i < it.nincl_recorded; ++i )
+	for ( uint32_t k = 0; k < 3; ++k )
+	    it.last_end[k] = std::max(it.last_end[k], w[it.incl_at + i * CIR_INCL_WORDS + CIR_INCL_EV_END + k]);
+    section(1, it.consults_at, it.nconsult_words);
+    section(CIR_POINT_WORDS, it.points_at, it.npoints);
+}
+
+// One root's walk.
+struct ForestWalk
+{
+    ForestWalk(Program::ForestSide &side, uint32_t r) : s(side), root(r) { open.reserve(32); }
+    Program::ForestSide &s;
+    const uint32_t root;
+    ForestMacroUndo undo;
+    std::map<uint32_t, ForestUnitItems> items;	// read once per walk
+    std::map<uint32_t, uint32_t> next_inclusion;	// per unit: the inclusion its next edge reads
+    // The open inclusions' cursors, innermost last. An edge to an open unit
+    // is an include cycle — or (v75) a nested re-entry the freeze took
+    // there, when the unit's next inclusion begins at its cursor.
+    struct Frame { uint32_t unit; uint32_t *ev, *ed, *rec; };
+    std::vector<Frame> open;
+    // The unit's innermost open inclusion, or NULL (the stack is a walk's
+    // include depth: scanned, never indexed by unit).
+    Frame *open_frame(uint32_t unit)
+    {
+	for ( size_t i = open.size(); i--; )
+	    if ( open[i].unit == unit )
+		return &open[i];
+	return NULL;
+    }
+    std::vector<uint32_t> bound;	// post-order: the chain's (and the decl restore's) order
+    std::vector<double> bound_cost;	// each bound unit's own walk seconds (--show-stats)
+    std::vector<TokenBase *> arm_tokens;	// a run arm's tokens, pushed when the walk commits
+    // K2c: the macros (spelling ids) a run arm of this walk left unlike the
+    // freeze's — ForestSide::macro_differs when the walk ends.
+    std::set<uint32_t> differs;
+    // K2d: why an include stopped a run arm (forest_arm_include), or NULL.
+    const char *arm_abort = NULL;
+    // K2d: the taken arms this walk skipped (ForestSide::withdrawn_arms when
+    // it commits).
+    std::vector<Program::ForestSide::WithdrawnArm> withdrawn;
+};
+
+// K2d: thrown by forest_arm_include out of the arm's token reader to stop the
+// run; run_frozen_arm catches it and the root declines.
+struct ForestArmAbort {};
+
+// A condition text whose answer depends on WHERE it is read — the including
+// file's directory (a quoted __has_include) or its place in the search path
+// (__has_include_next) — cannot be re-evaluated from the consumer's position.
+static bool forest_condition_position_bound(const char *text)
+{
+    static const char probe[] = "__has_include";
+    for ( const char *p = strstr(text, probe); p; p = strstr(p + 1, probe) )
+    {
+	const char *q = p + sizeof(probe) - 1;
+	if ( strncmp(q, "_next", 5) == 0 )
+	    return true;
+	while ( *q == ' ' || *q == '\t' || *q == '(' )
+	    ++q;
+	if ( *q == '"' )
 	    return true;
     }
     return false;
 }
 
-// Pass 1: collect the root's closure (units a bind would install — the
-// already-bound are excluded exactly as forest_bind_include excludes them).
-void Program::forest_env_collect(uint32_t unit, std::set<uint32_t> &closure)
+// A recorded conditional's outcome in this consumer's state at its place: 1
+// taken, 0 skipped, -1 not evaluable here. An #if / #elif whose consulted
+// macros all hold the freeze's state takes the frozen outcome without being
+// evaluated — the evaluator reads nothing else (an __has_include reads the
+// search path too, so it is always evaluated).
+int Program::forest_condition_now(CirFrozenForest *f, const ForestUnitItems &it,
+				  const uint32_t *c)
 {
-    if ( forest_chain_set.count(unit) || forest_live_present.count(unit)
-      || forest_husk_live_pending.count(unit)
-      || !closure.insert(unit).second )
-	return;
-    std::vector<uint32_t> edges;
-    if ( bind_forest->unit_edges(unit, edges) )
-	for ( size_t i = 0; i < edges.size(); ++i )
-	    forest_env_collect(edges[i], closure);
-}
-
-bool Program::forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited)
-{
-    (void)visited;
-    return forest_bind_env_ok(unit);
-}
-
-bool Program::forest_bind_env_ok(uint32_t root)
-{
-    // v40 rollout knob (task #57): the mixed bind/live DECL frontier the
-    // decline path exposes is now absorbed (denotes_same_type tolerance +
-    // typedef/class live-wins), and the mismatch handling below is the
-    // three-way prune/inert-bind/decline redesign. The check still ships
-    // default-OFF until the knob-on packed-suite burndown reaches 0 and the
-    // #25 packed-lane latency check passes (declines add live parsing).
-    // MADC_FOREST_ENV_CHECK=1 turns the BROAD checks on, and the Linux
-    // forest_bind_gate runs its whole battery WITH them on, so the parked
-    // mechanism cannot rot. Missing-content units are different: a frozen
-    // want-defined/live-undefined branch cannot be supplied by any bind, so
-    // their exact-unit live recovery is always enabled.
-    static int enabled = -1;
-    if ( enabled < 0 )
+    const char *text = f->pool_str(c[CIR_COND_TEXT]);
+    if ( !text )
+	return -1;
+    switch ( (CondDirective)c[CIR_COND_KIND] )
     {
-	const char *e = ::getenv("MADC_FOREST_ENV_CHECK");
-	enabled = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
-    }
-    // Every consumer — the exact-config one and one bound through a
-    // --freeze-also-std label alike — takes the knob's verdict. Verifying a
-    // labelled consumer regardless sent it down the unfinished knob-on
-    // frontier: declined glibc/libstdc++ roots live-parsed beside frozen
-    // units (`char_traits_char` unknown in <iosfwd>, `div_t` defined twice).
-    // A skipped directive-only arm (mingw stdio.h's `#ifndef NULL`) needs no
-    // decline at all: the bind replays it (forest_replay_pp_arms).
-    // A dialect fragment always verifies (pack-slices design §7) — on its
-    // direct bind and on an #include alike: a fragment frozen without its
-    // <string> conveniences never stands in for the text a <string> program
-    // parses with them.
-    const char *root_name = bind_forest->unit_name(root);
-    const bool verified = enabled != 0
-	|| (root_name && embedded_dialect_fragment_p(root_name));
-    std::set<uint32_t> closure;
-    std::set<uint32_t> husk_live;
-    forest_env_collect(root, closure);
-    for ( std::set<uint32_t>::iterator ui = closure.begin();
-	  ui != closure.end(); ++ui )
+    case CondDirective::Ifdef:
+	return macro_name_defined(text) ? 1 : 0;
+    case CondDirective::Ifndef:
+	return macro_name_defined(text) ? 0 : 1;
+    case CondDirective::If:
+    case CondDirective::Elif:
     {
-	uint32_t unit = *ui;
-	// Mask verdicts are rebuilt on every check of this unit — an earlier
-	// root's declined check may have recorded masks against live tables
-	// that its own live parse then changed.
-	forest_pp_install_mask.erase(unit);
-	forest_pp_arms.erase(unit);
-	std::vector<uint32_t> deps;
-	if ( !bind_forest->unit_branch_deps(unit, deps) )
-	    continue;
-	for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
+	const bool has_include = strstr(text, "__has_include") != NULL;
+	if ( has_include && forest_condition_position_bound(text) )
+	    return -1;
+	if ( c[CIR_COND_CONSULT_N] && !has_include )
 	{
-	    // v55: a skipped directive-only arm is not a dependency — the bind
-	    // replays it when its macro is undefined (forest_replay_pp_arms).
-	    if ( deps[k + 1] & CIR_BRANCH_DEP_PP_ARM )
+	    bool same = true;
+	    for ( uint32_t k = 0; k < c[CIR_COND_CONSULT_N] && same; ++k )
 	    {
-		forest_pp_arms[unit].push_back(std::make_pair(deps[k], deps[k + 2]));
-		continue;
+		const uint32_t *k3 = it.consult((size_t)c[CIR_COND_CONSULT_AT] + k);
+		const char *name = k3 ? f->pool_str(k3[0]) : NULL;
+		same = name && forest_macro_state_hash(*this, strpool.find(name))
+		    == ((uint64_t)k3[1] | ((uint64_t)k3[2] << 32));
 	    }
-	    // A dep whose DEFINER is inside this closure is replay-internal:
-	    // the bind installs the definer's events too (sys/cdefs.h
-	    // consulting _FEATURES_H under a root that carries features.h).
-	    uint32_t definer = deps[k + 3];
-	    if ( definer != 0xffffffffu && closure.count(definer) )
-		continue;
-	    const char *nm = bind_forest->pool_str(deps[k]);
-	    if ( !nm )
-		continue;
-	    bool want_defined = (deps[k + 1] & 1u) != 0;
-	    bool have_defined = macro_name_defined(nm);
-	    if ( want_defined != have_defined )
-	    {
-		// Missing content is not a rollout choice. The producer saw an
-		// EXTERNAL definition and skipped this unit's conditional block;
-		// the consumer does not, so the frozen unit cannot supply what a
-		// live parse would expose. If the mismatch is below the root,
-		// schedule only that unit for the production include tokenizer and
-		// keep the root's other units bindable. If it IS the root, ordinary
-		// root fall-through already is the exact-unit live parse.
-		if ( want_defined && !have_defined
-		  && definer != 0xffffffffu
-		  && forest_unit_is_standalone_husk(unit, deps) )
-		{
-		    if ( unit == root )
-		    {
-			DBG(std::cout << "forest bind: DECLINE root "
-			    << (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
-			    << " — root is a missing-content husk (branch dep '"
-			    << nm << "' defined at freeze, undefined here); live-tokenizing root"
-			    << std::endl);
-			return false;
-		    }
-		    husk_live.insert(unit);
-		    DBG(std::cout << "forest bind: unit "
-			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
-			<< " is a missing-content husk (branch dep '" << nm
-			<< "' defined at freeze, undefined here); root "
-			<< (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
-			<< " remains bindable" << std::endl);
-		    goto next_unit;	// every frozen dep of this live unit is moot
-		}
-		// Knob OFF preserves the shipping bind behavior for every broad
-		// mismatch. Only the missing-content case above bypasses it.
-		if ( !verified )
-		    continue;
-		// A want-undefined dep the unit ITSELF defines is the unit's
-		// own GUARDED FALLBACK (task #57 prune redesign). Two
-		// dispositions, decline is not one of them:
-		// 1. PRUNE — only with honest include-once evidence: the
-		//    unit's FILE was live-tokenized here (an earlier
-		//    declined root live-parsed this header), so its whole
-		//    content is already present; skip it like a live
-		//    re-include. forest_live_present keeps
-		//    forest_bind_include from installing its PP events —
-		//    but stays OUT of forest_chain_set, whose membership
-		//    the decl-restore filter reads: restoring this unit's
-		//    decls BESIDE the live-parsed copy double-defines them
-		//    (struct _iobuf).
-		// 2. MASKED-BIND — no whole-file evidence: a shared
-		//    SUB-BLOCK guard (mingw stdio.h's _FILE_DEFINED live
-		//    from wchar.h's copy; stddef NULL; glibc wchar.h's
-		//    __attr_dealloc_fclose fallback). The dep record proves
-		//    a live-order parse of this unit would take the DEFINED
-		//    arm and skip the unit's own define, so the bind
-		//    installs everything EXCEPT this macro's define events
-		//    (forest_pp_install_mask) — live-true PP state, no
-		//    clobber of the live value. The unit's OTHER content —
-		//    which is NOT live — installs; decl twins at the shared
-		//    block are the mixed seam the typedef/class live-wins +
-		//    denotes_same_type tolerance absorb. Pruning here LOSES
-		//    that other content; declining cascades libc++ roots
-		//    into live parses (the statmem frontier — both were
-		//    tried, both broke it).
-		// The remaining broad mismatches DECLINE: non-self-defined
-		// external configuration consults whose state genuinely
-		// changed. Want-defined/have-undefined missing content was
-		// isolated to an exact live unit above; extra content binds and
-		// is arbitrated through the prune/masked-bind split here.
-		if ( !want_defined && have_defined
-		  && forest_unit_defines_macro(unit, nm) )
-		{
-		    if ( forest_unit_file_live_tokenized(unit) )
-		    {
-			DBG(std::cout << "forest bind: unit "
-			    << (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
-			    << " already present ('" << nm
-			    << "' guard live) — pruned" << std::endl);
-			forest_live_present.insert(unit);
-			goto next_unit;	// a pruned unit's other deps are moot
-		    }
-		    forest_pp_install_mask[unit].insert(nm);
-		    DBG(std::cout << "forest bind: unit "
-			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
-			<< " dep '" << nm
-			<< "' self-defined guard, live arm wins — binds with define masked"
-			<< std::endl);
-		    continue;	// this dep only; the unit's other deps still gate
-		}
-		DBG(std::cout << "forest bind: DECLINE root "
-		    << (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
-		    << " — unit "
-		    << (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
-		    << " branch dep '" << nm << "' "
-		    << (want_defined ? "defined" : "undefined")
-		    << " at freeze, opposite here" << std::endl);
+	    if ( same )
+		return (c[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) ? 1 : 0;
+	}
+	try
+	{
+	    return evaluate_if_text(text) ? 1 : 0;
+	}
+	catch (...)
+	{
+	    return -1;
+	}
+    }
+    default:
+	return -1;
+    }
+}
+
+// A taken single arm that this consumer skips: the walk may skip its events,
+// edges and nested records only when the arm's own sub-block guards skip it —
+// the names the arm defines and its condition spells (`#ifndef G`, glibc's
+// `#if defined __USE_LARGEFILE64 && !defined __off64_t_defined`), defined
+// here — so the condition read with them undefined is taken. A guard only
+// needs to be defined. Every other macro the arm writes that does not hold the
+// arm's final value here goes to `differing` (K2e): the frozen content after
+// the arm was expanded with the final value, so where it expands the name
+// (forest_walk_points) the name must hold it — the K2c check.
+bool Program::forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems &it,
+				      const uint32_t *c, std::vector<madc::dis::istring> &differing)
+{
+    typedef MadcSharedPreludeCache::MacroState MacroState;
+    const char *text = f->pool_str(c[CIR_COND_TEXT]);
+    if ( !text )
+	return false;
+    std::map<madc::dis::istring, MacroState> last;
+    ForestEventCursor cur(it.ev);
+    for ( cur.seek(c[CIR_COND_EV_BEGIN]); cur.index < c[CIR_COND_EV_END] && cur.index < it.nevents;
+	  cur.seek(cur.index + 1) )
+    {
+	MacroState st = forest_event_state(f, it.ev, cur.word);
+	if ( !st.name.empty() )
+	    last[st.name] = st;
+    }
+    std::set<madc::dis::istring> spelled;
+    source_spelled_names(text, spelled);
+    std::vector<MacroState> guards;
+    for ( std::map<madc::dis::istring, MacroState>::const_iterator li = last.begin();
+	  li != last.end(); ++li )
+    {
+	const bool same = MadcSharedPreludeCache::same_macro_state(
+	    li->second, MadcSharedPreludeCache::macro_state(*this, li->first));
+	if ( spelled.count(li->first) )
+	{
+	    if ( li->second.kind != MacroState::absent && macro_name_defined(li->first) )
+		guards.push_back(MadcSharedPreludeCache::macro_state(*this, li->first));
+	    else if ( !same )
+		return false;	// a spelled name the forest keeps no points for
+	}
+	else if ( !same )
+	{
+	    // Checkable only where the forest kept the arm's expansion points.
+	    if ( !(c[CIR_COND_FLAGS] & CIR_COND_F_WATCHED) )
 		return false;
-	    }
-	    if ( verified && want_defined && (deps[k + 1] & 2u) )
+	    DBG(std::cout << "forest bind: a masked arm's '" << li->first << "' is '"
+		<< forest_macro_state_spelling(*this, std::vector<madc::dis::istring>(1, li->first))
+		<< "' here; the arm left it "
+		<< (li->second.kind == MacroState::absent ? "undefined"
+		    : li->second.kind == MacroState::object ? "object-like" : "function-like")
+		<< " — checked where frozen content expands it" << std::endl);
+	    differing.push_back(li->first);
+	}
+    }
+    if ( guards.empty() )
+	return false;
+    // The condition without the guards, through set_macro both ways so the
+    // walk's undo log keeps every name's earliest state.
+    for ( size_t i = 0; i < guards.size(); ++i )
+	MadcSharedPreludeCache::set_macro(*this, guards[i].name, NULL, NULL);
+    const int taken = forest_condition_now(f, it, c);
+    for ( size_t i = 0; i < guards.size(); ++i )
+	MadcSharedPreludeCache::set_macro_state(*this, guards[i]);
+    return taken == 1;
+}
+
+// Run a captured skipped arm in place: its directives write through set_macro
+// on the live tables, its nested conditionals answer here, and its tokens are
+// collected for the caller. False: the arm holds a directive the walk cannot
+// run in place (an include, a pragma, #error, #line).
+bool Program::run_frozen_arm(const char *unit_name, const std::string &text,
+			     std::vector<TokenBase *> &out,
+			     std::vector<madc::dis::istring> &writes)
+{
+    if ( !MadcSharedPreludeCache::embedded_fragment_is_pure(text, &writes, false) )
+    {
+	DBG(std::cout << "forest bind: the " << text.size() << "-byte arm holds a directive"
+	    << " the walk cannot run; it ends '"
+	    << text.substr(text.size() > 160 ? text.size() - 160 : 0) << "'" << std::endl);
+	return false;
+    }
+    const bool recording = pack_recording;
+    pack_recording = false;
+    Source saved = std::move(source);
+    source = Source();
+    source.fname(unit_name ? unit_name : "");
+    source.str(text);
+    const char *file = unit_name ? intern_file(unit_name) : NULL;
+    size_t groups_at_entry = cond_groups.size(), ifdef_at_entry = ifdef_stack.size();
+    bool ran = true;
+    try
+    {
+	while ( TokenBase *t = getRealToken() )
+	{
+	    t->file = file;
+	    out.push_back(t);
+	}
+	refuse_open_conditional_groups(groups_at_entry);
+    }
+    catch (const ForestArmAbort &)
+    {
+	// The run stopped inside the arm: drop the groups it opened.
+	ran = false;
+	while ( cond_groups.size() > groups_at_entry )
+	    cond_groups.pop();
+	while ( ifdef_stack.size() > ifdef_at_entry )
+	    ifdef_stack.pop();
+    }
+    catch (...)
+    {
+	source = std::move(saved);
+	pack_recording = recording;
+	throw;
+    }
+    source = std::move(saved);
+    pack_recording = recording;
+    return ran;
+}
+
+// The name an angle include binds by: an embedded name a search dir ahead of
+// madc's slot outranks (libc++'s C wrappers on an Apple target) binds the
+// WRAPPER's unit, never the embedded copy's bare-name unit — the precedence
+// the live path applies (embedded_header_outranked), applied before the bind.
+madc::dis::istring Program::forest_include_bind_name(const madc::dis::istring &incfile,
+						     bool is_include_next)
+{
+    const bool outranked = !is_include_next && find_embedded_header(incfile)
+	&& embedded_header_outranked(incfile);
+    return outranked ? resolve_include_path(incfile, /*is_system=*/true) : incfile;
+}
+
+// K2d: an #include read while the walk runs a frozen arm binds the header's
+// frozen unit as an edge of that walk, at this point of the arm — its events
+// replay here, its declarations restore with the root. A header the walk
+// cannot bind (not frozen, a quoted or #include_next or __need include, or a
+// unit whose own walk declines) stops the run (ForestArmAbort): the root
+// declines and parses live.
+void Program::forest_arm_include(const madc::dis::istring &incfile, bool bindable)
+{
+    ForestWalk &w = *forest_arm_walk;
+    const int fu = bindable ? forest_unit_for_include(forest_include_bind_name(incfile, false)) : -1;
+    if ( fu < 0 )
+	w.arm_abort = "includes a header the walk cannot bind";
+    else if ( !forest_walk_unit(w, (uint32_t)fu, false) )
+	w.arm_abort = "includes a header whose walk declines";
+    else
+    {
+	DBG(std::cout << "forest bind: a run arm's #include <" << incfile
+	    << "> binds unit " << fu << " in the walk" << std::endl);
+	return;
+    }
+    DBG(std::cout << "forest bind: a run arm " << w.arm_abort << " (<" << incfile << ">)"
+	<< std::endl);
+    throw ForestArmAbort();
+}
+
+// K2c: after a run arm, every macro it wrote that is unlike the freeze's state
+// there (CIR_COND_ARM_STATE, in `writes` order) joins the walk's differs-set:
+// the frozen content was expanded with the freeze's state, so where it expands
+// the name (forest_walk_points) the name must hold that state again.
+void Program::forest_arm_note_differs(const char *frozen,
+				      const std::vector<madc::dis::istring> &writes, ForestWalk &w)
+{
+    const std::vector<std::string> want = forest_state_entries(frozen ? frozen : "");
+    for ( size_t i = 0; i < writes.size(); ++i )
+	if ( i >= want.size() || !forest_state_holds(want[i], writes[i]) )
+	    w.differs.insert(strpool.intern(writes[i].str()));
+}
+
+// K2c: the expansion points of inclusion `inc` the walk has reached — the
+// freeze expanded the name there after (ev, ed, rec) of the unit's events,
+// edges and records. A name in a differs-set (this walk's, or a committed
+// walk's) must hold the frozen state at each one. False: the root declines.
+bool Program::forest_walk_points(ForestWalk &w, uint32_t unit, const ForestUnitItems &it,
+				 uint32_t inc, size_t &i_p, uint32_t i_ev, uint32_t i_ed, uint32_t i_c)
+{
+    CirFrozenForest *f = w.s.forest;
+    for ( ; i_p < it.npoints; ++i_p )
+    {
+	const uint32_t *p = it.point(i_p);
+	// v75: another inclusion's point — an earlier one's, or a nested one's
+	// inside this one, which its own walk checks.
+	if ( p[CIR_POINT_INCLUSION] != inc )
+	    continue;
+	if ( p[CIR_POINT_EV] > i_ev || p[CIR_POINT_ED] > i_ed || p[CIR_POINT_REC] > i_c )
+	    return true;
+	if ( w.differs.empty() && w.s.macro_differs.empty() )
+	    continue;
+	const char *name = f->pool_str(p[CIR_POINT_NAME]);
+	const uint32_t sid = name ? strpool.find(name) : 0;
+	if ( !sid || (!w.differs.count(sid) && !w.s.macro_differs.count(sid)) )
+	    continue;
+	const char *state = f->pool_str(p[CIR_POINT_STATE]);
+	if ( forest_state_holds(state ? state : "", strpool.name(sid)) )
+	    continue;
+	const char *rname = f->unit_name(w.root), *uname = f->unit_name(unit);
+	DBG(std::cout << "forest bind: DECLINE root " << (rname ? rname : "?") << " — unit "
+	    << (uname ? uname : "?") << " expands '" << name
+	    << "' where an arm left it unlike the freeze's" << std::endl);
+	return false;
+    }
+    return true;
+}
+
+// Does `name` hold the frozen state `entry` (forest_macro_state_spelling's
+// form) here — the same spelling, or an object-like body that lexes alike?
+bool Program::forest_state_holds(const std::string &entry, const madc::dis::istring &name)
+{
+    const std::string now = forest_macro_state_spelling(*this, std::vector<madc::dis::istring>(1, name));
+    if ( now == entry || forest_object_states_lex_alike(entry, now) )
+	return true;
+    DBG(std::cout << "forest bind: arm state differs — frozen '" << entry
+	<< "', here '" << now << "'" << std::endl);
+    return false;
+}
+
+// Two object-like states of one macro (forest_macro_state_spelling's
+// "=NAME\x1fBODY") whose bodies the token reader turns into the same tokens
+// here: the content the freeze expanded the frozen body into is what the live
+// body gives, so the arm's write leaves it as it is. madc reads a GNU
+// attribute it does not model as no token — glibc's __attr_dealloc_fclose is
+// <stdio.h>'s `__attr_dealloc (fclose, 1)` at the freeze and <wchar.h>'s
+// empty default in a consumer that never includes <stdio.h>: both lex to
+// nothing (docs/plans/2026-10-18-verified-cxx-bind.md, K2b).
+bool Program::forest_object_states_lex_alike(const std::string &frozen, const std::string &now)
+{
+    if ( frozen.empty() || now.empty() || frozen[0] != '=' || now[0] != '=' )
+	return false;
+    const size_t fs = frozen.find('\x1f'), ns = now.find('\x1f');
+    if ( fs == std::string::npos || ns == std::string::npos || fs != ns
+      || frozen.compare(0, fs, now, 0, ns) != 0 )
+	return false;
+    const std::vector<TokenBase *> a = tokenize_text_run(frozen.substr(fs + 1), NULL, NULL);
+    const std::vector<TokenBase *> b = tokenize_text_run(now.substr(ns + 1), NULL, NULL);
+    if ( a.size() != b.size() )
+	return false;
+    for ( size_t i = 0; i < a.size(); ++i )
+	if ( a[i]->id() != b[i]->id() || madc_token_spelling(a[i]) != madc_token_spelling(b[i]) )
+	    return false;
+    DBG(std::cout << "forest bind: arm state '" << frozen << "' and '" << now
+	<< "' lex alike (" << a.size() << " token(s))" << std::endl);
+    return true;
+}
+
+// One recorded conditional of the walk: re-evaluated here it takes the frozen
+// arm, or the walk reproduces the difference, or the root declines (false).
+// Advances the unit's cursors past what it handled.
+bool Program::forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUnitItems &it,
+				    uint32_t &i_c, uint32_t &i_ev, uint32_t &i_ed)
+{
+    CirFrozenForest *f = w.s.forest;
+    const uint32_t *c = it.cond(i_c);
+    ++i_c;
+    const bool frozen = (c[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) != 0;
+    const CondDirective kind = (CondDirective)c[CIR_COND_KIND];
+    const int now = forest_condition_now(f, it, c);
+    if ( now == (frozen ? 1 : 0) )
+	return true;
+    const bool single = (c[CIR_COND_FLAGS] & CIR_COND_F_SINGLE_ARM) != 0;
+    static const char *const spell[] = { "if", "ifdef", "ifndef", "elif", "else" };
+    const char *kind_spelling = (unsigned)kind < 5 ? spell[(unsigned)kind] : "?";
+    const char *text = f->pool_str(c[CIR_COND_TEXT]);
+    const char *uname = f->unit_name(unit);
+    std::vector<madc::dis::istring> differing;
+    if ( now == 0 && frozen && single && forest_arm_guard_passed(f, it, c, differing) )
+    {
+	DBG(std::cout << "forest bind: unit " << (uname ? uname : "?") << " '#" << kind_spelling
+	    << " " << (text ? text : "?") << "' arm skipped — its guard is live (masked bind)"
+	    << std::endl);
+	// K2e: the writes it leaves unlike the freeze's are checked where frozen
+	// content expands them.
+	for ( size_t i = 0; i < differing.size(); ++i )
+	    w.differs.insert(strpool.intern(differing[i].str()));
+	// K2d: the declarations the arm made are not this consumer's — unless an
+	// earlier walk of this TU bound the unit: this is a re-include (a guard
+	// that does not span the file is read again, gcc's multiple-include
+	// rule), and the first inclusion's declarations stand.
+	if ( c[CIR_COND_TOK_BEGIN] < c[CIR_COND_TOK_END] && !w.s.chain_set.count(unit) )
+	    w.withdrawn.push_back(ForestSide::WithdrawnArm{ unit, c[CIR_COND_TOK_BEGIN],
+							    c[CIR_COND_TOK_END] });
+	i_ev = std::max(i_ev, c[CIR_COND_EV_END]);
+	i_ed = std::max(i_ed, c[CIR_COND_ED_END]);
+	i_c = std::max(i_c, c[CIR_COND_REC_END]);
+	return true;
+    }
+    const char *arm = now == 1 && !frozen && c[CIR_COND_ARM] ? f->pool_str(c[CIR_COND_ARM]) : NULL;
+    const char *why = now < 0 ? "cannot be read from this position"
+		    : frozen ? "was taken at freeze and is skipped here"
+		    : "was skipped at freeze and is taken here";
+    if ( arm )
+    {
+	std::vector<TokenBase *> toks;
+	std::vector<madc::dis::istring> writes;
+	ForestWalk *const outer = forest_arm_walk;
+	forest_arm_walk = &w;
+	bool ran;
+	try
+	{
+	    ran = run_frozen_arm(uname, arm, toks, writes);
+	}
+	catch (...)
+	{
+	    forest_arm_walk = outer;
+	    throw;
+	}
+	forest_arm_walk = outer;
+	if ( !ran )
+	    why = w.arm_abort ? w.arm_abort : "has an arm the walk cannot run in place";
+	else if ( !toks.empty() && !(c[CIR_COND_FLAGS] & CIR_COND_F_DECL_SCOPE) )
+	    why = "has an arm whose tokens sit inside a declaration (v76: they cannot replay at the include site)";
+	else
+	{
+	    w.arm_tokens.insert(w.arm_tokens.end(), toks.begin(), toks.end());
+	    const char *state = c[CIR_COND_ARM_STATE] ? f->pool_str(c[CIR_COND_ARM_STATE]) : NULL;
+	    forest_arm_note_differs(state, writes, w);
+	    DBG(std::cout << "forest bind: unit " << (uname ? uname : "?")
+		<< " replays its skipped '#" << kind_spelling << " " << (text ? text : "?")
+		<< "' arm" << (toks.empty() ? "" : " (its declarations parse live)")
+		<< std::endl);
+	    return true;
+	}
+    }
+    const char *rname = f->unit_name(w.root);
+    DBG(std::cout << "forest bind: DECLINE root " << (rname ? rname : "?") << " — unit "
+	<< (uname ? uname : "?") << " '#" << kind_spelling << " " << (text ? text : "?")
+	<< "' " << why << std::endl);
+    return false;
+}
+
+// Walk one inclusion of a unit: its items in the freeze's order — a condition
+// at (ev, ed) ahead of edge ed and event ev, an edge at event position p ahead
+// of event p. False: the root declines.
+bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
+{
+    ForestSide &s = w.s;
+    if ( (!reinclude && s.chain_set.count(unit)) || s.live_present.count(unit) )
+	return true;
+    const ForestWalk::Frame *outer = w.open_frame(unit);
+    if ( outer && reinclude )
+	return true;
+    const char *uname = s.forest->unit_name(unit);
+    if ( uname && is_posix_compat_header_name(uname) )
+    {
+	const madc::dis::istring base = madc::dis::istring(uname).substr(sizeof("posix/") - 1);
+	if ( !is_posix_compat_header_allowed(base) )
+	    return true;
+    }
+    const double t0 = forest_stat_now();
+    ForestUnitItems &it = w.items[unit];
+    if ( !it.read )
+	forest_unit_items(s.forest, unit, it);
+    // v75 (B222): an edge to an open unit is an include cycle — unless the
+    // freeze re-entered the unit here, its next inclusion beginning at the
+    // open one's cursor (<vadefs.h> reading <_mingw.h> again while it is
+    // open: _mingw.h's guard does not span the file).
+    if ( outer && !it.inclusion_begins_at(w.next_inclusion[unit], *outer->ev, *outer->ed, *outer->rec) )
+	return true;
+    const uint32_t inc = reinclude ? 0 : w.next_inclusion[unit]++;
+    if ( inc >= it.nincl() )
+	return true;	// the freeze read no more of this unit: its include was skipped
+    uint32_t hi[3], lo[3];
+    it.inclusion_range(inc, lo, hi);
+    uint32_t i_ev = lo[0], i_ed = lo[1], i_c = lo[2];
+    const uint32_t ev_hi = hi[0], ed_hi = hi[1], c_hi = hi[2];
+    size_t i_p = 0;	// K2c: the inclusion's next expansion point
+    ForestEventCursor cur(it.ev);
+    // The include-once prune: the inclusion opens with a recorded `#ifndef`
+    // over all of it — the unit's own guard — and it is live because the
+    // unit's FILE was live-tokenized here; a live re-include skips it.
+    // s.live_present keeps it out of s.chain_set, whose membership the decl
+    // restore reads: restoring its decls BESIDE the live copy double-defines
+    // them (struct _iobuf).
+    if ( i_c < c_hi )
+    {
+	const uint32_t *g = it.cond(i_c);
+	const char *gname = s.forest->pool_str(g[CIR_COND_TEXT]);
+	if ( g[CIR_COND_KIND] == (uint32_t)CondDirective::Ifndef
+	  && (g[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME)
+	  && g[CIR_COND_EV_BEGIN] == i_ev && g[CIR_COND_ED_BEGIN] == i_ed
+	  && g[CIR_COND_EV_END] == ev_hi && g[CIR_COND_ED_END] == ed_hi
+	  && gname && macro_name_defined(gname)
+	  && forest_unit_file_live_tokenized(s, unit)
+	  && forest_unit_reinclude_skipped(s, unit) )
+	{
+	    DBG(std::cout << "forest bind: unit " << (uname ? uname : "?")
+		<< " already present ('" << gname << "' guard live) — pruned" << std::endl);
+	    s.live_present.insert(unit);
+	    return true;
+	}
+    }
+    // B211: a unit spelling a macro the program changed (forest_read_program_macros).
+    if ( unit < s.unit_program_macro.size() && s.unit_program_macro[unit] )
+    {
+	const char *rname = s.forest->unit_name(w.root);
+	DBG(std::cout << "forest bind: DECLINE root " << (rname ? rname : "?") << " — unit "
+	    << (uname ? uname : "?") << " spells the program's macro '"
+	    << strpool.c_str(s.unit_program_macro[unit]) << "'" << std::endl);
+	return false;
+    }
+    w.open.push_back(ForestWalk::Frame{ unit, &i_ev, &i_ed, &i_c });
+    double children = 0;
+    // v75: the next recorded inclusion after this one the walk has not
+    // passed — nested inside this one while it begins before this range ends.
+    size_t nest = inc + 1;
+    while ( i_ev < ev_hi || i_ed < ed_hi || i_c < c_hi )
+    {
+	// A nested inclusion is walked at the edge the freeze took it (the
+	// cursor resumes at its end); one this walk did not take — its edge in
+	// a skipped arm, or a pruned unit's — is jumped: its items are its own.
+	if ( nest < it.nincl_recorded )
+	{
+	    if ( !reinclude && nest < w.next_inclusion[unit] )
+		nest = w.next_inclusion[unit];
+	    bool jumped = false;
+	    while ( nest < it.nincl_recorded && it.inclusion_begun(nest, i_ev, i_ed, i_c) )
 	    {
-		const char *v = deps[k + 2] ? bind_forest->pool_str(deps[k + 2]) : NULL;
-		madc::dis::istring have;
-		if ( std::string *dv = define_map.find(nm) )
-		    have = *dv;
-		else if ( MacroDef *mv = macro_map.find(nm) )
-		    have = mv->body;
-		if ( have != madc::dis::istring(v ? v : "") )
+		if ( it.inclusion_begins_at(nest, i_ev, i_ed, i_c) )
 		{
-		    DBG(std::cout << "forest bind: DECLINE root "
-			<< (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
-			<< " — unit "
-			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
-			<< " branch dep '" << nm << "' value differs" << std::endl);
+		    uint32_t nlo[3], nhi[3];
+		    it.inclusion_range(nest, nlo, nhi);
+		    i_ev = nhi[0];
+		    i_ed = nhi[1];
+		    i_c = nhi[2];
+		    jumped = true;
+		}
+		nest = it.inclusion_after(nest);
+		if ( !reinclude && w.next_inclusion[unit] < nest )
+		    w.next_inclusion[unit] = nest;
+	    }
+	    if ( jumped )
+		continue;
+	}
+	if ( i_p < it.npoints && !forest_walk_points(w, unit, it, inc, i_p, i_ev, i_ed, i_c) )
+	{
+	    w.open.pop_back();
+	    return false;
+	}
+	if ( i_c < c_hi )
+	{
+	    const uint32_t *c = it.cond(i_c);
+	    if ( (i_ed >= ed_hi || c[CIR_COND_ED_BEGIN] <= i_ed)
+	      && (i_ev >= ev_hi || c[CIR_COND_EV_BEGIN] <= i_ev) )
+	    {
+		if ( !forest_walk_condition(w, unit, it, i_c, i_ev, i_ed) )
+		{
+		    w.open.pop_back();
 		    return false;
 		}
+		continue;
 	    }
 	}
-	next_unit:;
+	if ( i_ed < ed_hi && (i_ev >= ev_hi || it.edge_pos(i_ed) <= i_ev) )
+	{
+	    const double c0 = forest_stat_now();
+	    const bool ok = forest_walk_unit(w, it.edges[i_ed++], false);
+	    children += forest_stat_now() - c0;
+	    if ( !ok )
+	    {
+		w.open.pop_back();
+		return false;
+	    }
+	    continue;
+	}
+	cur.seek(i_ev++);
+	forest_apply_event(*this, s.forest, it.ev, cur.word);
     }
-    forest_husk_live_pending.insert(husk_live.begin(), husk_live.end());
+    w.open.pop_back();
+    if ( !forest_walk_points(w, unit, it, inc, i_p, UINT32_MAX, UINT32_MAX, UINT32_MAX) )
+	return false;
+    // v75: a nested inclusion's walk is done — the open one resumes after it.
+    if ( ForestWalk::Frame *resume = w.open_frame(unit) )
+    {
+	*resume->ev = ev_hi;
+	*resume->ed = ed_hi;
+	*resume->rec = c_hi;
+    }
+    if ( !reinclude && inc == 0 )
+    {
+	w.bound.push_back(unit);
+	w.bound_cost.push_back(forest_stat_now() - t0 - children);
+    }
     return true;
 }
 
@@ -5101,285 +6586,136 @@ static madc::dis::istring embedded_unit_include_key(const char *uname)
     return madc::dis::istring(std::string("<") + uname + ">");
 }
 
-// Bind a grove unit and its include closure: post-order DFS over the unit's
-// frozen edges so an includee's PP delta installs before the includer's own
-// (matching the common "includes at top, defines after" header shape). The
-// forest_chain_set done-marker prunes a unit bound by an earlier #include;
-// forest_bind_walking breaks include cycles. After the walk every reachable
-// unit's macros are live and it is recorded in forest_chain. The decl records
-// (symbol tables) restore ONCE per compile at the call site — never re-parse.
-void Program::forest_bind_include(uint32_t unit)
+// B211: a #define / #undef about to be written from text — never a walk's
+// replay (forest_macro_undo) or the freeze — noted with its file and the
+// name's state before, while a later include may still bind.
+void Program::forest_note_program_macro(const char *name)
 {
-    if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit)
-      || forest_live_present.count(unit) )
-    {
+    if ( !registration_policy.enable_forest_bind || pack_recording || forest_macro_undo
+      || forest_system.bind_stopped || !*name )
 	return;
-    }
-	const char *unit_name = bind_forest->unit_name(unit);
-	if ( unit_name && is_posix_compat_header_name(unit_name) )
-	{
-		const madc::dis::istring base = madc::dis::istring(unit_name).substr(
-			sizeof("posix/") - 1);
-		if ( !is_posix_compat_header_allowed(base) )
-			return;
-	}
-    // A missing-content child is the one unit a bind cannot reconstruct: its
-    // producer-side external macro hid declarations that are live here. Feed
-    // its portable header spelling through the ONE production include path;
-    // that path owns search order, disk/embedded selection, preprocessing,
-    // include guards, and token provenance. Keep it out of forest_chain_set so
-    // forest_restore_decls cannot restore the husk's incomplete frozen surface.
-    if ( forest_husk_live_pending.count(unit) )
-    {
-	if ( !unit_name || !*unit_name )
-	    Throw << "Frozen missing-content unit has no source identity" << flush;
-	std::string live_header(unit_name);
-	const madc::dis::istring madh_suffix = ".madh";
-	if ( live_header.size() > madh_suffix.size()
-	  && live_header.compare(live_header.size() - madh_suffix.size(),
-				 madh_suffix.size(), madh_suffix) == 0 )
-	    live_header.erase(live_header.size() - madh_suffix.size());
-	// Re-include the EXACT unit by its canonical path, never its basename.
-	// A basename is ambiguous across the corpus (<stat.h> names glibc's
-	// bits/stat.h, linux/stat.h AND sys/stat.h) and resolves by grove
-	// lookup order — a corpus reshuffle flipped bits/stat.h's fallback
-	// onto linux/stat.h, silently dropping __S_IFMT for every headerless
-	// consumer of <sys/stat.h>. An absolute spelling passes through
-	// resolve_include_path verbatim, and read_resolved_include serves it
-	// from disk or the pack's raw-source slot. An embedded unit's name
-	// has no directory and is already the include spelling.
-	if ( live_header.empty() )
-	    Throw << "Frozen missing-content unit has no live include spelling: "
-		  << unit_name << flush;
-	DBG(std::cout << "forest bind: missing-content husk " << unit_name
-	    << " — live-tokenizing <" << live_header << "> only" << std::endl);
-	forest_bind_walking.insert(unit);
-	try
-	{
-	    tokenize_synthetic_system_include(live_header, unit_name);
-	}
-	catch (...)
-	{
-	    forest_bind_walking.erase(unit);
-	    throw;
-	}
-	forest_bind_walking.erase(unit);
-	forest_husk_live_pending.erase(unit);
-	forest_live_present.insert(unit);
+    const uint32_t sid = strpool.intern(name);
+    ForestSide::ProgramMacroWrite pw = { sid, source.fname_name(), forest_macro_state_hash(*this, sid) };
+    forest_system.program_macro_writes.push_back(pw);
+}
+
+// B211: the program's macro writes since the last root walk, read into the
+// per-unit marks. A unit spelling (SPELLED_NAMES) a name whose state the
+// program changed was frozen without that change: its tokens expand otherwise
+// here, so its root declines and lexes from text — gcc's PCH rule, a macro
+// defined ahead "must not appear in the precompiled header". A write read from
+// a frozen unit's own text (a declined root lexed live) is the freeze's macro;
+// a name back at its state before the program's first write is unchanged. A
+// name the program wrote first while it was undefined: a directive's spelling
+// of it (CIR_SPELLED_DIRECTIVE_ONLY) is a condition the freeze recorded (an
+// undefined name with no origin is external, pack_note_recorded_consult) and
+// the walk evaluates — only where it expands declines. A name defined before
+// (a predefine, a bound header's): every spelling. No table: every unit.
+void Program::forest_read_program_macros(ForestSide &s)
+{
+    if ( s.program_macro_writes.empty() )
 	return;
+    CirFrozenForest *f = s.forest;
+    std::vector<uint32_t> written;
+    madc::dis::istring file;
+    bool frozen = false;
+    for ( const ForestSide::ProgramMacroWrite &pw : s.program_macro_writes )
+    {
+	if ( pw.file != file )
+	{
+	    file = pw.file;
+	    frozen = !file.empty() && f->find_unit(file) >= 0;
+	}
+	if ( frozen )
+	    continue;
+	s.program_macro_before.insert(std::make_pair(pw.sid, pw.before));
+	written.push_back(pw.sid);
     }
+    s.program_macro_writes.clear();
+    if ( written.empty() )
+	return;
+    const uint32_t nunits = f->unit_count();
+    if ( s.unit_program_macro.size() < nunits )
+	s.unit_program_macro.resize(nunits, 0);
+    const ForestDeclNames &spelled = f->spelled_names();
+    const uint64_t undefined = forest_macro_state_hash(*this, 0);	// id 0 (the empty spelling) is never a macro
+    for ( const uint32_t sid : written )
+    {
+	const uint64_t before = s.program_macro_before[sid];
+	if ( forest_macro_state_hash(*this, sid) == before )
+	    continue;
+	const bool fresh = before == undefined;
+	if ( spelled.empty() )
+	{
+	    for ( uint32_t u = 0; u < nunits; ++u )
+		if ( !s.unit_program_macro[u] )
+		    s.unit_program_macro[u] = sid;
+	    continue;
+	}
+	uint32_t n = 0;
+	const uint32_t *units = spelled.units_of(strpool.c_str(sid), n);
+	for ( uint32_t k = 0; k < n; ++k )
+	{
+	    if ( fresh && (units[k] & CIR_SPELLED_DIRECTIVE_ONLY) )
+		continue;
+	    const uint32_t u = units[k] & ~CIR_SPELLED_DIRECTIVE_ONLY;
+	    if ( u < nunits && !s.unit_program_macro[u] )
+		s.unit_program_macro[u] = sid;
+	}
+    }
+}
+
+// Walk a root (reinclude: a bound guard-less root read again — its first
+// inclusion re-walked against the state here). Commit: the walked units join
+// s.chain in post-order, each embedded one's once-only key is recorded (a
+// later TEXT include of a name the bind served skips, as a live parse's second
+// include does — the hosted-darwin prelude umbrella carries no #ifndef guard),
+// and a run arm's tokens enter the stream here, at the root's include site.
+// The decl records (symbol tables) restore ONCE per compile at the call site —
+// never re-parse. Decline: the undo log restores every name the walk wrote.
+bool Program::forest_walk_root(ForestSide &s, uint32_t root, bool reinclude)
+{
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
-    // A unit an #include binds between a LIVE lazy import's module markers is
-    // the interface those markers wrap: its prototypes bind at first call, as
-    // the tokens a live serving would have lexed there are tagged. The unit
-    // alone, as a replayed import notes it (forest_note_lazy_module_interface).
-    if ( !lazy_module_spelling.empty() && forest_bind_walking.empty() )
-	forest_note_lazy_unit_prototypes(unit, lazy_module_spelling);
-    forest_bind_walking.insert(unit);
-    // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
-    // recursion excluded — so the accumulated total sums cleanly.
-    double _t0 = forest_stat_now();
-    std::vector<uint32_t> edges;
-    bool have_edges = bind_forest->unit_edges(unit, edges);
-    double _self = forest_stat_now() - _t0;
-    // Children before this unit's own PP delta is right while children are
-    // merely BOUND — a bind evaluates no #if, so install order cannot change
-    // what it sees. A missing-content husk child is different: it is LIVE-
-    // PARSED (see forest_husk_live_pending above), and a live parse DOES
-    // evaluate #if, against whatever the macro tables hold at that moment.
-    // With this unit's exports still uninstalled, an internal header gets
-    // parsed as if its public front had never run — glibc's bits/stat.h then
-    // hits its own `#if !defined _SYS_STAT_H && !defined _FCNTL_H` guard and
-    // #errors, because sys/stat.h had bound but not yet defined _SYS_STAT_H.
-    //
-    // So when any child is a pending husk, this unit's PP lands FIRST. That is
-    // an APPROXIMATION of live order, not a reproduction of it: the event
-    // stream carries no position for the child's include site, so the whole
-    // export set installs rather than the prefix that preceded the child. It
-    // is strictly closer to a live parse than installing nothing, and the
-    // headers this affects define their guard before including their internals
-    // — which is the whole reason the guard exists.
-    bool husk_child = false;
-    if ( have_edges )
-	for ( size_t i = 0; i < edges.size() && !husk_child; ++i )
-	    husk_child = forest_husk_live_pending.count(edges[i]) != 0;
-    if ( husk_child )
+    forest_read_program_macros(s);
+    ForestWalk w(s, root);
+    ForestMacroUndo *const outer = forest_macro_undo;
+    forest_macro_undo = &w.undo;	// a decline restores every name the walk wrote
+    bool ok;
+    try
     {
-	forest_install_pp(unit);
-	forest_replay_pp_arms(unit);
+	ok = forest_walk_unit(w, root, reinclude);
     }
-    if ( have_edges )
-	for ( size_t i = 0; i < edges.size(); ++i )
-	    forest_bind_include(edges[i]);
-    double _t1 = forest_stat_now();
-    if ( !husk_child )
+    catch (...)
     {
-	forest_install_pp(unit);
-	forest_replay_pp_arms(unit);
+	forest_macro_undo = outer;
+	w.undo.restore(*this);
+	throw;
     }
-    forest_chain.push_back(unit);
-    forest_chain_set.insert(unit);
-    forest_bind_walking.erase(unit);
-    // A named (embedded) unit's once-only key, as its live tokenize records it
-    // (should_tokenize_include): a later TEXT include of a name the bind
-    // already served skips it, as a live parse's second include does. The hosted-darwin prelude
-    // umbrella carries no #ifndef guard; the name key is its only dedup.
-    if ( const char *bound = bind_forest->unit_name(unit) )
-	if ( find_embedded_header(bound) )
-	    included_files[embedded_unit_include_key(bound)] = true;
-    _self += forest_stat_now() - _t1;
-    _forest_bind_seconds += _self;
-    const char *nm = bind_forest->unit_name(unit);
-    _forest_unit_bind_costs.push_back(
-	std::make_pair(madc::dis::istring(nm ? nm : "?"), _self));
-}
-
-// v55: replay the unit's skipped directive-only `#ifndef X` arms whose X is
-// still undefined once the unit's own delta is installed — what a live parse
-// of the unit does at that arm. The producer skipped them because an external
-// sibling had defined X first; a consumer without that sibling needs them
-// (mingw stdio.h's NULL). The arm runs through the production preprocessor on
-// its own Source, so nested conditionals (`#ifdef __cplusplus`) answer HERE.
-void Program::forest_replay_pp_arms(uint32_t unit)
-{
-    std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > >::iterator ai =
-	forest_pp_arms.find(unit);
-    if ( ai == forest_pp_arms.end() )
-	return;
-    std::vector<std::pair<uint32_t, uint32_t> > arms;
-    arms.swap(ai->second);
-    forest_pp_arms.erase(ai);
-    const char *unit_name = bind_forest->unit_name(unit);
-    for ( size_t i = 0; i < arms.size(); ++i )
+    forest_macro_undo = outer;
+    // K2c: the live parse of a declined root runs the same arms, so later
+    // walks check the names they leave unlike the freeze's either way.
+    s.macro_differs.insert(w.differs.begin(), w.differs.end());
+    if ( !ok )
     {
-	const char *nm = bind_forest->pool_str(arms[i].first);
-	const char *text = bind_forest->pool_str(arms[i].second);
-	if ( !nm || !text || macro_name_defined(nm) )
-	    continue;
-	DBG(std::cout << "forest bind: unit " << (unit_name ? unit_name : "?")
-	    << " replays its skipped '#ifndef " << nm << "' arm" << std::endl);
-	Source saved = std::move(source);
-	source = Source();
-	source.fname(unit_name ? unit_name : "");
-	source.str(text);	// the arm body: source text
-	size_t groups_at_entry = cond_groups.size();
-	try
-	{
-	    if ( getRealToken() )
-		Throw << "Frozen skipped arm '#ifndef " << nm << "' of "
-		      << (unit_name ? unit_name : "?") << " produced a token" << flush;
-	    refuse_open_conditional_groups(groups_at_entry);
-	}
-	catch (...)
-	{
-	    source = std::move(saved);
-	    throw;
-	}
-	source = std::move(saved);
+	w.undo.restore(*this);
+	return false;
     }
-}
-
-// A replayed lazy import's interface prototypes (the row's interface unit's
-// functions, by its decl index): live, the import serves that header between
-// its module markers and every prototype in it is stamped
-// (stamp_lazy_module_prototype); a restored one is stamped by name as
-// register_forest_func registers it.
-void Program::forest_note_lazy_module_interface(const madc::dis::istring &module)
-{
-    const MadcModuleSpec *row = madc_module_find(module);
-    const int u = row && row->interface && bind_forest
-	? bind_forest->find_unit(row->interface) : -1;
-    if ( u >= 0 )
-	forest_note_lazy_unit_prototypes((uint32_t)u,
-					 madc_module_library_spelling(module));
-}
-
-// The functions bound unit `unit` declares bind at first call against the
-// library `spelling` — what the module markers give a live-served interface's
-// prototypes (stamp_lazy_module_prototype).
-void Program::forest_note_lazy_unit_prototypes(uint32_t unit,
-					       const madc::dis::istring &spelling)
-{
-    std::vector<cir_forest_decl_entry> di;
-    if ( !bind_forest || !bind_forest->unit_decl_index(unit, di) )
-	return;
-    for ( size_t k = 0; k < di.size(); ++k )
-	if ( di[k].kind == pdkFunction )
-	    if ( const char *nm = bind_forest->pool_str(di[k].name_id) )
-		forest_lazy_module_protos[madc::dis::istring(nm)] = spelling;
-}
-
-// Apply one unit's frozen PP-export delta to the live macro tables, replaying
-// the exact define_map / macro_map writes the lexer's #define/#undef handlers
-// perform — and a lazy `import`'s program state (adopt_lazy_module_import). The event stream is flat u32:
-//   [name_id, tag_flags, body_id, variadic_param_id, nparams, <nparams ids>]...
-// with the low byte of tag_flags the PackMacroEvent tag and bit 8 the variadic
-// flag. Pool ids resolve through the container's own string pool.
-void Program::forest_install_pp(uint32_t unit)
-{
-    std::vector<uint32_t> ev;
-    if ( !bind_forest->unit_pp_events(unit, ev) )
-	return;
-    // Masked-bind (task #57): a define event for a macro forest_bind_env_ok
-    // masked on this unit is the unit's own guarded fallback whose guard is
-    // live-defined — a live-order parse would skip it, so the install does
-    // too (the live value survives; undef events still apply).
-    std::map<uint32_t, std::set<madc::dis::istring> >::const_iterator mask_it =
-	forest_pp_install_mask.find(unit);
-    const std::set<madc::dis::istring> *mask =
-	mask_it == forest_pp_install_mask.end() ? NULL : &mask_it->second;
-    for ( size_t k = 0; k + 5 <= ev.size(); )
+    for ( size_t i = 0; i < w.bound.size(); ++i )
     {
-	uint32_t name_id = ev[k], tag_flags = ev[k + 1], body_id = ev[k + 2];
-	uint32_t vpar_id = ev[k + 3], nparams = ev[k + 4];
-	const char *nm = bind_forest->pool_str(name_id);
-	uint8_t tag = (uint8_t)(tag_flags & 0xff);
-	if ( nm && mask && PackMacroEvent::defines_macro(tag) && mask->count(nm) )
-	{
-	    DBG(std::cout << "forest bind: unit "
-		<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
-		<< " define '" << nm << "' masked at install (live guard wins)"
-		<< std::endl);
-	    k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
-	    continue;
-	}
-	if ( nm )
-	{
-	    madc::dis::istring name(nm);
-	    if ( tag == PackMacroEvent::peUndef )
-	    {
-		define_map.erase(name);
-		macro_map.erase(name);
-	    }
-	    else if ( tag == PackMacroEvent::peDefine )
-	    {
-		const char *b = body_id ? bind_forest->pool_str(body_id) : NULL;
-		define_map[name] = b ? madc::dis::istring(b) : madc::dis::istring();
-		note_std_abi_define(name, define_map[name]);
-	    }
-	    else if ( tag == PackMacroEvent::peImport )
-	    {
-		adopt_lazy_module_import(name);
-		forest_note_lazy_module_interface(name);
-	    }
-	    else // peDefineFn
-	    {
-		MacroDef m;
-		for ( uint32_t p = 0; p < nparams; ++p )
-		    if ( const char *pn = bind_forest->pool_str(ev[k + 5 + p]) )
-			m.params.push_back(pn);
-		if ( tag_flags & CIR_FOREST_PP_VARIADIC )
-		    m.variadic = true;
-		if ( vpar_id )
-		    if ( const char *vp = bind_forest->pool_str(vpar_id) )
-			m.variadic_param = vp;
-		if ( const char *b = body_id ? bind_forest->pool_str(body_id) : NULL )
-		    m.body = b;
-		macro_map[name] = m;
-	    }
-	}
-	k += 5 + nparams;
+	const uint32_t u = w.bound[i];
+	s.chain.push_back(u);
+	s.chain_set.insert(u);
+	const char *nm = s.forest->unit_name(u);
+	if ( nm && find_embedded_header(nm) )
+	    included_files[embedded_unit_include_key(nm)] = true;
+	_forest_bind_seconds += w.bound_cost[i];
+	_forest_unit_bind_costs.push_back(
+	    std::make_pair(madc::dis::istring(nm ? nm : "?"), w.bound_cost[i]));
     }
+    s.withdrawn_arms.insert(s.withdrawn_arms.end(), w.withdrawn.begin(), w.withdrawn.end());
+    for ( size_t i = 0; i < w.arm_tokens.size(); ++i )
+	push_token_with_literal_concat(w.arm_tokens[i]);
+    return true;
 }
 
 // --- the generated include tables, read through ONE pair of accessors --------
@@ -5422,46 +6758,69 @@ static const char *madc_fallback_include_paths[] = {
     (const char *)0
 };
 
+// This compile's live search view: the C view under a C standard, the
+// toolchain-only view under --no-sysroot-includes (search_view below).
 const char *const *Program::sys_include_paths() const
+{
+    return search_view(is_c_mode(), !registration_policy.enable_sysroot_includes);
+}
+
+// The compiler reports its search list in a fixed order — the C++ stdlib dirs,
+// then its own builtin (compiler-owned) dir, then the sysroot's C dirs and
+// frameworks — and the compiler-owned dir is the ONE cut point for both views:
+// - THE C VIEW (a C compile): the list FROM the compiler-owned dir on — exactly
+//   gcc's and clang's `-x c` list. A C compile never searches the C++ standard
+//   library's directories (B199: libstdc++'s <stdlib.h> / <math.h> wrappers,
+//   libc++'s for nearly every C header, and <vector> itself, were reachable
+//   from C).
+// - THE TOOLCHAIN-ONLY VIEW (registration_policy.enable_sysroot_includes ==
+//   false, the freezer's --no-sysroot-includes): the list UP TO AND INCLUDING
+//   the compiler-owned dir — the roots the toolchain owns; what follows is the
+//   host's C library / SDK.
+// Both together: the compiler-owned dir alone. Cached per (flavor, view),
+// NULL-terminated like the table it views — the language standard can change
+// within one session (the REPL's %std). A table with no compiler-owned slot
+// cannot be cut honestly: the toolchain-only view refuses loudly rather than
+// guess a position; the C view keeps the whole table (the slot is absent only
+// when no compiler was detected at build time, whose fallback list is C-only).
+const char *const *Program::search_view(bool c_view, bool toolchain_only) const
 {
     const madc_stdlib_flavor *f = active_stdlib_flavor();
     // Minimal C list when detection produced nothing (no compiler at build time).
     if ( !f->paths || !f->paths[0] )
 	return madc_fallback_include_paths;
-    if ( registration_policy.enable_sysroot_includes )
+    if ( !c_view && !toolchain_only )
 	return f->paths;
-    // The toolchain-only view (registration_policy.enable_sysroot_includes ==
-    // false): the compiler reports its search list in a fixed order — the
-    // C++ stdlib dirs, then its own builtin (compiler-owned) dir, then the
-    // sysroot's C dirs and frameworks — so "everything up to and including the
-    // compiler-owned dir" IS the set of roots the toolchain owns, and what
-    // follows is the host's C library / SDK. Cached per flavor, NULL-terminated
-    // like the table it views. A table with no compiler-owned slot cannot be
-    // cut honestly: refuse loudly rather than guess a position.
-    if ( _toolchain_paths_flavor == f && !_toolchain_paths.empty() )
-	return _toolchain_paths.data();
+    const int kind = (c_view ? 1 : 0) | (toolchain_only ? 2 : 0);
+    std::vector<const char *> &view = _search_view_paths[kind];
+    if ( _search_view_flavor[kind] == f && !view.empty() )
+	return view.data();
     const char *owned = f->compiler_owned_dir ? f->compiler_owned_dir : "";
-    _toolchain_paths.clear();
-    bool cut = false;
-    for ( int i = 0; f->paths[i]; ++i )
-    {
-	_toolchain_paths.push_back(f->paths[i]);
-	if ( *owned && strcmp(f->paths[i], owned) == 0 )
+    int owned_at = -1;
+    for ( int i = 0; *owned && f->paths[i]; ++i )
+	if ( strcmp(f->paths[i], owned) == 0 )
 	{
-	    cut = true;
+	    owned_at = i;
 	    break;
 	}
-    }
-    if ( !cut )
+    if ( owned_at < 0 )
     {
-	_toolchain_paths.clear();
-	throw std::runtime_error("--no-sysroot-includes: this build's system include table has no "
-				 "compiler-owned dir to cut at (flavor '" + std::string(f->name ? f->name : "")
-				 + "'); cannot separate toolchain roots from sysroot roots");
+	if ( toolchain_only )
+	    throw std::runtime_error("--no-sysroot-includes: this build's system include table has no "
+				     "compiler-owned dir to cut at (flavor '" + std::string(f->name ? f->name : "")
+				     + "'); cannot separate toolchain roots from sysroot roots");
+	return f->paths;
     }
-    _toolchain_paths.push_back((const char *)0);
-    _toolchain_paths_flavor = f;
-    return _toolchain_paths.data();
+    view.clear();
+    for ( int i = c_view ? owned_at : 0; f->paths[i]; ++i )
+    {
+	view.push_back(f->paths[i]);
+	if ( toolchain_only && i == owned_at )
+	    break;
+    }
+    view.push_back((const char *)0);
+    _search_view_flavor[kind] = f;
+    return view.data();
 }
 
 bool Program::posix_compat_enabled() const
@@ -5509,9 +6868,8 @@ void Program::tokenize_posix_header_supplement(const madc::dis::istring &incfile
 		CirFrozenForest *dir = bind_forest_directory();
 		int fu = dir ? dir->find_unit(supplement) : -1;
 		if ( fu >= 0 && ensure_bind_forest()
-		  && forest_bind_env_ok((uint32_t)fu) )
+		  && forest_bind_include_root((uint32_t)fu) )
 		{
-			forest_bind_include((uint32_t)fu);
 			mark_embedded_include_flag(supplement);
 			return;
 		}
@@ -5572,9 +6930,8 @@ bool Program::tokenize_posix_whole_provider(const madc::dis::istring &incfile,
 	    CirFrozenForest *dir = bind_forest_directory();
 	    int fu = dir ? dir->find_unit(provider) : -1;
 	    if ( fu >= 0 && ensure_bind_forest()
-	      && forest_bind_env_ok((uint32_t)fu) )
+	      && forest_bind_include_root((uint32_t)fu) )
 	    {
-		forest_bind_include((uint32_t)fu);
 		mark_embedded_include_flag(provider);
 		return true;
 	    }
@@ -5602,10 +6959,13 @@ const char *Program::compiler_owned_include_dir() const
 const std::vector<madc::dis::istring> &Program::sys_include_prefixes_canonical() const
 {
     const madc_stdlib_flavor *f = active_stdlib_flavor();
-    if ( _canon_prefix_flavor == f && !_canon_prefixes.empty() )
+    // Keyed by flavor AND view: the C view and the C++ view of one flavor are
+    // different lists, and the standard can change within a session.
+    const char *const *paths = sys_include_paths();
+    if ( _canon_prefix_flavor == f && _canon_prefix_view == paths
+      && !_canon_prefixes.empty() )
 	return _canon_prefixes;
     _canon_prefixes.clear();
-    const char *const *paths = sys_include_paths();
     // The directories' COMPARISON spellings, as host_path_within reads them:
     // no separator appended here — the canonicalizer writes the host's own
     // ('\\' on Windows), and a '/' added to it never matched there.
@@ -5617,6 +6977,7 @@ const std::vector<madc::dis::istring> &Program::sys_include_prefixes_canonical()
 	_canon_prefixes.push_back(from_libmadc ? madc::dis::istring(paths[i])
 					       : madc::dis::istring(canonical_path_for_compare(paths[i])));
     _canon_prefix_flavor = f;
+    _canon_prefix_view = paths;
     return _canon_prefixes;
 }
 
@@ -5654,12 +7015,9 @@ const madc_stdlib_flavor *madc_stdlib_flavor_lookup(const std::string &name)
     return NULL;	// unknown or not built with this flavor
 }
 
-bool Program::set_stdlib_flavor_option(const madc::dis::istring &arg)
+bool Program::set_stdlib_flavor(const madc::dis::istring &name)
 {
-    static const madc::dis::istring opt = "-stdlib=";
-    if ( arg.compare(0, opt.size(), opt) != 0 )
-	return false;
-    const madc_stdlib_flavor *f = madc_stdlib_flavor_lookup(arg.substr(opt.size()));
+    const madc_stdlib_flavor *f = madc_stdlib_flavor_lookup(name);
     if ( !f )
 	return false;	// caller diagnoses with stdlib_flavor_names()
     stdlib_flavor = f;
@@ -5678,9 +7036,9 @@ const madc_stdlib_flavor *Program::active_stdlib_flavor() const
 //   libstdc++: _GLIBCXX_USE_CXX11_ABI (1 => the cxx11-tagged ABI, 0 => not)
 // Pushes the fact into the mangler the moment it is recorded, from every
 // define_map write site (#define directive, forest PP replay, CLI -D).
-void Program::note_std_abi_define(const madc::dis::istring &name, const std::string &value)
+void Program::note_std_abi_define(const char *name, const std::string &value)
 {
-    if ( name == "_LIBCPP_ABI_NAMESPACE" )
+    if ( strcmp(name, "_LIBCPP_ABI_NAMESPACE") == 0 )
     {
 	size_t b = value.find_first_not_of(" \t");
 	size_t e = value.find_last_not_of(" \t");
@@ -5690,7 +7048,7 @@ void Program::note_std_abi_define(const madc::dis::istring &name, const std::str
 	DBG(std::cout << "std ABI namespace (libc++): " << ns << std::endl);
 	madc_mangle_set_stdlib_llvm(ns);
     }
-    else if ( name == "_GLIBCXX_USE_CXX11_ABI" )
+    else if ( strcmp(name, "_GLIBCXX_USE_CXX11_ABI") == 0 )
     {
 	bool on = strtol(value.c_str(), NULL, 10) != 0;
 	DBG(std::cout << "std ABI namespace (libstdc++): cxx11=" << on << std::endl);
@@ -5893,17 +7251,25 @@ size_t Program::include_next_search_list(std::vector<madc::dis::istring> &search
 	search.push_back(sys_paths[i]);
 
     // Normalize-with-trailing-slash compare to locate the current file's dir
-    // in the search list; #include_next searches only entries AFTER it.
-    std::string cur = current_source_directory();
-    if ( !cur.empty() && cur.back() != '/' )
-	cur += '/';
-    for ( size_t i = 0; i < search.size(); ++i )
+    // in the search list; #include_next searches only entries AFTER it. The
+    // dir is the one the file was FOUND in, as gcc's file->dir: <bits/std_abs.h>
+    // was found in /usr/include/c++/13, not its own .../bits, which no entry
+    // names — the walk then restarted at the top and reached the libstdc++
+    // <stdlib.h> wrapper instead of the C library's. A file no search found
+    // (the main file, an embedded header) is matched by its own directory.
+    for ( int pass = source.found_dir().empty() ? 1 : 0; pass < 2; ++pass )
     {
-	std::string d = search[i];
-	if ( !d.empty() && d.back() != '/' )
-	    d += '/';
-	if ( d == cur )
-	    return i + 1;
+	std::string cur = pass == 0 ? source.found_dir().str() : current_source_directory().str();
+	if ( !cur.empty() && cur.back() != '/' )
+	    cur += '/';
+	for ( size_t i = 0; i < search.size(); ++i )
+	{
+	    std::string d = search[i];
+	    if ( !d.empty() && d.back() != '/' )
+		d += '/';
+	    if ( d == cur )
+		return i + 1;
+	}
     }
     return 0;
 }
@@ -6315,10 +7681,12 @@ bool Program::pack_record_skipped_source(const madc::dis::istring &path)
 // docs/plans/2026-10-13-pack-all-system-headers.md). A line may instead read
 // `unit-name<TAB>file`: the unit is named as the TARGET's search list spells
 // it while its text comes from where the build host keeps it (darwin's SDK
-// path vs the staged open-licensed tree). A unit the freeze already tokenized
-// keeps that record. Unreadable = false, said on stderr: a source arm that
-// silently lacks a header is the defect it exists to close.
-bool Program::pack_record_source_list(const std::string &list_path)
+// path vs the staged open-licensed tree). The list is STAGED before the parse,
+// so the frozen translation unit sees the arm as its consumers will: a
+// `__has_include(<sys/_types/_mbstate_t.h>)` the darwin freeze answered "no"
+// (its toolchain-only view) while every consumer answered "yes" from the pack
+// made the bind's walk decline libc++'s <string> root.
+bool Program::pack_stage_source_list(const std::string &list_path)
 {
     std::ifstream in(list_path.c_str());
     if ( !in )
@@ -6333,26 +7701,79 @@ bool Program::pack_record_source_list(const std::string &list_path)
 	if ( line.empty() || line[0] == '#' )
 	    continue;
 	const size_t tab = line.find('\t');
-	const std::string file = tab == std::string::npos ? line : line.substr(tab + 1);
-	bool ok;
-	if ( tab == std::string::npos )
-	    ok = pack_record_skipped_source(line);
-	else
-	{
-	    std::string text;
-	    ok = pack_recording && read_resolved_include(file, text);
-	    if ( ok )
-		pack_record_source(intern_file(line.substr(0, tab)), text);
-	}
-	if ( !ok )
-	{
-	    std::cerr << "madc: --freeze-sources: cannot read " << file
-		      << " (listed in " << list_path << ")" << std::endl;
-	    return false;
-	}
+	const madc::dis::istring name(tab == std::string::npos ? line : line.substr(0, tab));
+	if ( staged_source_at.emplace(name, staged_sources.size()).second )
+	    staged_sources.push_back(std::make_pair(name,
+		tab == std::string::npos ? line : line.substr(tab + 1)));
 	n++;
     }
-    DBG(std::cout << "freeze-sources: " << n << " file(s) from " << list_path << std::endl);
+    DBG(std::cout << "freeze-sources: " << n << " file(s) staged from " << list_path << std::endl);
+    return true;
+}
+
+long Program::staged_source_unit(const madc::dis::istring &spelling, bool allow_tail) const
+{
+    if ( staged_sources.empty() || spelling.empty() )
+	return -1;
+    std::unordered_map<madc::dis::istring, size_t>::const_iterator it = staged_source_at.find(spelling);
+    if ( it != staged_source_at.end() )
+	return (long)it->second;
+    if ( !allow_tail || madc::detail::host_path_absolute(spelling) )
+	return -1;
+    std::vector<madc::dis::istring> roots;
+    build_include_roots(roots);
+    for ( size_t i = 0; i < roots.size(); ++i )
+    {
+	const madc::dis::istring &r = roots[i];
+	it = staged_source_at.find(madc::dis::istring(
+	    r + (r.empty() || r.back() == '/' ? "" : "/") + spelling));
+	if ( it != staged_source_at.end() )
+	    return (long)it->second;
+    }
+    const size_t n = spelling.size();
+    for ( size_t i = 0; i < staged_sources.size(); ++i )
+    {
+	const madc::dis::istring &nm = staged_sources[i].first;
+	if ( nm.size() > n && nm[nm.size() - n - 1] == '/'
+	  && nm.compare(nm.size() - n, n, spelling.c_str()) == 0
+	  && !path_outside_language_view(nm.c_str()) )
+	    return (long)i;
+    }
+    return -1;
+}
+
+// The bytes of staged unit i: the build host's copy (never a system dir's).
+bool Program::staged_source_text(size_t i, std::string &text) const
+{
+    std::ifstream in(staged_sources[i].second.c_str(), std::ios::binary);
+    if ( !in )
+	return false;
+    std::ostringstream tmp;
+    tmp << in.rdbuf();
+    text = tmp.str();
+    return true;
+}
+
+// A unit the freeze already tokenized keeps that record (pack_record_source:
+// first wins). Unreadable = false, said on stderr: a source arm that silently
+// lacks a header is the defect it exists to close.
+bool Program::pack_record_staged_sources()
+{
+    for ( size_t i = 0; i < staged_sources.size(); ++i )
+    {
+	const char *interned = intern_file(staged_sources[i].first);
+	if ( interned && pack_unit_sources.count(interned) )
+	    continue;
+	std::string text;
+	if ( !pack_recording || !interned || !staged_source_text(i, text) )
+	{
+	    std::cerr << "madc: --freeze-sources: cannot read " << staged_sources[i].second
+		      << " (unit " << staged_sources[i].first << ")" << std::endl;
+	    return false;
+	}
+	pack_record_source(interned, text);
+    }
+    DBG(std::cout << "freeze-sources: " << staged_sources.size() << " file(s) recorded" << std::endl);
     return true;
 }
 
@@ -6397,107 +7818,262 @@ void Program::pack_record_undef(const madc::dis::istring &name)
     }
 }
 
-void Program::pack_record_import(const madc::dis::istring &module)
-{
-    if ( const char *unit = pack_current_unit() )
-    {
-	pack_note_unit(unit);
-	pack_pp_exports[unit].push_back(PackMacroEvent());
-	PackMacroEvent &ev = pack_pp_exports[unit].back();
-	ev.name = module;
-	ev.tag = PackMacroEvent::peImport;
-    }
-}
-
 void Program::pack_record_edge(const madc::dis::istring &includee)
 {
     if ( const char *unit = pack_current_unit() )
     {
 	pack_note_unit(unit);
 	pack_unit_edges[unit].push_back(intern_file(includee));
+	// v68: the edge's place among the unit's events (its item order).
+	pack_unit_edge_events[unit].push_back((uint32_t)pack_pp_exports[unit].size());
+	++pack_point_epoch;
     }
 }
 
-bool Program::pack_record_branch_macro(const std::string &name,
-				       bool include_probe)
+// v68 (docs/plans/2026-10-18-verified-cxx-bind.md, K2): the freeze's record
+// of each conditional a unit evaluates over an EXTERNAL macro, in the unit's
+// item order. A group's frame opens at its #if / #ifdef / #ifndef, each
+// #elif / #else ends the open arm, and its #endif closes it — the live
+// directives and skipConditionalBlock's both call these.
+void Program::pack_cond_open(CondDirective kind, const std::string &text, bool outcome,
+			     size_t consults_before)
 {
-    if ( !pack_recording || name.empty() )
-	return false;
-    pack_branch_macros.insert(name);
-    // An include-once GUARD PROBE (should_tokenize_include asking "is the
-    // includee's guard defined") is an EDGE decision — reproduced by the
-    // frozen edges + include-once semantics at bind, never a branch
-    // dependency of the includer's CONTENT. Recording it made every libc++
-    // header carry its includees' guards as deps and decline on re-binds.
-    if ( include_probe )
-	return false;
-    // v40 (task #57): record the consult as an EXTERNAL branch dependency of
-    // the current unit when the macro's state was NOT established within the
-    // consulting unit's OWN subtree — consumers bind ANY unit directly, so a
-    // sibling under the same top-level include (mingw stdlib.h defining
-    // _CRT_ERRNO_DEFINED before errno.h parsed under <cstdlib>) is just as
-    // external as an earlier root. Self/subtree definitions are reproduced by
-    // the unit's own bind replay; a defined macro with NO recorded origin is
-    // predefine/-D state, pinned by the v27 config word — neither is a
-    // dependency. The DEFINER travels with the dep: the bind walk skips any
-    // dep whose definer is inside the closure being bound (an ANCESTOR's
-    // guard — sys/cdefs.h consulting _FEATURES_H under features.h — is
-    // replay-internal there, and a real external elsewhere).
+    if ( !pack_recording )
+	return;
+    PackCondFrame frame;
+    frame.unit = pack_current_unit();
+    pack_cond_stack.push_back(frame);
+    pack_cond_elif(text, outcome, consults_before);
+    if ( !pack_cond_stack.empty() && pack_cond_stack.back().pending >= 0 )
+	pack_unit_conds[frame.unit][pack_cond_stack.back().pending].kind = kind;
+}
+
+// An evaluated arm of the open group: recorded when its condition consulted
+// an external macro (pack_note_branch_consult counted one since
+// consults_before).
+void Program::pack_cond_elif(const std::string &text, bool outcome, size_t consults_before)
+{
+    std::vector<madc::dis::istring> consulted;	// the evaluation's, consumed here
+    consulted.swap(pack_if_consulted);
+    if ( !pack_recording || pack_cond_stack.empty() )
+	return;
+    PackCondFrame &f = pack_cond_stack.back();
+    if ( !f.unit || pack_external_consults == consults_before )
+	return;
+    std::vector<PackCondRecord> &recs = pack_unit_conds[f.unit];
+    recs.push_back(PackCondRecord());
+    PackCondRecord &r = recs.back();
+    r.kind = CondDirective::Elif;
+    r.text = text;
+    r.outcome = outcome;
+    r.ev_begin = (uint32_t)pack_pp_exports[f.unit].size();
+    r.ed_begin = (uint32_t)pack_unit_edges[f.unit].size();
+    r.tok_open = tokens.size();
+    ++pack_point_epoch;
+    std::set<madc::dis::istring> seen;
+    for ( size_t i = 0; i < consulted.size(); ++i )
+	if ( seen.insert(consulted[i]).second )
+	    r.consults.push_back(std::make_pair(consulted[i],
+						forest_macro_state_hash(*this, strpool.find(consulted[i].str()))));
+    f.pending = (int)recs.size() - 1;
+}
+
+// The open arm's end: its events and edges stop here.
+static void pack_cond_end_arm(Program &pgm, Program::PackCondFrame &f, bool single_arm)
+{
+    if ( f.pending < 0 )
+	return;
+    Program::PackCondRecord &r = pgm.pack_unit_conds[f.unit][f.pending];
+    r.ev_end = (uint32_t)pgm.pack_pp_exports[f.unit].size();
+    r.ed_end = (uint32_t)pgm.pack_unit_edges[f.unit].size();
+    r.single_arm = single_arm;
+    r.rec_end = (uint32_t)pgm.pack_unit_conds[f.unit].size();
+    if ( pgm.tokens.size() > r.tok_open )
+    {
+	r.tok_first = pgm.tokens.buf_at(r.tok_open);
+	r.tok_last = pgm.tokens.back();
+    }
+    // v73 (K2e): a taken single arm whose condition spells a name it defines
+    // (a sub-block guard) is one a bind may skip as masked; its other writes
+    // — the names its condition does not spell — are watched like a captured
+    // arm's, so the forest keeps their expansion points and a bind that skips
+    // the arm checks them where frozen content expands them.
+    if ( r.outcome && single_arm && r.ev_end > r.ev_begin )
+    {
+	const std::vector<Program::PackMacroEvent> &ev = pgm.pack_pp_exports[f.unit];
+	std::set<madc::dis::istring> spelled, seen;
+	source_spelled_names(r.text, spelled);
+	std::vector<madc::dis::istring> writes;
+	bool guarded = false;
+	for ( uint32_t i = r.ev_begin; i < r.ev_end && i < ev.size(); ++i )
+	{
+	    if ( !spelled.count(ev[i].name) )
+	    {
+		if ( seen.insert(ev[i].name).second )
+		    writes.push_back(ev[i].name);
+	    }
+	    else if ( Program::PackMacroEvent::defines_macro(ev[i].tag) )
+		guarded = true;
+	}
+	if ( guarded )
+	    r.arm_writes.swap(writes);
+    }
+    ++pgm.pack_point_epoch;
+    f.pending = -1;
+}
+
+// The size of a unit's per-unit freeze list (0 when it has none yet).
+template <class List>
+static uint32_t pack_unit_count(const std::map<const char *, List> &m, const char *unit)
+{
+    typename std::map<const char *, List>::const_iterator i = m.find(unit);
+    return i == m.end() ? 0 : (uint32_t)i->second.size();
+}
+
+// v71 (K2c): a macro expanded into the token stream while freezing. Its first
+// expansion in the point epoch is an expansion point of the unit inclusion
+// reading it (PackExpansionPoint).
+void Program::pack_note_expansion(uint32_t sid)
+{
+    uint32_t &seen = pack_point_seen[sid];
+    if ( seen == pack_point_epoch )
+	return;
+    seen = pack_point_epoch;
     const char *unit = pack_current_unit();
     if ( !unit )
-	return false;
-    bool defined_now = macro_name_defined(name);
+	return;
+    PackExpansionPoint p;
+    p.sid = sid;
+    // v75: the unit's innermost open inclusion (enter order).
+    std::map<const char *, std::vector<uint32_t> >::const_iterator oi = pack_unit_open_inclusions.find(unit);
+    p.inclusion = oi != pack_unit_open_inclusions.end() && !oi->second.empty()
+	? oi->second.back() : pack_unit_count(pack_unit_inclusions, unit) / CIR_INCL_WORDS;
+    p.ev = pack_unit_count(pack_pp_exports, unit);
+    p.ed = pack_unit_count(pack_unit_edges, unit);
+    p.rec = pack_unit_count(pack_unit_conds, unit);
+    p.state = madc::dis::istring(forest_macro_state_spelling(
+	*this, std::vector<madc::dis::istring>(1, strpool.name(sid))));
+    pack_unit_points[unit].push_back(p);
+}
+
+// v75 (B222): one inclusion of a unit begins (its include is read): where its
+// events, edges and condition records start, in enter order — a nested
+// re-entry (<vadefs.h> reading <_mingw.h> again while it is open) begins
+// inside the open inclusion's range.
+void Program::pack_unit_enter(const char *unit)
+{
+    std::vector<uint32_t> &incl = pack_unit_inclusions[unit];
+    pack_unit_open_inclusions[unit].push_back((uint32_t)(incl.size() / CIR_INCL_WORDS));
+    const uint32_t ev = (uint32_t)pack_pp_exports[unit].size(), ed = (uint32_t)pack_unit_edges[unit].size(),
+		   rec = (uint32_t)pack_unit_conds[unit].size();
+    const uint32_t r[CIR_INCL_WORDS] = { ev, ed, rec, ev, ed, rec };
+    incl.insert(incl.end(), r, r + CIR_INCL_WORDS);
+}
+
+// v69: one inclusion of a unit ended (its include returned): where its events,
+// edges and condition records stop (v75: in the record pack_unit_enter began).
+void Program::pack_unit_leave(const char *unit)
+{
+    std::vector<uint32_t> &open = pack_unit_open_inclusions[unit];
+    if ( open.empty() )
+	return;
+    uint32_t *r = &pack_unit_inclusions[unit][open.back() * CIR_INCL_WORDS];
+    open.pop_back();
+    // v73 (K2e): the inclusion's own include guard — an `#ifndef` taken over
+    // all of it, the shape the walk's include-once prune reads — is no masked
+    // arm: its writes (the whole header's) are not watched.
+    {
+	std::vector<PackCondRecord> &recs = pack_unit_conds[unit];
+	if ( r[CIR_INCL_REC_BEGIN] < recs.size() )
+	{
+	    PackCondRecord &g = recs[r[CIR_INCL_REC_BEGIN]];
+	    if ( g.kind == CondDirective::Ifndef && g.outcome && g.ev_begin == r[CIR_INCL_EV_BEGIN]
+	      && g.ed_begin == r[CIR_INCL_ED_BEGIN]
+	      && g.ev_end == pack_pp_exports[unit].size() && g.ed_end == pack_unit_edges[unit].size() )
+		g.arm_writes.clear();
+	}
+    }
+    r[CIR_INCL_EV_END] = (uint32_t)pack_pp_exports[unit].size();
+    r[CIR_INCL_ED_END] = (uint32_t)pack_unit_edges[unit].size();
+    r[CIR_INCL_REC_END] = (uint32_t)pack_unit_conds[unit].size();
+    ++pack_point_epoch;
+}
+
+// An #elif or #else of the open group.
+void Program::pack_cond_branch()
+{
+    if ( !pack_recording || pack_cond_stack.empty() )
+	return;
+    PackCondFrame &f = pack_cond_stack.back();
+    pack_cond_end_arm(*this, f, false);
+    f.branched = true;
+}
+
+// The open group's #endif.
+void Program::pack_cond_close()
+{
+    if ( !pack_recording || pack_cond_stack.empty() )
+	return;
+    PackCondFrame &f = pack_cond_stack.back();
+    pack_cond_end_arm(*this, f, !f.branched);
+    pack_cond_stack.pop_back();
+}
+
+// The record whose arm is open in the innermost group, or NULL.
+Program::PackCondRecord *Program::pack_cond_pending()
+{
+    if ( !pack_recording || pack_cond_stack.empty() || pack_cond_stack.back().pending < 0 )
+	return NULL;
+    const PackCondFrame &f = pack_cond_stack.back();
+    return &pack_unit_conds[f.unit][f.pending];
+}
+
+void Program::pack_note_recorded_consult(const std::string &name)
+{
+    if ( name.empty() )
+	return;
+    if ( pack_if_collect )
+	pack_if_consulted.push_back(name);	// v69: the evaluation's consults
+    // v40 (task #57): the consult is EXTERNAL when the macro's state was NOT
+    // established within the consulting unit's OWN subtree — consumers bind
+    // ANY unit directly, so a sibling under the same top-level include (mingw
+    // stdlib.h defining _CRT_ERRNO_DEFINED before errno.h parsed under
+    // <cstdlib>) is just as external as an earlier root. Self/subtree
+    // definitions are reproduced by the unit's own bind replay; a defined
+    // macro with NO recorded origin is predefine/-D state, pinned by the v27
+    // config word — neither is external. v68: an external consult makes the
+    // open conditional a recorded one (pack_cond_open / pack_cond_elif).
+    const char *unit = pack_current_unit();
+    if ( !unit )
+	return;
+    const bool defined_now = macro_name_defined(name);
     std::map<madc::dis::istring, PackMacroOrigin>::iterator oi =
 	pack_macro_origin.find(name);
     if ( defined_now && oi == pack_macro_origin.end() )
-	return false;			// predefine / -D: config-word-pinned
+	return;				// predefine / -D: config-word-pinned
     if ( oi != pack_macro_origin.end() && oi->second.unit )
     {
 	if ( oi->second.unit == unit )
-	    return false;		// self: the unit's own replay decides
+	    return;			// self: the unit's own replay decides
 	std::map<const char *, std::set<const char *> >::iterator sti =
 	    pack_unit_subtree.find(unit);
 	if ( sti != pack_unit_subtree.end()
 	  && sti->second.count(oi->second.unit) )
-	    return false;		// subtree: edges install it before us
+	    return;			// subtree: edges install it before us
     }
-    if ( !pack_unit_branch_dep_seen[unit].insert(name).second )
-	return defined_now;
-    PackBranchDep dep;
-    dep.name = name;
-    dep.defined = defined_now;
-    dep.has_value = false;
-    dep.definer = oi != pack_macro_origin.end() ? oi->second.unit : NULL;
-    if ( defined_now )
-    {
-	if ( std::string *dv = define_map.find(name) )
-	{
-	    dep.has_value = true;
-	    dep.value = *dv;
-	}
-	else if ( MacroDef *mv = macro_map.find(name) )
-	{
-	    dep.has_value = true;
-	    dep.value = mv->body;
-	}
-    }
-    pack_unit_branch_deps[unit].push_back(dep);
-    return defined_now;
+    ++pack_external_consults;
 }
 
-// v55 (freeze time): skip an `#ifndef X` arm whose X an EXTERNAL sibling
-// defined, capturing its body as skipConditionalBlock skips it. The frozen unit
-// carries none of that arm, so a consumer without X would bind it short (mingw
-// stdio.h's `#ifndef NULL` behind the win64 corpus's <cstddef>). A body of
-// define / undef / conditional directives only, closed by its own #endif, is
-// recorded for the bind to replay (forest_replay_pp_arms); any other arm stays
-// missing content for the branch-dependency check.
-TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name)
+// Skip the open arm while capturing its body (cap.begin set by the caller).
+// A SINGLE arm — closed by the group's #endif — becomes the open condition
+// record's `arm` (v68, K2): a consumer that takes the arm the freeze skipped
+// replays it.
+TokenBase *Program::skip_capturing_arm(SkippedArmCapture &cap)
 {
-    const char *unit = pack_current_unit();
-    SkippedArmCapture cap;
-    if ( !unit || !source.raw_offset(cap.begin) )
-	return skipConditionalBlock();
+    const PackCondFrame *f = pack_recording && !pack_cond_stack.empty()
+	? &pack_cond_stack.back() : NULL;
+    const char *rec_unit = f ? f->unit : NULL;
+    const int rec = f ? f->pending : -1;	// the frame pops at the #endif
     skip_arm_capture = &cap;
     TokenBase *next;
     try
@@ -6510,17 +8086,29 @@ TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name)
 	throw;
     }
     skip_arm_capture = NULL;
-    if ( !cap.closed || !cap.pure )
-	return next;
-    std::vector<PackSkippedArm> &arms = pack_unit_skipped_arms[unit];
-    for ( size_t i = 0; i < arms.size(); ++i )
-	if ( arms[i].name == name && arms[i].text == cap.text )
-	    return next;
-    PackSkippedArm arm;
-    arm.name = name;
-    arm.text = cap.text;
-    arms.push_back(arm);
+    if ( cap.closed && rec >= 0 )
+    {
+	PackCondRecord &r = pack_unit_conds[rec_unit][rec];
+	r.arm_captured = true;
+	r.arm = cap.text;
+	// v76: the bind replays the arm's tokens at the root's include site.
+	r.arm_decl_scope = pack_output_at_declaration_scope();
+	// v69: the arm's writes as the freeze holds them here — the content after
+	// the arm was expanded with these values, so an arm the bind runs must
+	// leave the same state (CIR_COND_ARM_STATE).
+	if ( MadcSharedPreludeCache::embedded_fragment_is_pure(cap.text, &r.arm_writes, false) )
+	    r.arm_state = forest_macro_state_spelling(*this, r.arm_writes);
+    }
     return next;
+}
+
+// v68: a recorded condition's skipped arm, captured; any other skip is plain.
+TokenBase *Program::skip_recorded_arm()
+{
+    SkippedArmCapture cap;
+    if ( !pack_cond_pending() || !source.raw_offset(cap.begin) )
+	return skipConditionalBlock();
+    return skip_capturing_arm(cap);
 }
 
 // -dM: dump the effective macro table (object-like + function-like) in
@@ -6562,11 +8150,8 @@ bool Program::should_tokenize_include(const std::string &path)
     include_probe_text.clear();
     include_probe_path.clear();
     include_guard_watch_key = madc::dis::istring();
-    // Same canonicalization the search-dir prefixes get — they are compared
-    // against each other, so one owner (canonical_path_for_compare) or they drift.
-    madc::dis::istring canonical = path;
-    if ( !path.empty() && path[0] != '<' )
-	canonical = canonical_include_key(path);
+    // B198: the key this check gates on is the directive's once-only key.
+    madc::dis::istring canonical = note_include_once_key(path);
     if ( !path.empty() && path[0] == '<' )
     {
 	// Named (embedded/PCH) include keys: blanket once-only — the baked
@@ -6625,10 +8210,7 @@ bool Program::should_tokenize_include(const std::string &path)
 	    const madc::dis::istring guard = include_guard_of_text(text, false);
 	    include_guard_by_file[canonical] = guard;
 	    if ( !guard.empty() )
-	    {
-		pack_record_branch_macro(guard, true /* include probe */);
 		return live_tokenize_record(canonical, false);
-	    }
 	}
 	else
 	    include_guard_watch_key = canonical;	// the lex decides the verdict
@@ -6639,7 +8221,6 @@ bool Program::should_tokenize_include(const std::string &path)
     const madc::dis::istring &guard = gi->second;
     if ( guard.empty() )
 	return live_tokenize_record(canonical, true);
-    pack_record_branch_macro(guard, true /* include probe */);	// B4a: guard definedness gates inclusion
     return live_tokenize_record(canonical, !guard_defined(guard));
 }
 
@@ -6661,9 +8242,9 @@ bool Program::live_tokenize_record(const madc::dis::istring &canonical, bool tok
 // paths — compare canonically, the same owner the live record used. Embedded
 // units freeze under bare names ("stddef.h"); their live record is the
 // angle-bracket named key ("<stddef.h>").
-bool Program::forest_unit_file_live_tokenized(uint32_t unit)
+bool Program::forest_unit_file_live_tokenized(ForestSide &s, uint32_t unit)
 {
-    const char *uname = bind_forest->unit_name(unit);
+    const char *uname = s.forest->unit_name(unit);
     if ( !uname || !*uname )
 	return false;
     if ( *uname == '<' )
@@ -6672,6 +8253,121 @@ bool Program::forest_unit_file_live_tokenized(uint32_t unit)
 	return forest_live_tokenized.count(embedded_unit_include_key(uname)) != 0
 	    || forest_live_tokenized.count(uname) != 0;
     return forest_live_tokenized.count(canonical_include_key(uname)) != 0;
+}
+
+// Would a live re-include of a unit's FILE be skipped now — the rule
+// should_tokenize_include applies: a named (embedded) key and a user file are
+// once-only; a system file is skipped only when its whole text sits in an
+// include guard that is defined (gcc's multiple-include rule). A guard-less
+// system header written to be included again (<assert.h> under a new NDEBUG)
+// is re-read, so the bind's "already present" prune must not drop it.
+bool Program::forest_unit_reinclude_skipped(ForestSide &s, uint32_t unit)
+{
+    const char *uname = s.forest->unit_name(unit);
+    if ( !uname || !*uname )
+	return false;
+    if ( *uname == '<' || !strchr(uname, '/') )
+	return true;
+    const madc::dis::istring canonical = canonical_include_key(uname);
+    if ( !is_system_header_path(canonical.c_str()) )
+	return true;
+    std::map<madc::dis::istring, madc::dis::istring>::const_iterator gi =
+	include_guard_by_file.find(canonical);
+    if ( gi == include_guard_by_file.end() )
+    {
+	// A unit only ever BOUND has no live first visit to have recorded its
+	// guard: read the verdict from its frozen source text, with the live
+	// side's one detector, and keep it as that visit would. No text: keep
+	// the once-only answer.
+	std::string text;
+	if ( !forest_source_text(uname, text) )
+	    return true;
+	gi = include_guard_by_file.emplace(canonical,
+					   include_guard_of_text(text, false)).first;
+    }
+    return !gi->second.empty() && macro_name_defined(gi->second);
+}
+
+// K1b (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ root that declines
+// after a bind parses live beside the bound units. When its live closure — the
+// root and the units it reaches that are not bound — declares a name a bound
+// unit declares (a namespace excepted: every unit reopens std), bound and live
+// content meet on that name. The restart with binding off is deferred until a
+// real overlap needs it (KG Decision k1b_overlap_detector_defer_restart).
+static bool forest_decline_overlaps_bound(Program::ForestSide &s, uint32_t root)
+{
+    CirFrozenForest *f = s.forest;
+    const ForestDeclNames &dn = f->decl_names();
+    std::vector<uint32_t> todo(1, root), edges;
+    std::set<uint32_t> seen;
+    std::vector<cir_forest_decl_entry> decls;
+    while ( !todo.empty() )
+    {
+	const uint32_t u = todo.back();
+	todo.pop_back();
+	if ( !seen.insert(u).second || s.chain_set.count(u) )
+	    continue;
+	if ( f->unit_decl_index(u, decls) )
+	    for ( size_t i = 0; i < decls.size(); ++i )
+	    {
+		if ( decls[i].kind == Program::pdkNamespace )
+		    continue;
+		const char *nm = f->pool_str(decls[i].name_id);
+		uint32_t n = 0;
+		const uint32_t *units = nm && *nm ? dn.units_of(nm, n) : NULL;
+		for ( uint32_t k = 0; k < n; ++k )
+		    if ( s.chain_set.count(units[k]) )
+		    {
+			DBG(std::cout << "forest bind: unit " << (f->unit_name(u) ? f->unit_name(u) : "?")
+			    << " declares '" << nm << "', which bound unit "
+			    << (f->unit_name(units[k]) ? f->unit_name(units[k]) : "?")
+			    << " declares too" << std::endl);
+			return true;
+		    }
+	    }
+	if ( f->unit_edges(u, edges) )
+	    todo.insert(todo.end(), edges.begin(), edges.end());
+    }
+    return false;
+}
+
+// Bind the grove unit an #include names (false: it live-parses instead) — the
+// ONE bind entry: the include sites and the posix-provider sites alike. A
+// root already bound is included again only as gcc would read it again
+// (forest_unit_reinclude_skipped): a guard-less system header (<assert.h>
+// under a new NDEBUG) is walked again on its own, against the state here; its
+// includees keep their own once-only rule.
+bool Program::forest_bind_include_root(uint32_t unit)
+{
+    // K1a (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ / madc TU's
+    // system content is all-bound or all-live. The restore installs each name
+    // a bound unit declares as the WHOLE freeze defined it (a forward
+    // declaration in <bits/stringfwd.h> brings std::char_traits complete), and
+    // C++ resolves class patterns, templates and default arguments by name, so
+    // bound and live system content cannot mix. A C TU mixes safely: its
+    // restored structs, typedefs and functions merge with a live twin.
+    if ( forest_system.bind_stopped )
+	return false;
+    const bool bound = forest_system.chain_set.count(unit) != 0;
+    const bool reinclude = bound && !forest_unit_reinclude_skipped(forest_system, unit);
+    if ( bound && !reinclude )
+	return true;	// bound already, and a live re-include would skip it too
+    if ( !forest_walk_root(forest_system, unit, reinclude) )
+    {
+	// K1a: nothing bound yet; K1b: the decline's live closure meets a
+	// bound unit on a declared name.
+	const bool first = forest_system.chain.empty();
+	if ( !is_c_mode() && (first || forest_decline_overlaps_bound(forest_system, unit)) )
+	{
+	    forest_system.bind_stopped = true;
+	    DBG(std::cout << "forest bind: binding stopped for this TU — "
+		<< (first ? "its first bind declined (" : "a decline after a bind overlaps it (")
+		<< (forest_system.forest->unit_name(unit) ? forest_system.forest->unit_name(unit) : "?")
+		<< "); every later include parses live" << std::endl);
+	}
+	return false;
+    }
+    return true;
 }
 
 // Defined here, used from tokenize_posix_whole_provider above too (declared
@@ -6790,7 +8486,8 @@ static bool find_filesystem_precompiled_header(Program &pgm,
 // On success pch_path names the filesystem .madh (empty for the others).
 static bool named_include_provider_exists(Program &pgm,
 					  const madc::dis::istring &incfile,
-					  madc::dis::istring &pch_path)
+					  madc::dis::istring &pch_path,
+					  bool include_next)
 {
     if ( find_filesystem_precompiled_header(pgm, incfile, true, pch_path) )
 	return true;
@@ -6802,9 +8499,15 @@ static bool named_include_provider_exists(Program &pgm,
     // instead. Gated here as well as at the tokenize site so the once-only
     // dedup key and the auto-include defer gate agree with what actually
     // resolves; a name they disagreed about would be dropped silently.
+    // An #include_next skips the from-the-TOP test exactly as the tokenize
+    // site does: its caller reached here only when embedded_wins_include_next
+    // placed the embedded slot next in the walk (a libstdc++/libc++ C wrapper
+    // continuing to the real header), so the embedded copy IS what resolves —
+    // and its once-only key must be recorded, or a later bind of a closure
+    // holding that unit installs it a second time beside the live copy.
     return find_embedded_header(incfile) != NULL
 	&& pgm.is_embedded_header_allowed(incfile)
-	&& !pgm.embedded_header_outranked(incfile);
+	&& (include_next || !pgm.embedded_header_outranked(incfile));
 }
 
 static bool load_precompiled_header_file(const madc::dis::istring &path,
@@ -7557,38 +9260,14 @@ TokenBase *Program::_getToken()
 	case '#': // #! is a special comment style for shell script execution
 	    if ( source.peek() == '!' )
 	    {
+		// A comment here: the main source's shebang standard was
+		// adopted before the tokenizer was set up
+		// (adopt_shebang_standard), so its keywords and macros are
+		// the standard's own.
 		source.get();
 		word = "#!";
 		while ( source.good() && !source.eof() && source.peek() != '\r' && source.peek() != '\n' )
 		    word += source.get();
-		// Parse shebang args if interpreter is madc
-		{
-		    size_t sp = word.find(' ');
-		    madc::dis::istring path = (sp != madc::dis::istring::npos) ? word.substr(2, sp - 2) : word.substr(2);
-		    madc::dis::istring base = madc::detail::host_path_basename(path);
-		    if ( base == "madc" && sp != madc::dis::istring::npos )
-		    {
-			madc::dis::istring args = word.substr(sp + 1);
-			std::istringstream as(args);
-			std::string arg;
-			while ( as >> arg )
-			    if ( set_language_standard_option(arg) )
-				break;
-			// Remove C++ keywords retroactively if shebang set C mode
-			if ( is_c_mode() )
-			{
-			    keyword_map.erase("try");
-			    keyword_map.erase("catch");
-			    keyword_map.erase("throw");
-			    keyword_map.erase("class");
-			    keyword_map.erase("new");
-			    keyword_map.erase("delete");
-			    keyword_map.erase("using");
-			    keyword_map.erase("namespace");
-			    keyword_map.erase("prefer");
-			}
-		    }
-		}
 		return make_rem(word);
 	    }
 	    // A comment between `#` and the directive name is white space.
@@ -7634,6 +9313,7 @@ TokenBase *Program::_getToken()
 			    source.get();
 			return getToken();
 		    }
+		    IncludeServingScope serving_scope(*this);	// B198
 		    // skip whitespace
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
@@ -7695,6 +9375,16 @@ TokenBase *Program::_getToken()
 		    // belongs to the INCLUDER (pack_protocol_serving_begin;
 		    // both the embedded and the filesystem arm gate on this).
 		    bool protocol_visit = need_protocol_macro_live();
+		    // K2d: an include inside a frozen arm the bind walk runs is an
+		    // edge of that walk, never a live include or a root of its own.
+		    // No serving completes here: the completion side effects (the
+		    // value_stream injection writes the program's token stream) are
+		    // the ROOT's, when its walk commits or its live parse runs.
+		    if ( forest_arm_walk )
+		    {
+			forest_arm_include(incfile, is_system && !is_include_next && !protocol_visit);
+			return getToken();
+		    }
 		    // angle-bracket includes: prefer real precompiled headers, then
 		    // text-embedded compatibility headers, then filesystem source.
 		    // #include_next is POSITIONAL (continue the path search after
@@ -7706,26 +9396,30 @@ TokenBase *Program::_getToken()
 		    if ( is_system
 		      && (!is_include_next || embedded_wins_include_next(incfile)) )
 		    {
+			// A header the auto-include scan already queued is
+			// served ONCE, by the prelude, ahead of the first use
+			// that queued it: the program's own later include of it
+			// is that serving. The prelude feeds its includes
+			// through this same handler
+			// (tokenize_synthetic_system_include), so a deferred
+			// include still walks the filesystem and still fails
+			// loudly on a true miss (gcc canon: explicit includes
+			// resolve or error). Served in place instead, the
+			// header landed after the use and the prelude's copy
+			// was a once-only no-op.
 			if ( !suppress_auto_include_scan && !protocol_visit
 			  && pending_auto_include_headers.count(incfile) )
 			{
-			    // Defer to the auto-include prelude ONLY when a
-			    // named provider (PCH / embedded) can actually
-			    // supply the header — the prelude has no filesystem
-			    // walk, so deferring an unprovided EXPLICIT include
-			    // would drop it silently. Unprovided names fall
-			    // through to the direct path: filesystem walk, loud
-			    // open failure on a true miss (gcc canon: explicit
-			    // includes resolve or error).
-			    madc::dis::istring defer_pch_path;
-			    if ( named_include_provider_exists(*this, incfile,
-							       defer_pch_path) )
-			    {
-				DBG(std::cout << "#include <" << incfile
-				    << "> deferred to auto-include prelude" << std::endl);
-				return getToken();
-			    }
+			    DBG(std::cout << "#include <" << incfile
+				<< "> deferred to auto-include prelude" << std::endl);
+			    return getToken();
 			}
+			// The dialect is builtin (R4c): under madc a written
+			// `#include <ns_*>` is the generated table's, like the
+			// auto-include's — no text.
+			if ( !protocol_visit && !is_include_next
+			  && dialect_fragment_from_table(incfile) )
+			    return include_completed_token();
 			// Phase 6 (--forest-bind): a grove-backed system header
 			// BINDS instead of tokenizing — install its PP-export
 			// delta along the include DAG (forest_bind_include), then
@@ -7737,52 +9431,34 @@ TokenBase *Program::_getToken()
 			if ( registration_policy.enable_forest_bind
 			  && !protocol_visit )
 			{
-			    // An embedded name a search dir ahead of madc's slot
-			    // outranks (libc++'s C wrappers on an Apple target)
-			    // binds the WRAPPER's unit, never the embedded copy's
-			    // bare-name unit — the precedence the live path below
-			    // applies (embedded_header_outranked), applied before
-			    // the bind.
-			    const bool outranked = !is_include_next
-				&& find_embedded_header(incfile)
-				&& embedded_header_outranked(incfile);
-			    const madc::dis::istring bind_name = outranked
-				? resolve_include_path(incfile, /*is_system=*/true)
-				: madc::dis::istring(incfile);
-			    int fu = forest_unit_for_include(bind_name);
-			    // A parent bind selected this exact child for live
-			    // tokenization. Its recursive synthetic include must pass
-			    // through the normal provider path, never re-bind the husk.
-			    if ( fu >= 0
-			      && forest_husk_live_pending.count((uint32_t)fu) )
-				fu = -1;
+			    int fu = forest_unit_for_include(
+				forest_include_bind_name(incfile, is_include_next));
 			    // v40 (task #57): a unit whose frozen branch
 			    // decisions assumed a different macro environment
 			    // declines here and live-parses below.
-			    if ( fu >= 0 && !forest_bind_env_ok((uint32_t)fu) )
+			    if ( fu >= 0 && !forest_bind_include_root((uint32_t)fu) )
 				fu = -1;
 			    if ( fu >= 0 )
 			    {
 				DBG(std::cout << "#include <" << incfile
 				    << "> bound to grove unit " << fu << " ("
-				    << bind_forest->unit_name(fu) << ")" << std::endl);
-				forest_bind_include((uint32_t)fu);
+				    << forest_system.forest->unit_name(fu) << ")" << std::endl);
 				// v25: the embedded-header include FLAG is a live
-				// tokenize-time side effect (_parser_init's lazy_map
-				// registration: stdin/stdout/stderr, cout/cin). A
+				// tokenize-time side effect (the _include_* flags
+				// _parser_init and the parse read). A
 				// grove unit whose name IS the bare embedded-header
 				// name was tokenized from the embedded text at
 				// freeze — re-run the one live side effect. A
 				// REAL-header unit (path name) never marks, exactly
 				// like the live filesystem branch.
-				const char *bound_unit_name = bind_forest->unit_name(fu);
+				const char *bound_unit_name = forest_system.forest->unit_name(fu);
 				const bool bound_embedded = bound_unit_name
 				    && find_embedded_header(bound_unit_name);
 				if ( bound_embedded )
 				    mark_embedded_include_flag(bound_unit_name);
 				// Item 5 (lazy defrost): the decl-record restore
 				// moved to flush_forest_pending_globals — the
-				// post-tokenize point where forest_chain_set is
+				// post-tokenize point where the bound chains are
 				// COMPLETE, so registration filters to the TU's
 				// actual bound-include closure (live parity: a
 				// header you never include declares nothing).
@@ -7806,6 +9482,10 @@ TokenBase *Program::_getToken()
 				}
 				if ( bound_real_provider )
 				    tokenize_posix_header_supplement(incfile);
+				// B198: the replayed arms' tokens are this
+				// serving's range, under the key a later include
+				// of the header checks.
+				note_bound_include_key(bound_unit_name, incfile);
 				return include_completed_token();
 			    }
 			}
@@ -7821,7 +9501,8 @@ TokenBase *Program::_getToken()
 			    && include_already_seen(include_key);
 			madc::dis::istring pch_path;
 			bool resolves_named =
-			    named_include_provider_exists(*this, incfile, pch_path);
+			    named_include_provider_exists(*this, incfile, pch_path,
+							  is_include_next);
 			if ( protocol_visit )
 			    pch_path.clear();	// a baked PCH is the full one-shot
 			if ( resolves_named && name_already_included )
@@ -7830,6 +9511,7 @@ TokenBase *Program::_getToken()
 			    // the once-only dedup skips re-tokenization — the bind-
 			    // time PP-export composition walks these edges.
 			    pack_record_edge(pch_path.empty() ? madc::dis::istring(incfile) : pch_path);
+			    relocate_include_for_prelude(include_key);	// B198
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
@@ -7924,24 +9606,21 @@ TokenBase *Program::_getToken()
 		      && !full_path.empty() )
 			{
 			int fu = forest_unit_for_include(full_path);
-			if ( fu >= 0
-			  && forest_husk_live_pending.count((uint32_t)fu) )
-			    fu = -1;
 			// v40 (task #57): environment mismatch declines to
 			// live parse.
-			if ( fu >= 0 && !forest_bind_env_ok((uint32_t)fu) )
+			if ( fu >= 0 && !forest_bind_include_root((uint32_t)fu) )
 			    fu = -1;
 			if ( fu >= 0 )
 			{
 			    DBG(std::cout << "#include \"" << full_path
 				<< "\" bound to grove unit " << fu << " ("
-				<< bind_forest->unit_name(fu) << ")" << std::endl);
-			    forest_bind_include((uint32_t)fu);
+				<< forest_system.forest->unit_name(fu) << ")" << std::endl);
 			    if ( is_system
 			      && is_system_header_path(full_path.c_str()) )
 				tokenize_posix_header_supplement(incfile);
 			    // Item 5: decl restore rides the post-tokenize
 			    // flush (see the system-include bind site).
+			    note_bound_include_key(full_path.c_str(), incfile);	// B198, as above
 			    return include_completed_token();
 			}
 		    }
@@ -7952,6 +9631,7 @@ TokenBase *Program::_getToken()
 			    pack_record_edge(full_path);	// B4a: edge survives the dedup skip
 			    pack_record_skipped_source(full_path);	// ...and so must its CONTENT
 			}
+			relocate_include_for_prelude(include_once_key);	// B198
 			DBG(std::cout << "#include "
 			    << (is_system ? "<" : "\"") << full_path
 			    << (is_system ? ">" : "\"")
@@ -8016,6 +9696,12 @@ TokenBase *Program::_getToken()
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
 		    source.fname(full_path.c_str());
+		    // The search dir that served the spelling (a resolved path is
+		    // that dir + incfile): #include_next resumes after it.
+		    if ( full_path.size() > incfile.size()
+		      && full_path.compare(full_path.size() - incfile.size(), incfile.size(),
+					   incfile) == 0 )
+			source.found_dir(madc::dis::istring(full_path.substr(0, full_path.size() - incfile.size())));
 		    const char *_interned2 = intern_file(full_path);
 		    {
 			ReadTimer _rt(_read_seconds);
@@ -8041,6 +9727,7 @@ TokenBase *Program::_getToken()
 			    pack_unit_subtree[pack_unit_stack[si]].insert(_interned2);
 			pack_unit_subtree[_interned2].insert(_interned2);
 			pack_unit_stack.push_back(_interned2);
+			pack_unit_enter(_interned2);
 		    }
 		    size_t groups_at_entry = cond_groups.size();
 		    source.guard_watch.base = groups_at_entry;
@@ -8056,7 +9743,10 @@ TokenBase *Program::_getToken()
 		    if ( watching )
 			include_guard_by_file[guard_watch_key] = source.guard_watch.verdict();
 		    if ( pack_recording && !protocol_visit )
+		    {
 			pack_unit_stack.pop_back();
+			pack_unit_leave(_interned2);
+		    }
 		    source = std::move(saved);
 		    suppress_auto_include_scan = saved_suppress_auto_include_scan;
 		    if ( protocol_visit )
@@ -8176,7 +9866,8 @@ TokenBase *Program::_getToken()
 			    source.get();
 			std::string body = read_macro_body(source);
 			macro.body = body;
-			macro_map[name] = macro;
+			forest_note_program_macro(name.c_str());
+			MadcSharedPreludeCache::set_macro(*this, name, NULL, &macro);
 			pack_record_define_fn(name, macro);
 			DBG(std::cout << "#define " << name << "(");
 			DBG(for (size_t i=0; i<macro.params.size(); ++i) { if (i) std::cout << ","; std::cout << macro.params[i]; });
@@ -8189,8 +9880,8 @@ TokenBase *Program::_getToken()
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
 		    std::string value = read_macro_body(source);
-		    define_map[name] = value;
-		    note_std_abi_define(name, value);
+		    forest_note_program_macro(name.c_str());
+		    MadcSharedPreludeCache::set_macro(*this, name, &value, NULL);
 		    pack_record_define(name, value);
 		    DBG(std::cout << "#define " << name << " " << value << std::endl);
 		    return getToken();
@@ -8202,8 +9893,8 @@ TokenBase *Program::_getToken()
 		    std::string name;
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
-		    define_map.erase(name);
-		    macro_map.erase(name);
+		    forest_note_program_macro(name.c_str());
+		    MadcSharedPreludeCache::set_macro(*this, name, NULL, NULL);
 		    pack_record_undef(name);
 		    DBG(std::cout << "#undef " << name << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
@@ -8266,23 +9957,23 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
 		    bool defined = macro_name_defined(name);
-		    bool external = pack_record_branch_macro(name);
+		    const size_t consults_before = pack_external_consults;
+		    pack_note_branch_consult(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    if ( !source.guard_watch.key.empty() )
 			guard_watch_open(directive == "ifndef" ? madc::dis::istring(name)
 							       : madc::dis::istring());
 		    ifdef_stack.push(active);
-		    cond_groups.push({ active, directive == "ifdef" ? CondDirective::Ifdef
-							: CondDirective::Ifndef,
-				       dir_line, dir_col });
+		    const CondDirective kind = directive == "ifdef" ? CondDirective::Ifdef
+								 : CondDirective::Ifndef;
+		    cond_groups.push({ active, kind, dir_line, dir_col });
+		    pack_cond_open(kind, name, active, consults_before);
 		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
 		    consume_directive_line_tail();
-		    if ( !active && external && directive == "ifndef" )
-			return skip_and_capture_arm(name);
 		    if ( !active )
-			return skipConditionalBlock();
+			return skip_recorded_arm();
 		    return getToken();
 		}
 		if ( directive == "if" )
@@ -8302,12 +9993,15 @@ TokenBase *Program::_getToken()
 			    cmacro = if_not_defined_guard(cb, ce);
 			guard_watch_open(cmacro);
 		    }
-		    bool active = evaluateIfCondition();
+		    const size_t consults_before = pack_external_consults;
+		    const std::string cond = read_if_condition_text();
+		    bool active = evaluate_if_text(cond);
 		    ifdef_stack.push(active);
 		    cond_groups.push({ active, CondDirective::If, dir_line, dir_col });
+		    pack_cond_open(CondDirective::If, cond, active, consults_before);
 		    DBG(std::cout << "#if -> " << (active ? "true" : "false") << std::endl);
 		    if ( !active )
-			return skipConditionalBlock();
+			return skip_recorded_arm();
 		    return getToken();
 		}
 		if ( directive == "elif" )
@@ -8315,6 +10009,7 @@ TokenBase *Program::_getToken()
 		    if ( ifdef_stack.empty() )
 			Throw << "#elif without matching #if/#ifdef" << flush;
 		    guard_watch_branch();
+		    pack_cond_branch();
 		    cond_groups.top().directive = CondDirective::Elif;
 		    bool already_done = cond_groups.top().taken;
 		    ifdef_stack.pop();
@@ -8325,7 +10020,10 @@ TokenBase *Program::_getToken()
 		    }
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
-		    bool active = evaluateIfCondition();
+		    const size_t consults_before = pack_external_consults;
+		    const std::string cond = read_if_condition_text();
+		    bool active = evaluate_if_text(cond);
+		    pack_cond_elif(cond, active, consults_before);
 		    ifdef_stack.push(active);
 		    if ( active )
 			cond_groups.top().taken = true;
@@ -8339,6 +10037,7 @@ TokenBase *Program::_getToken()
 		    if ( ifdef_stack.empty() )
 			Throw << "#else without matching #if/#ifdef" << flush;
 		    guard_watch_branch();
+		    pack_cond_branch();
 		    cond_groups.top().directive = CondDirective::Else;
 		    bool already_done = cond_groups.top().taken;
 		    ifdef_stack.pop();
@@ -8360,6 +10059,7 @@ TokenBase *Program::_getToken()
 			Throw << "#endif without matching #if/#ifdef" << flush;
 		    ifdef_stack.pop();
 		    cond_groups.pop();
+		    pack_cond_close();
 		    guard_watch_close();
 		    DBG(std::cout << "#endif" << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
@@ -9050,7 +10750,7 @@ TokenBase *Program::_getToken()
 		    for ( size_t k = 0; k < idlen; ++k )
 			whash = madc::dis::intern_table::hash_step(whash, (unsigned char)idspan[k]);
 		}
-		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
+		while ( source.good() && is_ident_char((unsigned char)source.peek()) )
 		{
 		    int wc = source.get();
 		    word += (char)wc;
@@ -9081,6 +10781,8 @@ TokenBase *Program::_getToken()
 		     && consume_macro_call_open(source) )
 		{
 		    MacroDef &macro = macro_map[sid];
+		    if ( pack_recording )
+			pack_note_expansion(sid);
 		    // Learn what argument paint covers the TEXT this invocation is
 		    // about to consume: a painted argument region of an enclosing
 		    // replacement drains as we read, so the paint must be collected
@@ -9096,6 +10798,13 @@ TokenBase *Program::_getToken()
 		    // over the whole call painted `_Mdouble_` and left every math
 		    // declaration as `extern _Mdouble_ acos (double __x)`.
 		    std::vector<std::set<madc::dis::istring> > arg_served;
+		    // Per-ARGUMENT too: where the paint changes WITHIN the argument.
+		    // An argument read from a painted region AND unpainted body text
+		    // is pre-expanded stretch by stretch (Source::PaintSeg); only
+		    // those arguments keep their stretches, by argument index.
+		    std::vector<std::pair<size_t, std::vector<Source::PaintSeg> > > stretched_args;
+		    ArgPaintStretches arg_stretches;
+		    size_t seg_frame = (size_t)-1;
 		    std::string arg;
 		    PpGroupScan group;
 		    group.step('(', source.good() ? source.peek() : '\0');
@@ -9197,13 +10906,26 @@ TokenBase *Program::_getToken()
 			}
 			else if ( structural && mc == ',' && group.at_argument_level() )
 			{
-			    trim_macro_argument(arg);	// the ONE trim owner
+			    std::vector<Source::PaintSeg> segs;
+			    if ( arg_stretches.finish(arg, segs) )	// trims the argument
+				stretched_args.push_back(std::make_pair(args.size(), std::move(segs)));
 			    args.push_back(arg);
 			    arg_served.push_back(source.served_arg_paint());
 			    source.reset_served_arg_paint();
 			    arg.clear();
+			    seg_frame = (size_t)-1;
 			}
-			else arg += mc;
+			else
+			{
+			    // A character from another frame may start a stretch
+			    // painted differently.
+			    if ( source.serving_frame() != seg_frame )
+			    {
+				seg_frame = source.serving_frame();
+				arg_stretches.note(arg.size(), source.current_arg_paint());
+			    }
+			    arg += mc;
+			}
 		    }
 		    // If the active #ifdef branch contained the closing `)`,
 		    // the remaining #else/#endif directives are still in the
@@ -9274,9 +10996,12 @@ TokenBase *Program::_getToken()
 			    source.pushback(preserved);
 		    }
 		    // last argument
-		    trim_macro_argument(arg);		// the ONE trim owner
+		    std::vector<Source::PaintSeg> last_segs;
+		    const bool last_stretched = arg_stretches.finish(arg, last_segs);	// trims it
 		    if ( !arg.empty() || !args.empty() )
 		    {
+			if ( last_stretched )
+			    stretched_args.push_back(std::make_pair(args.size(), std::move(last_segs)));
 			args.push_back(arg);
 			arg_served.push_back(source.served_arg_paint());
 		    }
@@ -9363,7 +11088,15 @@ TokenBase *Program::_getToken()
 			// Push arg text through the tokenizer to expand macros
 			Source saved = std::move(source);
 			source = Source();
-			source.str(a);
+			// An argument read across differently painted regions is
+			// served stretch by stretch, each under its own paint (below);
+			// one painted alike reads as plain text under that paint.
+			const std::vector<Source::PaintSeg> *own_stretches = NULL;
+			for ( size_t s = 0; s < stretched_args.size(); ++s )
+			    if ( stretched_args[s].first == i )
+				own_stretches = &stretched_args[s].second;
+			const bool stretched = own_stretches != NULL;
+			source.str(stretched ? std::string() : a);
 			// Inherit the ENCLOSING expansions' paint — the frames
 			// mid-rescan in `saved` — but NOT this macro's own
 			// name. C11 6.10.3.1p1: an argument is macro-replaced
@@ -9395,10 +11128,16 @@ TokenBase *Program::_getToken()
 			// enumerator position ("Expecting identifier in enum") and took
 			// every darwin test that reaches a real SDK header with it.
 			// arg_served is per-ARGUMENT, which is what this contract means.
+			// Within the argument the paint is per STRETCH: a union over
+			// the whole argument hid the body's own NC_IdxExpr because
+			// the X stretch beside it had expanded the same name
+			// (sqlite3ResolveNotValid's assert under SQLITE_DEBUG).
 			std::set<madc::dis::istring> own_region_paint;
-			if ( i < arg_served.size() )
+			if ( !stretched && i < arg_served.size() )
 			    own_region_paint = arg_served[i];
 			source.inherit_macro_disables(saved, "", &own_region_paint);
+			if ( stretched )
+			    source.pushback_painted_text(a, *own_stretches);
 			std::string expanded_arg = spell_expanded_source();
 			param_paint[param].insert(
 			    source.expanded_macro_names().begin(),
@@ -9431,6 +11170,8 @@ TokenBase *Program::_getToken()
 			// #define substitution: inject the define value into the source stream
 			if ( define_map.count(sid) && !source.macro_disabled(wname) )
 			{
+			    if ( pack_recording )
+				pack_note_expansion(sid);
 			    std::string &val = define_map[sid];
 			    if ( !val.empty() )
 			    {
@@ -9447,12 +11188,13 @@ TokenBase *Program::_getToken()
 		    // empty define — skip and get next token
 		    return getToken();
 		}
-		// Built-in predefined macros: __FILE__, __FILE_NAME__ and
-		// __LINE__ (builtin_position_macro, their one owner). Users can
-		// still override via #define (handled above).
+		// Built-in predefined macros: __FILE__, __FILE_NAME__, __LINE__,
+		// __DATE__, __TIME__ and __TIMESTAMP__ (builtin_macro_text, their
+		// one owner).
+		// Users can still override via #define (handled above).
 		{
 		    madc::dis::istring text;
-		    if ( builtin_position_macro(wname, &text) )
+		    if ( builtin_macro_text(wname, &text) )
 		    {
 			source.pushback_macro(text, "");
 			return getToken();
@@ -9469,6 +11211,29 @@ TokenBase *Program::_getToken()
 		{
 		    handle_pragma_operator();
 		    return getToken();
+		}
+		// __has_attribute / __has_builtin in ordinary text: gcc's builtin
+		// macros (BT_HAS_ATTRIBUTE, BT_HAS_BUILTIN) and clang's expand
+		// outside #if too, to the answer the directive gets —
+		// evaluateHasQuery, its one owner, over the operand read to its
+		// balanced `)`. __has_include / __has_include_next stay directive
+		// operators (gcc and clang refuse them outside #if); a user
+		// #define still wins (define_map above).
+		{
+		    static const madc::dis::istring k_has_attribute("__has_attribute"),
+			k_has_builtin("__has_builtin");
+		    if ( wname == k_has_attribute || wname == k_has_builtin )
+		    {
+			while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
+			    source.get();
+			std::string group;
+			if ( source.peek() == '(' && consume_pp_group(source, &group) )
+			{
+			    size_t pos = 0;
+			    source.pushback_macro(evaluateHasQuery(wname, group, pos) ? "1" : "0", "");
+			    return getToken();
+			}
+		    }
 		}
 		// __FUNCTION__ / __func__ / __PRETTY_FUNCTION__: keep these
 		// as magic identifiers. madc tokenizes the whole file before
@@ -9777,9 +11542,8 @@ TokenBase *Program::_getToken()
 TokenBase *Program::skipConditionalBlock()
 {
     int depth = 0;
-    // v55: an arm capture in progress (skip_and_capture_arm) — the body is
-    // replayable only if every significant line is a define / undef /
-    // conditional directive and the arm's own #endif closes it.
+    // An arm capture in progress (skip_capturing_arm): the body is captured
+    // when the arm's own #endif closes it.
     SkippedArmCapture *cap = skip_arm_capture;
     while ( source.good() && !source.eof() )
     {
@@ -9795,25 +11559,35 @@ TokenBase *Program::skipConditionalBlock()
 	    continue;
 	if ( ch != '#' )
 	{
-	    if ( cap )
-		cap->pure = false;
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    source.skip_line_rest();
 	    continue;
 	}
 	// skip whitespace (comments included) after #
 	skip_directive_space(source);
-	// read directive word
-	std::string dir;
-	while ( source.good() && !source.eof() && isalpha(source.peek()) )
-	    dir += source.get();
-	if ( dir == "ifdef" || dir == "ifndef" || dir == "if" )
+	// The directive word, read in place; a word a splice or a pushback
+	// breaks up is gathered by the char loop.
+	const char *w = "";
+	size_t wn = 0;
+	if ( !source.fast_span(w, wn, [](unsigned char c) { return is_ascii_letter(c); }) )
+	    wn = 0;
+	std::string gathered;
+	if ( source.good() && !source.eof() && is_ascii_letter((unsigned char)source.peek()) )
+	{
+	    gathered.assign(w, wn);
+	    while ( source.good() && !source.eof() && is_ascii_letter((unsigned char)source.peek()) )
+		gathered += (char)source.get();
+	    w = gathered.data();
+	    wn = gathered.size();
+	}
+	typedef PpDirectiveWord W;
+	const W dir = pp_directive_word(w, wn);
+	if ( dir == W::Ifdef || dir == W::Ifndef || dir == W::If )
 	{
 	    depth++;
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
 	}
-	else if ( dir == "endif" )
+	else if ( dir == W::Endif )
 	{
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
@@ -9832,22 +11606,21 @@ TokenBase *Program::skipConditionalBlock()
 		// this #endif closes our block
 		ifdef_stack.pop();
 		cond_groups.pop();
+		pack_cond_close();
 		guard_watch_close();
 		DBG(std::cout << "skipConditionalBlock: popped, stack now=" << ifdef_stack.size() << std::endl);
 		return getToken();
 	    }
 	    depth--;
 	}
-	else if ( depth == 0 && dir == "else" )
+	else if ( depth == 0 && dir == W::Else )
 	{
 	    if ( cap )
-	    {
-		cap->pure = false;	// an #else arm ends this capture
-		skip_arm_capture = cap = NULL;
-	    }
+		skip_arm_capture = cap = NULL;	// an #else arm ends this capture
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
 	    guard_watch_branch();
+	    pack_cond_branch();
 	    cond_groups.top().directive = CondDirective::Else;
 	    bool already_done = cond_groups.top().taken;
 	    ifdef_stack.pop();
@@ -9859,15 +11632,13 @@ TokenBase *Program::skipConditionalBlock()
 		return getToken();
 	    // still false, keep skipping
 	}
-	else if ( depth == 0 && dir == "elif" )
+	else if ( depth == 0 && dir == W::Elif )
 	{
 	    if ( cap )
-	    {
-		cap->pure = false;	// an #elif arm ends this capture
-		skip_arm_capture = cap = NULL;
-	    }
+		skip_arm_capture = cap = NULL;	// an #elif arm ends this capture
 	    // do NOT consume rest of line — evaluateIfCondition() needs to read the condition
 	    guard_watch_branch();
+	    pack_cond_branch();
 	    cond_groups.top().directive = CondDirective::Elif;
 	    bool already_done = cond_groups.top().taken;
 	    ifdef_stack.pop();
@@ -9881,7 +11652,10 @@ TokenBase *Program::skipConditionalBlock()
 	    }
 	    else
 	    {
-		bool active = evaluateIfCondition();
+		const size_t consults_before = pack_external_consults;
+		const std::string cond = read_if_condition_text();
+		bool active = evaluate_if_text(cond);
+		pack_cond_elif(cond, active, consults_before);
 		ifdef_stack.push(active);
 		if ( active )
 		    cond_groups.top().taken = true;
@@ -9893,13 +11667,8 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else
 	{
-	    // A nested #else / #elif and #define / #undef replay as-is; any other
-	    // directive (#include, #error, #pragma) is not a pure macro body.
-	    if ( cap && dir != "define" && dir != "undef" && dir != "else" && dir != "elif" )
-		cap->pure = false;
 	    // consume rest of line for unknown directives inside skipped block
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    source.skip_line_rest();
 	}
     }
     // The file ended inside a skipped group: the group is still open.
@@ -10020,10 +11789,10 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    bool is_has_op = word.size() > 6 && word.compare(0, 6, "__has_") == 0;
 	    // B4a: every identifier a #if/#elif condition consults (including
 	    // `defined` operands, which the evaluator resolves later) is a
-	    // branch-relevant macro name for the pack container. The operators
-	    // themselves are not macros and are not recorded.
+	    // consult for the pack's condition records. The operators themselves
+	    // are not macros and are not recorded.
 	    if ( word != "defined" && !is_has_op )
-		pack_record_branch_macro(word);
+		pack_note_branch_consult(word);
 	    if ( word == "defined" )
 	    {
 		out += word;
@@ -10147,7 +11916,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    ++ti;
 		}
 	    }
-	    else if ( builtin_position_macro(word, NULL) )
+	    else if ( builtin_macro_text(word, NULL) )
 	    {
 		// Predefined macros live in getToken's builtin arm, not in
 		// define_map — the string expander needs its own arm or a
@@ -10156,7 +11925,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 		// define_map probe above ran first, so a user #define of
 		// the name still wins, matching getToken's order.
 		madc::dis::istring text;
-		builtin_position_macro(word, &text);
+		builtin_macro_text(word, &text);
 		out += text;
 		changed = true;
 		++ti;
@@ -10232,34 +12001,151 @@ bool Program::has_builtin(const madc::dis::istring &name)
 // invisible.
 bool Program::has_query_operator_implemented(const madc::dis::istring &op)
 {
-    return op == "__has_builtin"
-	|| op == "__has_attribute"
-	|| op == "__has_include"
-	|| op == "__has_include_next";
+    // Interned once: each test is an identity compare.
+    static const madc::dis::istring has_builtin("__has_builtin"),
+	has_attribute("__has_attribute"), has_include("__has_include"),
+	has_include_next("__has_include_next");
+    return op == has_builtin
+	|| op == has_attribute
+	|| op == has_include
+	|| op == has_include_next;
 }
 
 bool Program::macro_name_defined(const madc::dis::istring &name)
 {
-    return define_map.count(name) > 0 || macro_map.count(name) > 0
+    const uint32_t sid = strpool.find(name.str());
+    return define_map.count(sid) > 0 || macro_map.count(sid) > 0
 	|| has_query_operator_implemented(name)
-	|| builtin_position_macro(name, NULL);
+	|| builtin_macro_text(name, NULL);
 }
 
-bool Program::builtin_position_macro(const madc::dis::istring &name, madc::dis::istring *out)
+// The C locale's month and weekday abbreviations (asctime's), for the date
+// macros' texts.
+static const char *const k_month_abbrev[] = { "Jan", "Feb", "Mar", "Apr",
+    "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+static const char *const k_weekday_abbrev[] = { "Sun", "Mon", "Tue", "Wed",
+    "Thu", "Fri", "Sat" };
+
+// The reproducible-builds convention gcc and clang honour, with gcc's refusal
+// of a malformed value.
+bool Program::source_date_epoch(struct tm &parts, bool &known)
 {
-    if ( name == "__LINE__" )
+    const char *epoch = ::getenv("SOURCE_DATE_EPOCH");
+    if ( !epoch )
+	return false;
+    char *end = NULL;
+    errno = 0;
+    long long v = ::strtoll(epoch, &end, 10);
+    if ( errno == ERANGE || end == epoch || *end != '\0'
+      || v < 0 || v > 253402300799LL )
+	Throw << "environment variable 'SOURCE_DATE_EPOCH' must expand to a"
+		 " non-negative integer less than or equal to 253402300799"
+	      << flush;
+    known = madc::detail::utc_time((time_t)v, parts);
+    return true;
+}
+
+// [cpp.predefined] (C11 6.10.8.1): the date and time of translation of THIS
+// translation unit, computed when first needed and fixed for the rest of it
+// (libcpp's pfile->date / pfile->time). SOURCE_DATE_EPOCH, when set, is that
+// instant; otherwise the clock, as local time.
+void Program::translation_date_time()
+{
+    if ( !translation_date_text.empty() )
+	return;
+    struct tm parts = {};
+    bool known = false;
+    if ( !source_date_epoch(parts, known) )
+    {
+	time_t now = ::time(NULL);
+	known = now != (time_t)-1 && madc::detail::local_time(now, parts);
+    }
+    if ( !known )
+    {
+	report_warning(DiagnosticPhase::lexer, "could not determine date and time",
+		       source.fname(), source.line(), source.column());
+	print_last_diagnostic(error());
+	translation_date_text = "\"??? ?? ????\"";
+	translation_time_text = "\"??:??:??\"";
+	return;
+    }
+    char buf[32];
+    snprintf(buf, sizeof buf, "\"%s %2d %4d\"", k_month_abbrev[parts.tm_mon],
+	     parts.tm_mday, parts.tm_year + 1900);
+    translation_date_text = buf;
+    snprintf(buf, sizeof buf, "\"%02d:%02d:%02d\"", parts.tm_hour, parts.tm_min,
+	     parts.tm_sec);
+    translation_time_text = buf;
+}
+
+// __TIMESTAMP__ (gcc, clang): the last modification of the file being read
+// now, as local time, spelled as asctime spells it — "Sun Sep 16 01:03:52
+// 1973". SOURCE_DATE_EPOCH, when set, names that instant instead (clang;
+// gcc 13 keeps the mtime), so every date macro names the one reproducible
+// instant. A file libmadc serves has no disk time — nothing is stat'd for
+// it; it and a file that cannot be stat'd get gcc's unknown form.
+madc::dis::istring Program::source_timestamp_text()
+{
+    struct tm parts = {};
+    bool known = false;
+    if ( !source_date_epoch(parts, known) )
+    {
+	const char *fn = source.fname();
+	time_t mtime;
+	known = fn && *fn && !path_served_by_libmadc(fn)
+	     && madc::detail::host_path_mtime(fn, mtime)
+	     && madc::detail::local_time(mtime, parts);
+    }
+    if ( !known )
+	return "\"??? ??? ?? ??:??:?? ????\"";
+    char buf[48];
+    snprintf(buf, sizeof buf, "\"%s %s %2d %02d:%02d:%02d %d\"",
+	     k_weekday_abbrev[parts.tm_wday], k_month_abbrev[parts.tm_mon],
+	     parts.tm_mday, parts.tm_hour, parts.tm_min, parts.tm_sec,
+	     parts.tm_year + 1900);
+    return buf;
+}
+
+bool Program::builtin_macro_text(const madc::dis::istring &name, madc::dis::istring *out)
+{
+    // Interned once: each test is an identity compare (every identifier the
+    // lexer reads asks).
+    // Every one's name opens with "__": the common identifier leaves after two
+    // byte compares, ahead of a compare per builtin.
+    const char *s = name.c_str();
+    if ( s[0] != '_' || s[1] != '_' )
+	return false;
+    static const madc::dis::istring k_line("__LINE__"), k_file("__FILE__"),
+	k_file_name("__FILE_NAME__"), k_date("__DATE__"), k_time("__TIME__"),
+	k_timestamp("__TIMESTAMP__");
+    if ( name == k_line )
     {
 	if ( out )
 	    *out = std::to_string(source.line());
 	return true;
     }
-    if ( name != "__FILE__" && name != "__FILE_NAME__" )
+    if ( name == k_timestamp )
+    {
+	if ( out )
+	    *out = source_timestamp_text();
+	return true;
+    }
+    if ( name == k_date || name == k_time )
+    {
+	if ( out )
+	{
+	    translation_date_time();
+	    *out = name == k_date ? translation_date_text : translation_time_text;
+	}
+	return true;
+    }
+    if ( name != k_file && name != k_file_name )
 	return false;
     if ( out )
     {
 	const char *fn = source.fname();
 	madc::dis::istring path = fn ? fn : "<unknown>";
-	if ( name == "__FILE_NAME__" )
+	if ( name == k_file_name )
 	    path = madc::detail::host_path_basename(path);
 	// A string literal of the name, '\\' and '"' escaped (gcc: a Windows
 	// path's separators stay separators, never escape sequences).
@@ -10312,6 +12198,7 @@ int64_t Program::evaluateHasQuery(const madc::dis::istring &op, const std::strin
 	{
 	    case GnuAttributeKind::UsingIfExists:	// tests/testusingifexists
 	    case GnuAttributeKind::Cleanup:		// tests/testcleanupattr
+	    case GnuAttributeKind::NoInline:		// tests/testnoinline
 		return 1;
 	    default:
 		return 0;
@@ -10346,7 +12233,8 @@ int64_t Program::evaluateHasQuery(const madc::dis::istring &op, const std::strin
 	    else
 	    {
 		madc::dis::istring pch_path;
-		if ( named_include_provider_exists(*this, file, pch_path) )
+		if ( named_include_provider_exists(*this, file, pch_path,
+						   /*include_next=*/false) )
 		    return 1;
 	    }
 	}
@@ -10371,7 +12259,15 @@ int64_t Program::evaluateHasQuery(const madc::dis::istring &op, const std::strin
     return 0;
 }
 
+// A #if / #elif directive: read its condition, then evaluate it.
 bool Program::evaluateIfCondition()
+{
+    return evaluate_if_text(read_if_condition_text());
+}
+
+// The raw text of a #if / #elif condition, read from the source to the end of
+// the directive's line.
+std::string Program::read_if_condition_text()
 {
     std::string raw_expr;
     // Translation-phase-3 comment replacement ON the captured condition: each
@@ -10381,13 +12277,31 @@ bool Program::evaluateIfCondition()
     // mingw's wchar.h/stdlib.h guard their ISO-C-ext declarations (wcstold,
     // strtold, llabs) with exactly that shape, and the dropped declarations
     // surface as "not a declaration in '::'" a thousand lines later. It also
-    // keeps comment words out of pack_record_branch_macro (B4a). A block
+    // keeps comment words out of pack_note_branch_consult (B4a). A block
     // comment may span physical lines (the <stddef.h> #endif precedent —
     // consume through `*/` wherever it closes); char/string literals shield
     // both comment introducers.
     bool in_str = false, in_chr = false;
     while ( source.good() && !source.eof() )
     {
+	// A run of bytes no state below acts on (a line end, a possible splice,
+	// the current state's quote, a comment introducer outside literals)
+	// appends in one step; the char loop reads the byte that stopped it.
+	const char *run;
+	size_t n;
+	if ( source.fast_span(run, n, [in_str, in_chr](unsigned char c) {
+		if ( c == '\n' || c == '\r' || c == '\\' )
+		    return false;
+		if ( in_str )
+		    return c != '"';
+		if ( in_chr )
+		    return c != '\'';
+		return c != '/' && c != '"' && c != '\'';
+	     }) && n )
+	{
+	    raw_expr.append(run, n);
+	    continue;
+	}
 	int ch = source.peek();
 	if ( ch == '\n' || ch == '\r' )
 	    break;
@@ -10443,7 +12357,26 @@ bool Program::evaluateIfCondition()
 	    in_chr = true;
 	raw_expr += (char)ch;
     }
+    return raw_expr;
+}
 
+// Evaluate a #if / #elif condition's raw text in the CURRENT macro state —
+// the one evaluator, for the live directive and for a frozen condition the
+// bind re-evaluates (docs/plans/2026-10-18-verified-cxx-bind.md, K2).
+bool Program::evaluate_if_text(const std::string &raw_expr)
+{
+    // v69: freezing, collect every macro this evaluation consults
+    // (pack_note_branch_consult) for the condition's record (pack_cond_elif).
+    struct IfCollect
+    {
+	Program &p;
+	explicit IfCollect(Program &pgm) : p(pgm)
+	{
+	    p.pack_if_consulted.clear();
+	    p.pack_if_collect = p.pack_recording;
+	}
+	~IfCollect() { p.pack_if_collect = false; }
+    } collect(*this);
     // Expand macros before evaluation so expressions like
     // OPENSSL_VERSION_MAJOR * 10000 + OPENSSL_VERSION_MINOR * 100
     // resolve to numeric values.
@@ -11010,78 +12943,47 @@ void Program::handle_pragma_body()
 		    source.get(); // consume closing "
 		if ( is_push )
 		{
-		    auto it = define_map.find(mname);
-		    std::string val = (it != define_map.end()) ? *it : std::string("\x01");
-		    _macro_save_stack[mname].push(val);
-		    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
+		    typedef MadcSharedPreludeCache::MacroState MacroState;
+		    const MacroState st = MadcSharedPreludeCache::macro_state(*this, mname);
+		    PushedMacro pm;
+		    pm.kind = st.kind == MacroState::object ? PushedMacro::object
+			    : st.kind == MacroState::function ? PushedMacro::function
+			    : PushedMacro::absent;
+		    pm.value = st.value;
+		    pm.macro = st.macro;
+		    _macro_save_stack[mname].push(pm);
+		    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved kind "
+			<< (int)pm.kind << std::endl);
 		}
 		else
 		{
 		    auto sit = _macro_save_stack.find(mname);
 		    if ( sit != _macro_save_stack.end() && !sit->second.empty() )
 		    {
-			madc::dis::istring val = sit->second.top();
+			// The restore is a macro write like #define / #undef:
+			// the same writer (a walk's undo log sees it), the
+			// program-write note, the freeze's event.
+			const PushedMacro pm = sit->second.top();
 			sit->second.pop();
-			if ( val == "\x01" )
-			    define_map.erase(mname);
+			const madc::dis::istring name(mname);
+			forest_note_program_macro(mname.c_str());
+			MadcSharedPreludeCache::set_macro(*this, name,
+			    pm.kind == PushedMacro::object ? &pm.value.str() : NULL,
+			    pm.kind == PushedMacro::function ? &pm.macro : NULL);
+			if ( pm.kind == PushedMacro::object )
+			    pack_record_define(name, pm.value.str());
+			else if ( pm.kind == PushedMacro::function )
+			    pack_record_define_fn(name, pm.macro);
 			else
-			    define_map[mname] = val;
-			DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored=\"" << val << "\"" << std::endl);
+			    pack_record_undef(name);
+			DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored kind "
+			    << (int)pm.kind << std::endl);
 		    }
 		}
 	    }
 	}
 	// discard trailing tokens via the lexer (handles a
 	// multi-line /* */ comment on this line)
-	consume_directive_line_tail();
-    }
-    else if ( pragma == "madc" )
-    {
-	// `#pragma madc module_begin("<spelling>")` / `module_end` — the import
-	// directive's synthetic wrap of a LAZY module row's interface (never
-	// written by hand): the prototypes between them bind at first call.
-	while ( source.peek() == ' ' || source.peek() == '\t' )
-	    source.get();
-	std::string what;
-	while ( source.good() && !source.eof()
-	     && (isalnum(source.peek()) || source.peek() == '_') )
-	    what += source.get();
-	if ( what == "module_begin" )
-	{
-	    while ( source.peek() == ' ' || source.peek() == '\t' )
-		source.get();
-	    std::string spelling;
-	    if ( source.peek() == '(' )
-	    {
-		source.get();
-		if ( source.peek() == '"' )
-		{
-		    source.get();
-		    while ( source.good() && !source.eof() && source.peek() != '"' )
-			spelling += source.get();
-		    if ( source.peek() == '"' )
-			source.get();
-		}
-		if ( source.peek() == ')' )
-		    source.get();
-	    }
-	    if ( spelling.empty() )
-		Throw << "#pragma madc module_begin: expected (\"<library spelling>\")" << flush;
-	    // Lexing runs ahead of parsing (the whole TU lexes first, then the
-	    // auto-include injector reorders the stream), so the range is a
-	    // TOKEN-IDENTITY fact: every token emitted from here to module_end
-	    // carries the spelling (_lazy_module_tokens) and parseFunction reads
-	    // it off the prototype's own token.
-	    lazy_module_spelling = spelling;
-	    DBG(std::cout << "#pragma madc module_begin(" << spelling << ")" << std::endl);
-	}
-	else if ( what == "module_end" )
-	{
-	    lazy_module_spelling.clear();
-	    DBG(std::cout << "#pragma madc module_end" << std::endl);
-	}
-	else
-	    Throw << "#pragma madc: unknown directive '" << what << "'" << flush;
 	consume_directive_line_tail();
     }
     else if ( pragma == "prefer" )
@@ -11296,18 +13198,25 @@ madc::dis::istring madc_token_spelling(TokenBase *tb)
     switch ( tb->type() )
     {
 	case TokenType::ttString:
-	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) )
+	    if ( TokenIdent *ti = tb->as_ident_tok() )
 	    {
 		// Re-escape the cooked value so the literal RE-LEXES to the
 		// same bytes (macro-arg re-lex, --dump-source round trips,
 		// the --emit=c++ render recompiles) — the ONE escape rule.
-		madc::dis::istring sv = ti->spelling();
-		return "\"" + madc_c_escape_string(sv.data(), sv.size())
-		     + "\"";
+		// The bytes are the spelling's LENGTH, never its C string: a
+		// literal holds NULs (FTS5's "\xFF\x00\x00\x01" structure
+		// marker spelled "\377" through a macro argument). A wide
+		// literal keeps its prefix and its units.
+		const char *bytes = ti->spelling();
+		size_t len = ti->spelling_len();
+		TokenStr *ts = tb->as_str_tok();
+		if ( ts && ts->wide )
+		    return "L\"" + madc_c_escape_wide_string(bytes, len) + "\"";
+		return "\"" + madc_c_escape_string(bytes, len) + "\"";
 	    }
 	    return madc::dis::istring();
 	case TokenType::ttVariable:
-	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) ) return tv->var.name;
+	    if ( TokenVar *tv = tb->as_var_tok() ) return tv->var.name;
 	    return madc::dis::istring();
 	case TokenType::ttInteger:
 	{
@@ -11339,8 +13248,8 @@ madc::dis::istring madc_token_spelling(TokenBase *tb)
 	case TokenType::ttOperator:
 	case TokenType::ttSymbol:  return madc::dis::istring(1, (char)tb->get());
 	default:
-	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) ) return ti->spelling();
-	    if ( TokenMultiOp *to = dynamic_cast<TokenMultiOp *>(tb) ) return to->str;
+	    if ( TokenIdent *ti = tb->as_ident_tok() ) return ti->spelling();
+	    if ( TokenMultiOp *to = tb->as_multiop_tok() ) return to->str;
 	    return madc::dis::istring();
     }
 }
@@ -11412,6 +13321,45 @@ madc::dis::istring madc_c_escape_string(const char *s, size_t len)
     std::vector<char> buf(n + 1);
     __madc_c_escape(s, len, '"', &buf[0], buf.size());
     return madc::dis::istring(&buf[0], n);
+}
+
+// The wide twin: the 4-byte UTF-32 units a wide literal's token holds
+// (append_wide_codepoint), as the body of an L"..." literal that re-lexes to
+// the same units. An ASCII unit takes the narrow rule above; a Unicode scalar
+// is written as its UTF-8, which the lexer reads back as that code point; any
+// other unit (a surrogate, a \x value past U+10FFFF) is a hex escape, and the
+// literal splits (`" L"`) where a hex digit follows one, as a hex escape
+// would otherwise read it.
+static madc::dis::istring madc_c_escape_wide_string(const char *s, size_t len)
+{
+    std::string out;
+    bool hex_open = false;
+    for ( size_t i = 0; i + 4 <= len; i += 4 )
+    {
+	uint32_t cp = (uint32_t)(unsigned char)s[i]
+		    | (uint32_t)(unsigned char)s[i + 1] << 8
+		    | (uint32_t)(unsigned char)s[i + 2] << 16
+		    | (uint32_t)(unsigned char)s[i + 3] << 24;
+	std::string piece;
+	if ( cp < 0x80 )
+	{
+	    char c = (char)cp;
+	    piece = madc_c_escape_string(&c, 1).str();
+	}
+	else if ( cp <= 0x10FFFF && (cp < 0xD800 || cp > 0xDFFF) )
+	    append_utf8_codepoint(piece, cp);
+	else
+	{
+	    char buf[16];
+	    snprintf(buf, sizeof buf, "\\x%x", (unsigned)cp);
+	    piece = buf;
+	}
+	if ( hex_open && isxdigit((unsigned char)piece[0]) )
+	    out += "\" L\"";
+	hex_open = piece.size() > 1 && piece[0] == '\\' && piece[1] == 'x';
+	out += piece;
+    }
+    return madc::dis::istring(out);
 }
 
 // Reconstruct source text from the token stream (full-fidelity mode): each
@@ -11695,8 +13643,7 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os,
 			    int end_col, const madc::theme *theme,
 			    int64_t standard)
 {
-    char *env_columns = getenv("COLUMNS");
-    size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
+    const size_t term_columns = madc::terminal_columns();
     // The column can exceed the fetched line (a token inside a macro
     // expansion carries post-expansion provenance). A diagnostic must never
     // throw — the caret's byte is clamped to the line's end instead of
@@ -11840,7 +13787,8 @@ void Program::tokenize(istream &ss)
 
 
 // Lex the main unit whose text the Source holds — the ONE lex loop of
-// tokenize (a file) and tokenize_buffer (a buffer). Every token goes into the
+// tokenize (a file) and tokenize_buffer (a buffer), --import's modules first.
+// Every token goes into the
 // stream, with a yield point every LEX_YIELD_GRAIN tokens (the token pump's
 // chunk grain — sub-millisecond slices; the check is one counter compare, and
 // parse_yield_point itself no-ops without tasks; it is the pump the IDE's
@@ -11850,6 +13798,9 @@ void Program::tokenize(istream &ss)
 // diagnostic whose cause add_diagnostic reads off the Source.
 bool Program::lex_main_unit(const char *fname)
 {
+    include_first_ranges.clear();	// B198: this unit's ranges only
+    if ( !import_command_line_modules() )
+	return false;
     TokenBase *tb;
     try
     {
@@ -11923,6 +13874,32 @@ void Program::finish_interactive_entry(const char *fname)
 }
 
 // tokenize a file
+// A script's shebang line (`#!/usr/bin/madc --std=c17`) belongs to its
+// command line: its standard is adopted BEFORE _tokenizer_init seeds the
+// standard's keywords and predefined macros, as the command line's is, and
+// the lexer then reads the line as a comment. Its words read as the command
+// line reads them (--std=NAME, gcc's -std=NAME); the first standard wins.
+// `text` is the source, or at least its first line.
+void Program::adopt_shebang_standard(const std::string &text)
+{
+    if ( text.compare(0, 2, "#!") != 0 )
+	return;
+    const size_t eol = text.find_first_of("\r\n");
+    const std::string line = text.substr(2, eol == std::string::npos ? eol : eol - 2);
+    const size_t sp = line.find(' ');
+    if ( sp == std::string::npos
+	 || madc::detail::host_path_basename(line.substr(0, sp)) != "madc" )
+	return;
+    std::istringstream words(line.substr(sp + 1));
+    std::string word;
+    while ( words >> word )
+    {
+	madc::dis::istring name;
+	if ( madc_cli_standard_of(word, name) && set_language_standard(name) )
+	    return;
+    }
+}
+
 TokenProgram *Program::tokenize(const char *fname)
 {
     ifstream file(fname);
@@ -11938,6 +13915,13 @@ TokenProgram *Program::tokenize(const char *fname)
 	return NULL;
     }
 
+    {
+	std::string first;
+	std::getline(file, first);
+	adopt_shebang_standard(first);
+	file.clear();
+	file.seekg(0);
+    }
     _tokenizer_init();
 
     // INTERN the caller's name before anything stores it: every main-source
@@ -11972,7 +13956,7 @@ TokenProgram *Program::tokenize(const char *fname)
 
     // Auto-includes inject BEFORE the forest flush: the synthetic #include
     // must bind its frozen unit before the decl restore (item 5, inside the
-    // flush) reads forest_chain_set. The parse()-
+    // flush) reads the bound chains. The parse()-
     // start injection stays as the live/eval fallback (pending set is empty
     // here after this call), but under a forest bind it ran too late — the
     // restore window had closed and the auto-included header's names never
@@ -12003,6 +13987,7 @@ TokenProgram *Program::tokenize_buffer(const madc::dis::istring &source_text,
     clear_diagnostics();
     clear_error();
 
+    adopt_shebang_standard(source_text);
     _tokenizer_init();
 
     if ( !lex_unit_text(fname, source_text) )
@@ -12058,7 +14043,10 @@ bool Program::lex_entry(const madc::dis::istring &text, const madc::dis::istring
     ParsePosition::reset();
     if ( !lex_unit_text(fname, entry) )
 	return false;
+    register_imported_modules();	// the entry's `import NAME;` (the session's
+					// parser state exists: _parser_init ran once)
     inject_pending_auto_includes();
+    register_dialect_namespaces();	// the dialect namespaces the entry named
     flush_forest_pending_globals();
     // The entry is the unit being parsed: its own tokens are the "main
     // source" token_is_tu_origin tells from an included header's.

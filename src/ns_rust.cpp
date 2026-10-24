@@ -20,7 +20,6 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -260,6 +259,47 @@ madc::value *rust_pop_value(madc::value *out, madc::value *arr)
 {
 	ns_common::value_pop_element(*arr, *out, "rust::pop");
 	return out;
+}
+
+// The rust:: publics (cpp-first-api.md): <ns_rust> declares them,
+// libmadc defines them here, resolved mangled-direct. The extern "C"
+// functions below are C-linkage wrappers over the same cores.
+namespace rust {
+
+int64_t contains(const char *text, const char *needle) { return rust_contains(text, needle); }
+int64_t starts_with(const char *text, const char *prefix) { return rust_starts_with(text, prefix); }
+int64_t ends_with(const char *text, const char *suffix) { return rust_ends_with(text, suffix); }
+int64_t len(const char *text) { return rust_len(text); }
+int64_t is_empty(const char *text) { return rust_is_empty(text); }
+void split(madc::value &out, const char *text, const char *delim) { rust_split(&out, text, delim); }
+void split_whitespace(madc::value &out, const char *text) { rust_split_whitespace(&out, text); }
+void push(madc::value &values, const char *value) { rust_push(&values, value); }
+const char *trim(madc::value &s) { return rust_trim_value(&s); }
+const char *trim(const char *s) { return rust_trim_cstr(s); }
+const char *trim_start(madc::value &s) { return rust_trim_start_value(&s); }
+const char *trim_start(const char *s) { return rust_trim_start_cstr(s); }
+const char *trim_end(madc::value &s) { return rust_trim_end_value(&s); }
+const char *trim_end(const char *s) { return rust_trim_end_cstr(s); }
+const char *replace(madc::value &s, const char *from, const char *to) { return rust_replace_value(&s, from, to); }
+const char *replace(const char *s, const char *from, const char *to) { return rust_replace_cstr(s, from, to); }
+const char *repeat(madc::value &s, int64_t count) { return rust_repeat_value(&s, count); }
+const char *repeat(const char *s, int64_t count) { return rust_repeat_cstr(s, count); }
+const char *join(madc::value &values, const char *sep) { return rust_join_cstr(&values, sep); }
+madc::value &first(madc::value &out, madc::value &values) { return *rust_first_value(&out, &values); }
+madc::value &last(madc::value &out, madc::value &values) { return *rust_last_value(&out, &values); }
+madc::value &get(madc::value &out, madc::value &values, int64_t idx) { return *rust_get_value(&out, &values, idx); }
+madc::value &pop(madc::value &out, madc::value &values) { return *rust_pop_value(&out, &values); }
+std::string &trim(std::string &s) { return *rust_trim(&s); }
+std::string &trim_start(std::string &s) { return *rust_trim_start(&s); }
+std::string &trim_end(std::string &s) { return *rust_trim_end(&s); }
+std::string &replace(std::string &s, const char *from, const char *to) { return *rust_replace(&s, from, to); }
+std::string &repeat(std::string &s, int64_t count) { return *rust_repeat(&s, count); }
+std::string &join(std::string &result, madc::value &values, const char *sep) { return *rust_join(&result, &values, sep); }
+std::string &first(std::string &result, madc::value &values) { return *rust_first(&result, &values); }
+std::string &last(std::string &result, madc::value &values) { return *rust_last(&result, &values); }
+std::string &get(std::string &result, madc::value &values, int64_t idx) { return *rust_get(&result, &values, idx); }
+std::string &pop(std::string &result, madc::value &values) { return *rust_pop(&result, &values); }
+
 }
 
 extern "C" {

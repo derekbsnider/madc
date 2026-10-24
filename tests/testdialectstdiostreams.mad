@@ -1,0 +1,24 @@
+// The madc dialect's stdio streams are hard-coded, as println is (owner
+// 2026-10-17): stdin / stdout / stderr name the target libc's own streams
+// with no header and no include flag. A program naming them pulls no
+// <stdio.h> — scripts/check-autoinclude-position.sh's -dM leg holds this
+// file to it — and a C function handed one writes to that stream.
+// testdialectstdio_ctypes*.mad hold a program that also includes <stdio.h>.
+// Oracle (g++ 13 and clang++ 18, -std=c++17, <cstdio> with fprintf for
+// println), stdout:
+//   println to stdout: 1
+//   fputs to stdout
+//   three streams: 1
+//   distinct: 1
+int main()
+{
+	println(stdout, "println to stdout: {}", 1);
+	println(stderr, "println to stderr: {}", 2);
+	fputs("fputs to stdout\n", stdout);
+	fflush(stdout);
+	void *in = stdin;
+	println("three streams: {}",
+		stdin != 0 && stdout != 0 && stderr != 0 && in == stdin ? 1 : 0);
+	println("distinct: {}", stdout != stderr ? 1 : 0);
+	return 0;
+}

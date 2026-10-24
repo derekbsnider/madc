@@ -26,6 +26,7 @@ static const char mirc[]
     "#define __volatile volatile\n"
     "#define __volatile__ volatile\n";
 
+#include "mirc_float.h"
 #include "mirc_iso646.h"
 #include "mirc_stdalign.h"
 #include "mirc_stdbool.h"

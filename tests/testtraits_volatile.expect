@@ -1,0 +1,13 @@
+is_empty_volatile_tmpl   0
+is_class                 1 1
+is_union                 1 1
+is_enum                  1 1
+is_empty                 1 1
+is_final                 1 1
+is_trivial               0 0
+is_trivially_copyable    0 0
+is_standard_layout       0 0
+is_pod                   0 0
+is_trivially_destructible 0 0
+holder_trivially_destr   0
+is_base_of               1 1 1

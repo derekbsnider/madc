@@ -12,6 +12,7 @@ blame-text-rows-positive: 1
 blame-text-uncommitted-sha-empty: 1
 relpath: 1
 relpath-outside-error: 1
+relpath-backslash-name: tests/a\b.txt
 status-untracked-probe: 1
 status-workdir: 1
 commit-head-matches: 1

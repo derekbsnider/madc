@@ -5,7 +5,6 @@
 #include "../mirc.h"
 #include "mirc_aarch64_linux.h"
 
-#include "mirc_aarch64_float.h"
 #include "mirc_aarch64_limits.h"
 #include "mirc_aarch64_stdarg.h"
 #include "mirc_aarch64_stdint.h"
@@ -24,6 +23,12 @@ static int aarch64_adjust_var_alignment (c2m_ctx_t c2m_ctx MIR_UNUSED, int align
   return align;
 }
 
+/* madc fork: an object's alignment may exceed MAX_ALIGNMENT up to a page
+   (gcc's aligned(N), C11 _Alignas(N), a wide vector type): static storage
+   carries it on its MIR item (MIR_item_set_align); a frame holding such an
+   object is realigned at function entry (node_scope frame_align). */
+#define MAX_STATIC_ALIGNMENT 4096
+
 static int invalid_alignment (mir_llong align) {
-  return align != 0 && align != 1 && align != 2 && align != 4 && align != 8 && align != 16;
+  return align < 0 || align > MAX_STATIC_ALIGNMENT || (align & (align - 1)) != 0;
 }

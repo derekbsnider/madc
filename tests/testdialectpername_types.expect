@@ -1,0 +1,7 @@
+kind gui console
+ops 96 types empty
+sys sized pid
+fk 97 C
+55
+int(5)
+double(2.5)

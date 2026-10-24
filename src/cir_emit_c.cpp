@@ -341,6 +341,14 @@ bool is_label_carrier(node_t s)
 // A C11 label may head a STATEMENT only — never a declaration (`case 1:
 // int x;` is an error before C23), which is why the builder's carrier
 // exists. The carrier's own statement is dropped only in front of one.
+// `__builtin_cleanup_arm(&v)` — CirBuilder::cleanup_arm_stmt's call.
+static bool is_cleanup_arm_call(node_t x)
+{
+	node_t callee = x && x->code == N_CALL ? op(x, 0) : NULL;
+	return callee && callee->code == N_ID && callee->u.s.s
+	       && strcmp(callee->u.s.s, "__builtin_cleanup_arm") == 0;
+}
+
 bool is_statement(node_t s)
 {
 	if (!s) return false;
@@ -824,7 +832,11 @@ void emit(CEmit &e, node_t n, int ctx)
 	case N_EXPR:
 		// [0] = label list, [1] = expression (may be N_IGNORE for empty stmt)
 		emit_labels(e, op(n, 0));
-		emit(e, op(n, 1), P_NONE);
+		// A cleanup arm is c2mir's no-code region marker (B205); C has no
+		// spelling for it, and a C compiler's cleanup is live from the
+		// declaration. The statement stays, empty, for its labels.
+		if (!is_cleanup_arm_call(op(n, 1)))
+			emit(e, op(n, 1), P_NONE);
 		e.put(';');
 		break;
 	case N_IF: {

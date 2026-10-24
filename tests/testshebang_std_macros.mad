@@ -1,0 +1,21 @@
+#!/usr/bin/madc --std=c17
+// A shebang's standard reaches the predefined macros, as the command line's
+// does: C17 defines __STDC_VERSION__ as 201710L and leaves __cplusplus
+// undefined. Oracle: gcc -std=c17 and clang -std=c17 on this file without its
+// first line print "cplusplus: none" and "stdc: 201710".
+int printf(const char *, ...);
+
+int main(void)
+{
+#ifdef __cplusplus
+	printf("cplusplus: %ld\n", (long)__cplusplus);
+#else
+	printf("cplusplus: none\n");
+#endif
+#ifdef __STDC_VERSION__
+	printf("stdc: %ld\n", (long)__STDC_VERSION__);
+#else
+	printf("stdc: none\n");
+#endif
+	return 0;
+}

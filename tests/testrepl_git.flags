@@ -1,1 +1,1 @@
---std=c17 --history-file=no -lmadcgit -i
+--std=gnu17 --history-file=no --import=git -i

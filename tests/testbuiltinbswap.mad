@@ -1,8 +1,11 @@
+// __builtin_bswap16/32/64 (gcc builtins; madc lowers them to its runtime
+// helpers). glibc's own __bswap_16/32/64 are declared by <byteswap.h>,
+// never bare: testbswap_glibc_inline covers them on glibc.
 int main(void)
 {
 	unsigned short s = __builtin_bswap16(0x1234);
 	unsigned int i = __builtin_bswap32(0x12345678u);
-	unsigned int j = __bswap_32(0x01020304u);
+	unsigned int j = __builtin_bswap32(0x01020304u);
 	unsigned long long l = __builtin_bswap64(0x0123456789abcdefull);
 
 	printf("%x\n", s);

@@ -32,7 +32,6 @@
 #include <sstream>
 #include <stdint.h>
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "tokens.h"
@@ -57,24 +56,23 @@ extern thread_local bool madc_verbose;
 // ---------------------------------------------------------------------------
 // Which compiler-implemented dump is this call?
 // ---------------------------------------------------------------------------
-// The ONE place a dump intrinsic's spelling is compared. The parser stamped
-// FuncDef::inline_builtin_kind at declaration registration (the same carrier
-// std::addressof / std::forward / __destroy use, and one the forest already
-// serializes), so this reads a tag rather than a user-facing name, and it is
-// converted to an enum here — at the boundary — per enum-over-strings.
+// The parser stamped FuncDef::inline_builtin_kind (a BuiltinKind) at
+// declaration registration (the same carrier std::addressof / std::forward /
+// __destroy use, and one the forest serializes), so this reads the kind,
+// never a user-facing name, and maps it to the dump's flavor.
 // `row` says the show's row form (a binding row's, plan §41.11a step 3d):
 // the same walk, bounded (CirBuilder::ShowLimits).
 static CirBuilder::DumpFlavor dump_flavor(FuncDef *fd, bool *row = NULL)
 {
 	if (!fd)
 		return CirBuilder::dfNone;
-	if (fd->inline_builtin_kind == "php_print_r")
+	if (fd->inline_builtin_kind == BuiltinKind::PhpPrintR)
 		return CirBuilder::dfPrintR;
-	if (fd->inline_builtin_kind == "php_var_dump")
+	if (fd->inline_builtin_kind == BuiltinKind::PhpVarDump)
 		return CirBuilder::dfVarDump;
-	if (fd->inline_builtin_kind == "madc_show")
+	if (fd->inline_builtin_kind == BuiltinKind::MadcShow)
 		return CirBuilder::dfShow;
-	if (fd->inline_builtin_kind == "madc_show_row") {
+	if (fd->inline_builtin_kind == BuiltinKind::MadcShowRow) {
 		if (row)
 			*row = true;
 		return CirBuilder::dfShow;
@@ -120,6 +118,30 @@ static int dump_entry_col(CirBuilder::DumpFlavor fl, int depth)
 static int dump_col_step(CirBuilder::DumpFlavor fl)
 {
 	return madc_dump_frame_col(dump_wire_flavor(fl), 1);
+}
+
+// ---------------------------------------------------------------------------
+// The madc dialect's stdio streams
+// ---------------------------------------------------------------------------
+// A use of a stdin / stdout / stderr no declaration adopted (Variable::
+// stdio_stream, Program::stdio_stream_stand_in) is the runtime's stream:
+// `__madc_stdio_stream(which)`, the dump runtime's stream boundary (FILE* as
+// void*). The emitted C names no libc stream symbol, so it is the same on
+// every target, and a println(stderr, ...) body carries no reference to a
+// header's declaration. The compiler-side enum
+// converts to the wire value here, once.
+static int stdio_stream_wire(StdioStream s)
+{
+	return s == StdioStream::In ? MADC_STDIO_IN
+	     : s == StdioStream::Out ? MADC_STDIO_OUT : MADC_STDIO_ERR;
+}
+
+node_t CirBuilder::stdio_stream_value(StdioStream s, TokenBase *origin)
+{
+	need_output_extern("__madc_stdio_stream", true, { { {N_INT}, false } });
+	node_t a = list();
+	append(a, integer(stdio_stream_wire(s), origin));
+	return node2(N_CALL, id("__madc_stdio_stream", origin), a, origin);
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,25 +1037,16 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 	body.insert(body.end(), elem_out.begin(), elem_out.end());
 
 	// for (long i = 0; i < count; i += 1) { ... }
-	node_t ispec = list();
-	append_i64(ispec, origin);
-	node_t init = simple(N_SPEC_DECL, origin);
-	append(init, node1(N_SHARE, ispec));
-	append(init, node2(N_DECL, id(idxname.c_str(), origin), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, origin));
 	// A row's bound: at most m_show_limits.elements, then `, …`.
 	const size_t bound = show ? (size_t)show_element_bound((long)count) : count;
 	node_t cond = node2(N_LT, id(idxname.c_str(), origin),
 			    integer((int64_t)bound, origin), origin);
-	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
-			    integer(1, origin), origin);
 	node_t items = list();
 	for (size_t i = 0; i < body.size(); i++)
 		append(items, body[i]);
-	node_t blk = node2(N_BLOCK, list(), items, origin);
-	out.push_back(node5(N_FOR, list(), init, cond, incr, blk, origin));
+	out.push_back(counted_loop(idxname.c_str(), integer(0, origin), cond,
+				   false, node2(N_BLOCK, list(), items, origin),
+				   origin));
 
 	if (show && bound < count)
 		out.push_back(dump_show_text(", \u2026", origin));
@@ -1196,26 +1209,17 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	}
 
 	// for (long i = 0; i < n; i += 1) { ... }
-	node_t ispec = list();
-	append_i64(ispec, origin);
-	node_t init = simple(N_SPEC_DECL, origin);
-	append(init, node1(N_SHARE, ispec));
-	append(init, node2(N_DECL, id(idxname.c_str(), origin), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, origin));
 	// A row's bound (text is never bounded: the row's width cuts it).
 	node_t cond = show_bounded_cond(show && !is_text,
 					node2(N_LT, id(idxname.c_str(), origin),
 					      id(nname.c_str(), origin), origin),
 					idxname, origin);
-	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
-			    integer(1, origin), origin);
 	node_t items = list();
 	for (size_t i = 0; i < body.size(); i++)
 		append(items, body[i]);
-	out.push_back(node5(N_FOR, list(), init, cond, incr,
-			    node2(N_BLOCK, list(), items, origin), origin));
+	out.push_back(counted_loop(idxname.c_str(), integer(0, origin), cond,
+				   false, node2(N_BLOCK, list(), items, origin),
+				   origin));
 	if (show && !is_text)
 		if (node_t tail = show_bounded_tail(id(nname.c_str(), origin), origin))
 			out.push_back(tail);
@@ -1474,25 +1478,16 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	}
 
 	// for (long k = 0; k < n; k += 1) { ... }
-	node_t kspec = list();
-	append_i64(kspec, origin);
-	node_t init = simple(N_SPEC_DECL, origin);
-	append(init, node1(N_SHARE, kspec));
-	append(init, node2(N_DECL, id(idxname.c_str(), origin), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, origin));
 	node_t cond = show_bounded_cond(show,
 					node2(N_LT, id(idxname.c_str(), origin),
 					      id(nname.c_str(), origin), origin),
 					idxname, origin);
-	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
-			    integer(1, origin), origin);
 	node_t items = list();
 	for (size_t i = 0; i < body.size(); i++)
 		append(items, body[i]);
-	out.push_back(node5(N_FOR, list(), init, cond, incr,
-			    node2(N_BLOCK, list(), items, origin), origin));
+	out.push_back(counted_loop(idxname.c_str(), integer(0, origin), cond,
+				   false, node2(N_BLOCK, list(), items, origin),
+				   origin));
 	if (show)
 		if (node_t tail = show_bounded_tail(id(nname.c_str(), origin), origin))
 			out.push_back(tail);
@@ -2749,7 +2744,7 @@ madc::dis::istring CirBuilder::dump_result_value_temp(TokenBase *origin)
 	Variable *tmp = new Variable(name, ddARRAY, 1, NULL, false);
 	tmp->flags |= vfLOCAL;
 	m_pending_stmts.push_back(var_decl(tmp, origin));
-	m_pending_stmts.push_back(array_ctor_call(name, origin));
+	pending_construction(array_ctor_call(name, origin), name, &ddARRAY, origin);
 	return madc::dis::istring(name);
 }
 

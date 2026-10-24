@@ -1,0 +1,23 @@
+// git_enums — the git module's codes as ENUMS, the ONE text for two readers:
+// the module's C++ (git_repo.h's GitStatusRow holds these) and its face
+// (git.madi includes it, so a view switches on
+// `row["worktree"] == git::file_state::modified` — an enumerator the compiler
+// checks — instead of comparing a word or a status letter).
+// Plain C++11 enums, nothing else (dialect-lean).
+//
+// Thread contract: constants.
+#ifndef __MODULES_GIT_ENUMS
+#define __MODULES_GIT_ENUMS 1
+
+namespace git {
+    // A file's state on one side of `git status` (plan §7e): the index
+    // against HEAD, or the working tree against the index. untracked and
+    // ignored are working-tree states; conflicted is both sides' (`UU`).
+    enum class file_state : unsigned char
+    {
+	unmodified, added, modified, deleted, renamed, typechange, untracked,
+	ignored, conflicted
+    };
+}
+
+#endif

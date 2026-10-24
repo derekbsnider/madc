@@ -1,0 +1,36 @@
+// The dialect pays per name (docs/plans/2026-10-16-dialect-per-name-plan.md,
+// A4): a dialect function registers when a lookup first touches its name, so
+// every lookup kind must reach the one materializer — an overload set named
+// qualified (php::array_push's five overloads, each picked by its argument),
+// a bare call through the madc preference walk (strtoupper -> php's), a
+// using-directive's names reached bare (ui::register_host), and a program's
+// own `namespace php { ... }` beside php's functions (php::extra next to
+// php::count). A dialect program has no gcc oracle: the expected output is
+// the packed madc before the change (v0.105.0's per-fragment registration).
+namespace php
+{
+    int extra(int n) { return n + 1; }
+}
+
+using namespace ui;
+
+ui_host_ops quiet_host;
+
+int main()
+{
+    array items;
+    php::array_push(items, "a");
+    php::array_push(items, (int64_t)7);
+    php::array_push(items, 2.5);
+    php::array_push(items, true);
+    var whole = "whole";
+    php::array_push(items, whole);
+    println("count {} extra {}", php::count(items), php::extra(41));
+    println("items {} {} {} {} {}", items[0], items[1], items[2], items[3], items[4]);
+    var mixed = "Mixed";
+    println("value {} cstr {}", php::strtoupper(mixed), php::strtoupper("cstr"));
+    println("bare {}", strtoupper("walk"));
+    quiet_host.identity = "pername";
+    println("directive {}", register_host("pername", WEB, &quiet_host) ? "accepted" : "refused");
+    return 0;
+}

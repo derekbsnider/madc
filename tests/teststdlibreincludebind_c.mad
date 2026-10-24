@@ -1,0 +1,17 @@
+// A C <stdlib.h> reached through a C wrapper's #include_next is recorded as
+// included. On the win64 packed binary the C layer's stdlib.h root declines
+// (_SECIMP differs from the freeze), so <stdlib.h> parses live — through
+// libstdc++'s stdlib.h wrapper, whose #include_next lands on the embedded
+// mingw copy — and mingw's own tail, sec_api/stdlib_s.h, binds a closure
+// holding the stdlib.h unit again. Unrecorded, that unit installed beside the
+// live copy: "Identifier 'div_t' already defined". On Linux the path is a
+// plain include; the test pins the answer on every lane.
+// Oracle: gcc -std=gnu17 and clang -std=gnu17 print "3 1".
+#include <stdlib.h>
+#include <stdio.h>
+int main(void)
+{
+	div_t q = div(7, 2);
+	printf("%d %d\n", q.quot, q.rem);
+	return 0;
+}

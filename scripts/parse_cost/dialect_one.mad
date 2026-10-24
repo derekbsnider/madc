@@ -1,0 +1,8 @@
+// parse-cost workload: a dialect program that names ONE dialect function —
+// what a compile pays for a fragment it uses one name of
+// (scripts/parse_cost_gate.sh; docs/plans/2026-10-16-dialect-per-name-plan.md).
+int main()
+{
+    println("{}", php::strtoupper("ok"));
+    return 0;
+}

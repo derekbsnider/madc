@@ -1,0 +1,32 @@
+// parse-cost workload: a dialect program with a large C++ closure (<vector>)
+// that names twenty dialect functions — what a per-name demand costs beside a
+// big bound closure (scripts/parse_cost_gate.sh;
+// docs/plans/2026-10-16-dialect-per-name-plan.md).
+#include <vector>
+
+int main()
+{
+    std::vector<int> v = { 3, 1, 2 };
+    var s = "  Hello, World  ";
+    println("{}", php::strtoupper("a"));
+    println("{}", php::strtolower("B"));
+    println("{}", php::ucfirst("c"));
+    println("{}", php::lcfirst("D"));
+    println("{}", php::trim(" e "));
+    println("{}", php::ltrim(" f"));
+    println("{}", php::rtrim("g "));
+    println("{}", php::str_rot13("hi"));
+    println("{}", php::str_repeat("j", 3));
+    println("{}", php::basename("k/l"));
+    println("{}", perl::lc("M"));
+    println("{}", perl::uc("n"));
+    println("{}", python::title("o p"));
+    println("{}", python::swapcase("Qr"));
+    println("{}", python::zfill("7", 3));
+    println("{}", ruby::squeeze("ssss"));
+    println("{}", js::btoa("t"));
+    println("{}", rust::trim(" u "));
+    println("{}", rust::trim_end("v "));
+    println("{} {}", v.size(), php::trim(s));
+    return 0;
+}

@@ -1,0 +1,5 @@
+buf: on64=1 first=1
+line: on64=1 n=7 c=a
+vector: on32=1 sum=13
+literal: on64=1 n=9 c=z
+recursion: 6 of 6 frames aligned

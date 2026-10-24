@@ -201,6 +201,15 @@ std::string host_path_basename(const std::string &path)
 	return path.substr(sep + 1);
 }
 
+std::string host_path_generic(const std::string &path)
+{
+	std::string out(path);
+	for ( size_t i = 0; i < out.size(); i++ )
+		if ( host_path_is_separator(out[i]) )
+			out[i] = '/';
+	return out;
+}
+
 bool host_path_absolute(const std::string &path)
 {
 	if ( path.empty() )
@@ -236,6 +245,23 @@ host_path_type host_path_type_of(const std::string &path)
 	if ( S_ISREG(st.st_mode) )
 		return host_path_type::file;
 	return host_path_type::other;
+}
+
+bool host_path_mtime(const std::string &path, time_t &out)
+{
+	if ( path.empty() )
+		return false;
+#ifdef _WIN32
+	struct _stat64 st;
+	if ( ::_stat64(path.c_str(), &st) != 0 )
+		return false;
+#else
+	struct stat st;
+	if ( ::stat(path.c_str(), &st) != 0 )
+		return false;
+#endif
+	out = (time_t)st.st_mtime;
+	return true;
 }
 
 // The offset of the final component's extension dot; npos when it has none.
@@ -341,6 +367,15 @@ bool local_time(time_t t, struct tm &out)
 	return ::localtime_s(&out, &t) == 0;
 #else
 	return ::localtime_r(&t, &out) != NULL;
+#endif
+}
+
+bool utc_time(time_t t, struct tm &out)
+{
+#ifdef _WIN32
+	return ::gmtime_s(&out, &t) == 0;
+#else
+	return ::gmtime_r(&t, &out) != NULL;
 #endif
 }
 

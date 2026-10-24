@@ -99,12 +99,12 @@
 0 linux dk-none
 0 linux closure-drops
 11581976 linux pack-bytes
-# linux-dialect (2026-10-14, pack-slices design §7): the --with-forest=none
-# build's dialect-only container (forest_pack.sh --dialect-only) — the C
-# headers the full pack freezes ahead of the madc fragments, then the
-# fragments; 247 units. Zero parse errors and zero losses by construction
-# (no line = zero allowed); its size recorded as built.
-3307744 linux-dialect pack-bytes
+# The C layer (docs/plans/2026-10-18-c-pack-layer.md), one key per raw profile
+# (FOREST_C_LAYER in scripts/forest_pack_share.sh; owner 2026-10-18: gnu17
+# only). Its freezes are QUIET — no pack-errors line, so zero allowed — and its
+# size is the profile's own bytes at its first pack (2026-10-18, the 30 v1
+# roots).
+3409816 linux-gnu17 pack-bytes
 # win64 68 -> 70 (2026-09-20): the same libstdc++ 13.2 corpus as linux, the
 # same six exposed __cerb entries (istream.tcc, the mingw stage's line
 # numbers); its freeze-append also compiles src/rt/rt_posix_time.c again —
@@ -122,6 +122,10 @@
 28 win64 pack-errors
 1 win64 dk-none
 0 win64 closure-drops
+# The win64 C layer (J5; FOREST_C_LAYER's one gnu17 row, the mingw-w64 UCRT
+# chain, scripts/forest_pack_c_headers_windows.txt): quiet freeze, its size at
+# its first pack (2026-10-18, the 25 v1 roots, release-win's own pack run).
+4112528 win64-gnu17 pack-bytes
 # darwin 64 -> 58 (2026-08-24): the six libc++ <filesystem> "no matching
 # overload ... error_code**" entries (raised 58 -> 64 on 2026-08-23 when the
 # strict no-viable-overload refusal replaced their silent wrong-function
@@ -221,5 +225,15 @@
 # re-parse, KG Gap instantiation_body_templateid_ctor_call), 4 "Unexpected
 # keyword in expression", 3 undeclared identifiers, 1 "expecting addressable
 # expression", 1 unidentified member.
+# 2026-10-22 (6f7329dc0, the freeze sees its staged --freeze-sources arm):
+# arm64 16 (7 malformed), x86-64 17 (8 malformed) — one key for both arches
+# keeps the larger. Classes now: 8/7 malformed expression, 4 "subscripted
+# value is neither array nor pointer", 3 undeclared, 1 addressable, 1 member.
 17 darwin pack-errors
 1 darwin mir-blob-skips
+# The darwin C layer (J5; FOREST_C_LAYER's one gnu17 row, the embedded prelude,
+# scripts/forest_pack_c_headers_darwin.txt): quiet freeze, its size at its first
+# pack (2026-10-18, the 45 v1 roots, release-macos's own pack run). One key for
+# both arches, like `darwin pack-errors`: arm64 4,572,304, x86-64 5,361,392 —
+# the larger is recorded.
+5361392 darwin-gnu17 pack-bytes

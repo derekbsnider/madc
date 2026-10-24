@@ -4,7 +4,7 @@
 # tests/gui exercises the ui web target's surfaces that need a real window
 # (the page and its edit nodes, dialogs, the clipboard, the native menu bar,
 # theming, the workbench regions), so it runs under Xvfb against a freshly
-# built libmadcwebview. madcide's own window tests live in its repository.
+# built ui_web module. madcide's own window tests live in its repository.
 # All three execution lanes run — JIT, --exe and --obj — because a GUI
 # module binds differently in each.
 #
@@ -39,16 +39,15 @@ fi
 mkdir -p tmp/logs
 out=tmp/logs/gui-lane-$(date +%Y%m%d-%H%M%S).log
 
-# The library the tests import must be built from CURRENT content, and the
-# header check is the gate that its declarations still match.
-if ! make -C src libmadcwebview webview-header-check > "$out" 2>&1; then
-	echo "gui_lane: libmadcwebview build failed — see $out" >&2
+# The module the tests import must be built from CURRENT content.
+if ! make -C src ui_web > "$out" 2>&1; then
+	echo "gui_lane: ui_web module build failed — see $out" >&2
 	tail -20 "$out" >&2
 	exit 1
 fi
 
 # The runner exports the memory guard's `auto`; a GUI-module test lifts it
-# itself at run start (import madcwebview — the module row's GUI flag), so no
+# itself at run start (import ui_web — the module's GUI flag), so no
 # memory override belongs here. The CPU and wall caps stay.
 (
 	ulimit -t 30

@@ -2,6 +2,2594 @@
 
 ## [Unreleased]
 
+## [v0.106.0] — 2026-10-22
+
+Table-driven unwinding, self-describing modules, and C++ conformance. madc's exceptions now unwind through the host's own unwinder: MIR describes every generated frame as DWARF CFI and emits unwind records in ELF, PE/COFF and Mach-O images, opening an unwind region per automatic cleanup variable, so a throw destroys the live objects of every frame it crosses on x86-64, aarch64, ppc64, riscv64 and s390x — through `RtlUnwindEx` on win64 and the Apple arm64 unwinder on darwin (B205). Capabilities that were wired into the core become self-describing madc modules found by name on the module path: `import markdown;`, `import git;` and `import ui_web;` replace the madcmark fragment, the `-lmadcgit` link and the built-in web target, with `--import=NAME` and madc.ini's `modules = NAME` as the command-line and configuration twins. A class-type exception is owned by its throw and matched by type in each handler, a throw operand is implicitly moved, virtual functions take one vtable slot per signature, and member templates and type traits resolve per instantiation. The release pack gains a C layer that `.c` compiles bind, and binds system headers correctly across nested re-entry, bound using-declaration imports and auto-include order; madc's command line moves to one option reader with gcc parity (`--help=json`, shell completions, `@file` response files); and the dialect gains faces for paths, project manifests and the user-configuration directory.
+
+Conformance: c23-run 35 -> 40, torture-c23 1490 -> 1493
+
+### Capabilities become self-describing modules imported by name
+
+- markdown, git and the web UI target are no longer wired into the core; each is a self-describing madc module — a library that carries its own declaration table and C-linkage entry point, the built form of a C++20 named module — found by name on the module path. `import markdown;` and `import git;` open the `markdown` and `git` modules in place of the former `madcmark` auto-include fragment and the `-lmadcgit` link, and `import ui_web;` registers the web host as ui target "web" serving `ui::WEB`. A module is searched in the program's own directory, then the `--module-path=<dir>` entries (repeatable), then madc's own module directory; a name no module answers is `import: no module named 'NAME'`. A module exists when its import succeeds — `markdown::available()` and `madc::module_available` are gone.
+- `--import=NAME` imports a module ahead of the program, the command-line twin of `import NAME;`. With a source it brings the module's names in before the first token; with no source it only tries the imports and exits 0, or prints the import error in gcc's `<command-line>` spelling and exits 69 (`EX_UNAVAILABLE`). The configuration's `modules = NAME` now imports the module as `--import=NAME` does, no longer an `-l<name>` link.
+- An imported module opens at PROGRAM START, so a host's initializer runs before `main` in the JIT, `--exe` and `--obj` lanes even when the program never calls the module — the `ui_web` host's registration as ui target "web" runs this way. `madc --import=ui_web` answers whether the web level is installed.
+- A program records each module it imported as a reference and opens it where the program RUNS, like Python's `sys.path`: the file it was built against while that file is there, else the module of that name in the program's own directory, then madc's module directory. A program built in one directory runs there, runs with the module moved beside it on another machine, and still finds a module madc ships in its own module directory. The module images ship in `lib/madc/modules/`.
+
+### A throw operand moves when its object is the innermost try body's own
+
+- A throw operand naming a local class object declared in the compound-statement of the innermost try-block whose compound-statement holds the throw — or in a block nested in it — is now moved into the exception object, as [class.copy.elision]/3 (P1825R0) prescribes; the move happens from that try's nested handler too, a handler not being its try's compound-statement. A throw whose operand's scope holds the try, or a throw outside any try body, is copied, as before. From C++20 (and the madc dialect) an rvalue reference to a non-volatile object is also an implicitly movable entity.
+- Before, `thrown_operand_is_implicitly_movable` returned false for any throw lowered inside a try body (`m_try_body_depth > 0`) and for every reference, so a class throw from within a try always copied. B202's class-type throw copy-constructs the exception object through overload resolution (`select_ctor_overload`), so a move-only object thrown from inside a try was refused with `use of deleted copy constructor`. gcc's `g++.dg/cpp2a/implicit-move2.C` and `implicit-move3.C` regressed to fails in the 0.106.0 conformance measure (cpp2a 350 -> 348); v0.105.0 compiled both by bit-copying the exception object without overload resolution.
+- The scope test reads the block that declares the operand. `translate_try` pushes each try body (`m_try_bodies`, `tt->try_body->as_cpnd_tok()`, NULL for a non-compound body) and `translate_block` pushes each block it lowers (`m_open_blocks`), innermost last; `declared_within_innermost_try_body` finds the open block whose `variables` hold the operand's `Variable` and reports whether the innermost try body is that block or encloses it. A variable no open block declares is copied, as before. A reference operand must be an rvalue reference under `rvalue_reference_implicitly_movable` (`STD_MADC` or a C++ mode `>= STD_CPP20`), peeled to its referent (`TokenSubscript::referent_type`); a volatile object is never moved.
+- Tests: `testimplicitmovethrow` (C++, `--std=c++20`) prints `objects 42 moves 1 copies 0`, `nested 42 moves 2 copies 0`, `references 42 moves 3 copies 0`, `objects -7 moves 3 copies 1`, `references -7 moves 3 copies 2`, the output of g++ 13 and clang++ 18. madc before refused the file with `cir error: use of deleted copy constructor`; g++ 13 -std=c++17 refuses the rvalue-reference throw.
+
+### A return's value is read before the scope's cleanups run
+
+- A return statement in an `__attribute__((cleanup))` scope now reads its value into the return register (or the result object) before the scope's cleanups run, so a cleanup that frees or overwrites the object the value lives in does not change what the function returns. Before, c2mir's `N_RETURN` gen computed the value as an operand, ran the cleanup calls, then built the ret operands from it: `return p->i;` passed the memory operand `i32:(p):i` straight through, and a struct returned in registers (x86-64: each qword loaded into a temp) or through the hidden result pointer (block-moved) was read after the cleanups, so the caller got the scribbled (or freed) memory.
+- `N_RETURN` builds the ret operands first (`target_add_ret_ops`), and when the return carries cleanups each `MIR_OP_MEM` ret operand is loaded into a new temp before the cleanup calls are generated. Target-neutral: it reads only `ret_ops`, which every target's `target_add_ret_ops` fills (x86-64, aarch64, ppc64, riscv64, s390x, and `simple_add_ret_ops`). A return without cleanups emits exactly what it did before.
+- Since B205 (table-driven unwinding) a handler's end-catch is a cleanup-attribute variable of the handler scope, so `catch (P &q) { return q.i; }` returned the freed exception object's bytes — a regression over v0.105.0 at the C++ level; at the C level the defect predates the arc.
+- Tests: `testcleanupreturnvalue_c` (C, `--std=gnu17`) prints `int 5`, `double 2.5`, `small 7 8`, `big 10 11 12 13 14 15`, `nested 5` — an int, a double, a 16-byte struct (registers), a 48-byte struct (hidden result pointer), and an int from a block nested in the cleanup's; `testcatchreturnmember` (C++, `--std=c++17`) prints `from_call 5`, `direct 5`, `real 1.5`, `scalar 9` for a handler returning a member of the caught object. The output of gcc 13 / clang 18 and g++ 13 / clang++ 18; madc before printed the scribbled or freed values.
+
+### A nested re-entry of a frozen unit binds where the freeze took it
+
+- A header whose include guard does not span its file, re-read while its first inclusion is still open, now binds its outer inclusion's whole range from the pack — the tail after the nested re-entry included. Before, the freeze numbered a unit's inclusions in leave order (`Program::pack_unit_leave`), so mingw's `<_mingw.h>`, re-read by the `<vadefs.h>` it includes, closed first and became inclusion 0 (events 0-44); the outer inclusion's tail (events 45-101: `__CRTDECL`, `_TRUNCATE`, `UNALIGNED`, `DUMMYUNIONNAME`...) became inclusion 1. The bind consumed inclusions in enter order (`forest_walk_unit`) and took the re-entering edge as an include cycle, so a consumer replayed inclusion 0 only. On the packed win64 binary `_TRUNCATE` was undefined after `<stdio.h>`, and `<stdio.h>` then `<windows.h>` in C was refused (`string.h:46: use of undeclared identifier '_CONST_RETURN'`). The 0.106.0 seam battery's headerless-win stage found this (`testprogmacrobind_c`) where 0.105.0's headerless-win was clean; the win64 C pack layer is new in 0.106.0.
+- The freeze records a unit's inclusions in enter order, each with its begin and end. `Program::pack_unit_enter` (new, called at both unit-enter sites beside `pack_unit_stack.push_back`) appends the record with its begin words and pushes its index on `pack_unit_open_inclusions`; `pack_unit_leave` fills the open record's end words. A nested re-entry's range lies inside the open inclusion's. An expansion point names the unit's innermost open inclusion (`pack_note_expansion`).
+- The bind reads a range with `ForestUnitItems::inclusion_range`. `forest_walk_unit` takes an edge to an open unit as a nested re-entry when the unit's next inclusion begins at the open frame's cursor (the re-entry the freeze took there), else as an include cycle as before, and resumes the open frame after the nested walk. A nested inclusion the walk did not take is jumped. One per-walk stack of the open inclusions' cursors (`ForestWalk::open`, scanned by `open_frame`) replaces the per-unit `on_stack` set.
+- Tests: `testmingwreentry_c` (C, `--std=gnu17`) prints `ok`; on the win64 lanes it reads the packed `<stdio.h>` and checks `_TRUNCATE` is defined, the behaviour of x86_64-w64-mingw32 gcc 13 and gcc 13. The archived v0.105.0 win64 packed binary printed `_TRUNCATE missing`.
+- The forest format is version 75: a unit's inclusions are recorded in enter order, each from its begin to its end.
+
+### A bound include's served tokens keep the auto-include prelude's parse order
+
+- A program's own `#include` of a header the auto-include prelude also includes, nested (`<string>` -> `<cwchar>` -> `<wchar.h>`) and written after the use that queued the prelude, now reads the header's tokens from the prelude's inclusion, which is first in parse order. Before, a bound include served its replayed arms and posix supplement under no once-only key, so the prelude's later skip of the same header could not move those tokens ahead of the unit. On the packed win64 binary the nested reducers were refused with `cwchar:144:11: error: 'fgetwc' is not a declaration in '::'` — `using ::fgetwc;` preceding `fgetwc`'s replayed declaration. The 0.106.0 seam battery's headerless-win stage found this where 0.105.0's headerless-win was clean; Linux packed and dev passed before and after.
+- `Program::note_include_once_key()` holds the key computation and the `include_once_key` / `include_serving.back().key` writes, extracted unchanged from `should_tokenize_include` (which now calls it). `Program::note_bound_include_key()` notes that key for a bound unit's include — the unit's path when it is one (`madc::detail::host_path_absolute`), else `<incfile>` for a named unit — only when the dialect surface is enabled and not while the prelude lexes, so the per-include path canonicalization stays off the C/C++ parse path. Both forest-bind arms in the `#include` handler call it before `include_completed_token`.
+- Relocation arming is unchanged: it arms only for a first range at or after the prelude's insertion point, so a unit's top-of-file bound includes cost nothing.
+- Tests: `testautoinclude_later_nested` prints `len 3` and `testautoinclude_mid_nested` prints `len 3 wide 2`, the output of g++ 13 and clang++ 18 with the includes at the top. The archived v0.105.0 packed win64 binary refused both.
+
+### -finstrument-functions instruments a bound header's inline definition
+
+- Under `--finstrument-functions`, a function definition bound from the forest pack now gets the `__cyg_profile_func_enter`/`__cyg_profile_func_exit` hooks when this translation unit emits it, as gcc instruments an inline body in each TU that emits it. Before, the packed binary bound `<cstdlib>`'s `std::abs(long)` (`bits/std_abs.h`) from the forest — lowered when the pack was built, without the TU's flags — and emitted it hook-less, so a program calling it read `entries 0 exits 0`. On win64 the C layer (J5) did the same for mingw's inline `printf` wrapper.
+- The hook wrapping is `CirBuilder::instrumented_body` (extracted unchanged from `func_def`), applied to a loaded definition by `CirBuilder::instrument_loaded_def` at both bound-body splice sites in `translate_module` — the materialize-and-lower fixpoint and the bound user-header inline-method block — once per body node (`m_instr_loaded_defs`). `CirBuilder::instruments` answers whether a `FuncDef` gets the hooks, honouring `no_instrument_function`.
+- The user-header block runs after Pass 1.95 and the extern flush, so when it hooks a body it appends the hooks' not-yet-emitted externs and the exit thunk (`m_instr_thunk_def`) to `top_list` ahead of every definition.
+- The opt-in MIR-cache bind (`MADC_MIR_CACHE_BIND`, `src/madc_cir.cpp`) is not staged for an instrumented TU — its compiled cache bodies carry no hooks.
+- Tests: `testinstrumentboundinline` (C++, `--finstrument-functions --std=gnu++17`) prints `abs 3`, `entries 1 exits 1`, `one address yes`, the output of g++ 13 and clang++ 18 (x86_64-w64-mingw32 g++ 13 the same). The archived v0.105.0 packed binary printed `entries 0 exits 0` / `one address no`.
+
+### The Windows release set carries its modules where madc_module_dir looks
+
+- The packed Windows release set (`bin/release-windows/madc.exe`) now carries its module DLLs at `bin/release-windows/../lib/madc/modules`, the directory `madc_module_dir()` derives from the set's own `libmadc-0.dll`, so `import git;`, `import markdown;` and the `ui_web` target resolve. Before, `release-windows` built the module DLLs into `../lib/madc/modules` beside the dev hosted exe and never copied them where the release set looks; the 0.106.0 seam battery's headerless-win stage found every module unresolved (`testgit`, `testmarkdown`, `testmcp_git`, `testrepl_git`, `testrepl_gitimport`, `testwebviewrunstop`), where 0.105.0's headerless-win was clean.
+- `WIN_MODULES = ui_web git markdown` is the one module list: `modules-windows` builds each `$m-windows` from it, and `release-windows` installs `../lib/madc/modules/%.dll` for each into `WIN_RELEASE_MODULE_DIR` after copying the runtime DLLs.
+- The lookup rule (`madc_module_dir()` in `src/madc_modules.cpp`) and the package layout (`scripts/package_release_windows.sh` installs `lib/madc/modules/*.dll` beside `bin/`) were already right; only the battery's in-tree release target lacked the copy.
+
+### A member template's placement new constructs at a typed address
+
+- A placement new-expression inside a member template now constructs the object at the placement address cast to the constructed class pointer, so the emitted C11 passes `struct S *` where the constructor and the result expect it ([expr.new]: a placement new-expression yields a `S *`). Before, the tsubst copy of a deferred placement new handed the relower the raw translated placement expression (`unsigned char *buf`) as the object's `this` and as the yielded value, and `S *p = new (buf) S(std::forward<T>(t))` emitted four c2mir warnings (`incompatible argument type for pointer type parameter`, `incompatible types in assignment to a pointer`, twice each over the two `place<T>` instances). The output was correct; the warning ratchet (`scripts/warn_census.sh`) caught it.
+- The deferred call site types the address through `class_ptr_type`, the one owner of `struct Cls *` spellings — the typing the non-template `TokenNEW` arm and `tsubst_scalar_placement_store` already apply.
+- Tests: `testmembertmpl_dependent_ctor` (C++, `--std=gnu++17`) now compiles with no warning on stderr; it prints `member: copy move`, `placement: copy move`, `named: copy copy`, `free: copy move`, the output of g++ 13 and clang++ 18.
+
+### A bound using-declaration import binds a target a live arm declares
+
+- A restored using-declaration import (`namespace std { using ::abort; }`) whose target function no name holds when the bind flushes is deferred and bound at the member's first lookup, rather than dropped. The target is a declaration a live arm the walk ran contributes later in the token stream. Before, every C++ program that `#include <iostream>` then `#include <stdlib.h>` was refused on the packed win64 binary with "'abort' is not a member of namespace 'std'" (and the same for `exit`, `quick_exit`, `system`): mingw's `<process.h>` and `<stdlib.h>` share a `#ifndef _CRT_TERMINATE_DEFINED` block declaring `abort`; the freeze read `<stdlib.h>` first, and the consumer's `<iostream>` walk reaches `<process.h>` first, ran its arm live, and withdrew `<stdlib.h>`'s frozen `abort` record.
+- A fenced (not withdrawn) target still cleanly lacks, as before. The deferred import joins the target's overload set as `[namespace.udecl]` prescribes when its record is flagged.
+- `bind_forest_ns_import()` is the one registration for a restored import, called from the flush loop and from `activate_forest_member()`. `forest_name_withdrawn()` reads the restore filter's withdrawn-name set to tell a live-arm target from a fenced one.
+- The forest bind gate's case `k2d-import` freezes a producer that reads the `<stdlib.h>` twin first and binds a consumer that reaches the `<process.h>` twin first; it requires the output `called=7` (the output of g++ 13), the withdraw line, and the "deferred" line in the `-v` trace.
+
+### A re-included unit keeps the declarations its first inclusion made
+
+- A guard that does not span its file is read again on a re-include, and the re-walk skips the guarded arm. Before, the skipped arm withdrew every name it declares, including names the first inclusion of the same unit had restored, so `#include <cstdlib>` followed by `using std::div_t;` was refused with "'div_t' is not a member of namespace 'std'" on the packed binaries. The arm is now withdrawn only when this translation unit has not already bound the unit.
+- The forest bind gate's case `k2d-reinclude` binds a consumer that includes `<cstdlib>` twice; it requires the output `3 1` and no "cstdlib withdraws" line in the `-v` trace.
+
+### A pack-bound struct keeps its one-element and flexible array members
+
+- A struct bound from the forest pack now restores a member declared with `[ ]` as an array: glibc's `FILE::_shortbuf[1]` (a one-element array) and `struct cmsghdr`'s flexible `__cmsg_data[]` (what `CMSG_DATA()` names) decay, subscript and size as arrays. Before, both came back as scalars, and the packed binary refused a program that subscripted or took the address of such a member with "subscripted value is neither array nor pointer nor vector" and "assigning integer without cast to pointer".
+- The freeze records a member's array flag in the pack record (`memberrec.flags` bit0, written from `member_array_flags`), but the materialize pass derived the flag from the stored count (`count > 1`), so a one-element array (count 1) and a flexible array (count 0) both lost their array type. The pass now reads the stored flag, so a declared array loads verbatim — its flag kept, its count kept (0 for a flexible member) — and restores the member's single-dimension extent. `--emit=c11` emitted `char _shortbuf;` for the packed member where the live headers emit `char _shortbuf[1];`.
+- On the packed binary the C program regressed from v0.105.0; the C++ program was refused on v0.105.0 and v0.106.0 alike. The dev binary (live headers, no pack) kept the array type throughout.
+- The record carries no multi-dimension shape; a bound multi-dimension array member is tracked as B225.
+- Tests: `testpackarraymember_c` (C, `--std=gnu17`) and `testpackarraymember` (C++, `--std=gnu++17`) each print `one-element 1 1` and `flexible 16 16`, the output of gcc 13 / clang 18 and g++ 13 / clang++ 18. The archived v0.105.0 release printed the same for C; both releases refused the C++ program.
+
+### A pack-bound arm whose tokens sit inside a declaration parses live, not replayed at the include site
+
+- A skipped arm whose tokens sit inside a declaration — an enum body, a class, a namespace or a parameter list — no longer replays at the include site when a consumer takes it; the unit declines and the header parses live. glibc's `bits/socket.h` puts its `#ifdef __USE_GNU` enumerators (`MSG_TRYHARD`, `MSG_CMSG_CLOEXEC`) inside its `MSG_*` enum body, so a C consumer that defines `_GNU_SOURCE` and includes `<sys/time.h>` then `<sys/socket.h>` now declares them and `struct ucred`. Before, the packed binary refused the program with `bits/socket.h:1:5: error: Expecting identifier after ',' in declaration` and `Unknown struct/union type in sizeof` for `struct ucred` — the arm's enumerators had replayed at file scope.
+- The bind pushes a replayed arm's tokens at the root's include site, which is file scope, so only an arm whose tokens sat at declaration scope can replay there. The freeze marks a captured arm at declaration scope (`CIR_COND_F_DECL_SCOPE`) — outside every `(` `[` `{` but a linkage specification's `extern "C" {` — and the bind declines a unit whose arm yields tokens without that flag. The scope test reuses the shared delimiter tracker (`DelimDepth` + `delim_scan_step`).
+- The forest format is version 76: a captured arm at declaration scope carries `CIR_COND_F_DECL_SCOPE`, and `--dump-forest` prints `arm=captured` / `captured-nested` / `none`.
+- On the packed binary the C program regressed from v0.105.0; the dev binary (live headers, no pack) declared the GNU names throughout.
+- Tests: `testpackgnuenumarm_c` (C, `--std=gnu17`) prints `tryhard 4 cloexec 1073741824`, `ucred 12`, `timeval 16`, the output of gcc 13 / clang 18 -std=gnu17; the forest bind gate's case `[nestedarm]` freezes an arm inside an enum body (captured-nested) and one after it (captured), binds the plain consumer and declines the one that takes both.
+
+### A forest freeze's source arm is staged before the parse
+
+- `--freeze-sources=LIST` is read before the translation unit is tokenized, so the frozen unit answers `__has_include` and reads headers from the listed source arm, as every consumer of the pack does. Before, the arm joined after the parse, and a darwin freeze (`--no-sysroot-includes`) answered `__has_include(<sys/_types/_mbstate_t.h>)` with 0. Consumers answered 1, the bind declined libc++'s `<string>` root, and the whole translation unit parsed live.
+- Include resolution falls back to the staged arm when no packed unit answers. A unit the freeze tokenized keeps its record.
+- Darwin forest degradation: the mac battery's forest leg goes from 11 passed / 1 failed to 12 / 0. The darwin pack's parse errors go from 17 to 16, and the baseline in `docs/parity/pack-degradation-baseline.txt` is lowered to match.
+- Tests: `test_cir_freeze` "v56: the source arm packs listed headers as source-only units" stages the list before tokenize and checks a header that exists only in the staged arm.
+
+### Virtual functions take one vtable slot per signature
+
+- A class's vtable slots are keyed by signature, not by name. Overloads of one virtual name each take their own slot, in declaration order, as Itanium C++ ABI 2.5.2 lays them out. Before, all overloads of a name shared one slot, so overriding one overload redirected every overload of that name.
+- An override is matched by its parameter types and cv- and ref-qualifiers. A non-virtual overload that shares a name with a virtual one is no longer made virtual.
+- Against libc++, `wcout << ...` on a `wchar_t` stream dispatched through the wrong virtual (`ctype<wchar_t>::widen` called `do_widen(char)` through slot 8 where the ABI has 11). `teststreamwideops` now runs under `-stdlib=libc++`.
+- Tests: `testvirtualoverloadslots` (C++, `--std=gnu++17`) prints `1 20 3 4 50 / 10 2 / 60 70 / pg 3 / 70 2 30 4`, the output of g++ 13 and clang++ 18. v0.105.0 printed `20 20 3 50 50 / 10 10 / 60 60 / pg 3 / 70 10 30 30`.
+- The forest format is version 74: a class's vslot run holds signature keys.
+
+### A GNU attribute among a member's specifiers is read
+
+- A class member may carry a GNU attribute group among its decl-specifiers, for example `static __attribute__((__noinline__)) int f(int)` or `constexpr __attribute__((__noinline__)) int g(int) const`. Before, the member was refused with "Expecting type in class definition". This is the form libc++'s `_LIBCPP_CONSTEXPR_SINCE_CXX20 _LIBCPP_NOINLINE` takes once `__has_attribute(noinline)` answers 1.
+- Tests: `testnoinlinememberspec` (C++, `--std=gnu++17`) prints `3 8`, the output of g++ 13 and clang++ 18.
+
+### A namespace-scope class keeps its source name in its C++ spelling
+
+- A class declared at namespace scope takes its C++ name from its source name, so `typeid(lib::node).name()` is `N3lib4nodeE` and the vtable, typeinfo and member symbols use `lib::node`. Before, a global `struct node` declared earlier in the same translation unit changed the name to `N3lib9lib__nodeE`: the output was silently wrong, or linking failed with an undefined `_ZTV`/`_ZTI`/`_ZNS` item.
+- On macOS, the darwin prelude's `struct exception` (from Apple's `<math.h>`) caused the same re-key for `std::exception`. Classes deriving from `std::exception` referenced `_ZTVSt14std__exception` and failed with "import of undefined item". They now reference `_ZTVSt9exception`.
+- A function-local class keeps its hoisted identity.
+- Tests: `testnsclasstagcollide` (C++, `--std=gnu++17`) checks the typeid name and a class deriving from `std::bad_exception` with a global `struct bad_exception` declared first; `testcatch_std_exception` covers the darwin case.
+
+### The darwin prelude honours NDEBUG
+
+- On the hosted-darwin build, `assert` is disabled when NDEBUG is defined on the command line (`-DNDEBUG`) or with `#define NDEBUG` before the first standard include. Before, the operand was evaluated and a failing assert aborted.
+- `scripts/gen_darwin_prelude.sh` flattens `<assert.h>` a second time with `-DNDEBUG` and wraps the umbrella's `assert` definition in `#ifdef NDEBUG` / `#else` / `#endif`. The generator refuses to install when either flatten lacks `#define assert(`.
+- Not yet honoured: a re-include under a different NDEBUG, or NDEBUG set after another standard header has already included the umbrella.
+- Tests: `testndebugfirst_c` (C, `--std=gnu17`) and `testndebugflag` (C++, `--std=gnu++17 -DNDEBUG`).
+
+### The generated predefined-macro table covers the darwin capture gaps
+
+- `scripts/gen_predefined_macros.sh` adds `__FLT_EVAL_METHOD__` to a capture whose `-dM` dump omits it. Clang 15+ expands that macro inside the preprocessor, so the dump lacks it; the same compiler expands it with `-E -P`.
+- For `FLT`, `DBL` and `LDBL`, the script adds `__X_NORM_MAX__` (equal to `__X_MAX__`) and `__X_IS_IEC_60559__` 1 when the dump lacks them and the type's format is IEC 60559 binary (24/128, 53/1024, 64/16384, 113/16384). Other formats get neither.
+- Measured: the Linux g++ table is byte-identical to the previous capture. A clang 18 `--target=arm64-apple-macos14` capture gains exactly seven lines.
+- `testfloatlimits` no longer fails on darwin with undeclared `__FLT_EVAL_METHOD__` and `__FLT_NORM_MAX__`.
+
+### testlibvirtualcall has a libc++ expect twin
+
+- `tests/testlibvirtualcall.libcxx_expect` holds the output for the libc++ domain. Against libc++ the library's `what()` strings carry no `std::` prefix (for example `bad_array_new_length`), so the libstdc++ `.expect` does not match there.
+- The test's header comment names the twin. The runner selects `.libcxx_expect` when `MADC_SKIP_EXT` includes `libcxx`.
+
+### The fault reporter covers SIGTRAP
+
+- A trap that raises SIGTRAP (AArch64 `brk`, including the arm64e libunwind pointer-authentication trap) now prints the "madc: caught" report. Before, the process died silently. The exit status is unchanged: the handler re-raises with the default action.
+- `madc_install_crash_handler()` in `src/madc_crash.cpp` installs the reporter for SIGTRAP, named "SIGTRAP (trace/breakpoint trap)" by `crash_handler`.
+- `tests/unit/test_crash.cpp` checks that each fault signal (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP) carries the reporter.
+
+### -static-libmadc on darwin covers the libSystem directory
+
+- On darwin, `madc -static-libmadc` covers the unwinder's `_Unwind_*` imports and dyld's imports, which the libSystem umbrella re-exports from `/usr/lib/system/`. Before, an iostream program was refused with "-static-libmadc cannot cover 6 runtime symbol(s)".
+- The darwin cover list in `cir_native_link_env()` in `src/madc_cir.cpp` names `/usr/lib/system/` in place of the `libsystem_` stem. `cir_import_covered()` matches a directory cover against the image path with `madc::detail::host_path_within()`.
+- On an arm64 macOS 14 host, a `std::map` + `std::ostringstream` + `std::cout` program builds with `-static-libmadc` and prints 1. Before, it was refused.
+
+### A JIT frame on Apple arm64 is registered with the unwinder through its finder
+
+- On Apple arm64, each generated function's unwind table is found by the host unwinder through `__unw_add_find_dynamic_unwind_sections` (resolved by `dlsym`), as a DWARF section under a static Mach-O header for the target's plain code. Before, it went to `__register_frame`, and a C++ throw through a JIT frame trapped (SIGTRAP, `brk #0xc471`) inside libunwind.
+- `gen_cfi_host_add()` and `gen_cfi_host_remove_all()` in `third_party/mir/mir-gen.c` are the one host registration. A libunwind without the entry point falls back to `__register_frame`. Linux (libgcc) takes the whole table, as before.
+- `tests/unit/test_mir_unwind.cpp` and `tests/unit/test_mir_cfi.cpp` on an arm64 macOS 14 host: `test_mir_unwind` 18/18 (before: 3 cases trapped), `test_mir_cfi` 3/3 (before: trapped).
+
+### A failed binary module read abandons its module, and the fallback goes on
+
+- A failed `MIR_read_with_func` in madc's MIR module cache (the system pack, a frozen forest's module, a ledger module) abandons the module the read had begun, through `MIR_abandon_module`. Before, the fallback's next `MIR_new_module` or `MIR_finish` stopped with "Creating module when previous module frozen is not finished".
+- `cir_mir_read_module()` in `src/madc_cir.cpp` is the one read owner for the three sites. A read that adds no module returns NULL with "no module in the blob".
+- `tests/unit/test_cir_freeze.cpp` gains "mir cache: a blob whose read fails mid-module falls back to materialization": `build_frozen` falls back and runs `main`, which returns 99.
+
+### MIR discards the module a failed binary read left unfinished
+
+- `MIR_abandon_module(ctx)` in `third_party/mir/mir.c` (declared in `third_party/mir/mir.h`) discards the module a longjmp out of an error function left unfinished. Its items leave the item table, and the module is freed. Before, `MIR_new_module` and `MIR_finish` refused that state, so the context could not be reused.
+- It has no effect when no module is unfinished, and a second call is a no-op.
+- `tests/unit/test_mir_unwind.cpp` gains "binary module I/O: a failed read's module is abandoned, the context goes on": after the abandon the same names scan again into a new module, and `MIR_finish` succeeds.
+
+### A native darwin build generates its tables with its own madc
+
+- `make release-macos` on a Mac (`MODE=hosted-<arch>-macos` on the build host) no longer names `../bin/madc` as the generator of the dialect registry. Before, every `cross-%` and `hosted-%` mode did, and a native build, which builds no dev madc, stopped with "No rule to make target '../bin/madc'".
+- `MODE_RUNS_ON_HOST` in `src/Makefile` is the one predicate: a plain mode, and a `hosted-<host arch>-macos` mode on a darwin host, generate with their own stage one; other cross and hosted modes generate with `../bin/madc`. `MODULE_TABLE_GEN` in `src/madc_modules.mk` reads the same predicate.
+- Linux and the cross darwin modes are unchanged.
+- On an arm64 Mac mini (macOS 14), `make release-macos` exits 0, with `forest_pack_gate` OK and `verify_macho_release` OK.
+
+### A module table names a platform integer through its accessor
+
+- `type_expr()` in `src/madc_builtin_registry.cpp` switches on `DataDef::platform_integer()` and emits `dd_platform_long()`, `dd_platform_ulong()`, `dd_platform_longlong()` or `dd_platform_ulonglong()` for a distinct platform integer. Before, a face returning or taking `long long` where `int64_t` aliases it (darwin) was refused with "cannot be built -- return type 'long long'", so `make release-macos` failed generating `ui_web.madi`.
+- Linux output is unchanged: `int64_t` there is `&ddINT64`, which the singleton list matches first.
+- `tests/unit/test_builtin_registry.cpp` gains "module table: a platform integer is named through its accessor". `bin/test_builtin_registry` reports 3 test cases, 65 assertions, all passing.
+
+### A throw destroys the live objects of every frame it crosses
+
+- A throw through a function with no `try` of its own destroys that function's live objects, as g++ and clang++ do ([except.ctor]/1-2). Before, only the objects of a `try` body were destroyed, through the runtime cleanup stack; `tests/testthrow_through_frame.mad` printed `+1 +2 caught2` with no destructor output.
+- Generated code is unwound by its region table through `__madc_personality` (`__madc_seh_handler` on Windows). `c2mir_set_unwind()` in `third_party/mir/c2mir/c2mir_api.h` sets the regions and personality per compiled tree; `cir_compile` in `src/madc_cir.cpp` passes the tree's language (C++ and the dialect on, C off).
+- The runtime cleanup stack in `src/rt/rt_except.c` is deleted, and so is `emit_try_body_cleanup_push` in `src/cir_builder.cpp`. `madc_unwind_to()` is the one landing for a throw. A throw with no active `try` prints and aborts without unwinding.
+- The REPL and session entry boundary runs its destructors before the jump, on the live stack.
+- `tests/testthrow_through_frame.mad` (`--std=c++17`, 11 cases) prints the lines of its `.expect`, as g++ 13 and clang++ 18 do.
+
+### A C++ program with destructors needs no madc library
+
+- A C++ program whose only runtime need is its destructors' unwinding now emits an image and an object that need no madc library. For a `std::string`/`std::cout` program, `madc -o hello hello.cpp` produces an ELF whose DT_NEEDED is libstdc++, libgcc_s, libm and libc only, and `madc -c hello.cpp; g++ -o linked hello.o` links with plain g++. Before, the 0.106.0 image NEEDED `libmadc.so.0` with `__madc_personality` undefined, and the object failed to link with g++ (`undefined reference to '__madc_personality'`) — a regression from v0.105.0. The win64 PE for the same program imports kernel32.dll, libstdc++-6.dll and ucrtbase.dll only, where the 0.106.0 package PE also imported libmadc-0.dll for `__madc_seh_handler`.
+- B205's table-driven unwinding names `__madc_personality` (`__madc_seh_handler` on Windows) in every frame with a cleanup region, the role `__gxx_personality_v0` plays for g++; it was defined only in `src/rt/rt_except.c` (libmadc and libmadc_rt.a), and nothing pulled it into an emitted image or object.
+- The personality is now its own source, `src/rt/rt_personality.c`, with the unwinder ABI shared with the throw side extracted into `src/rt/rt_unwind.h`. `src/madc_crt.cpp` carries its text as the startup member `crt:personality`, generated at build time by `scripts/gen_rt_text.sh` (rt_unwind.h inlined, `MADC_RT_IMAGE` defined) and pulled into `-o` and `-c` output the way `__dso_handle`/`__madc_dso_fini` are, so each image and object carries its own linkonce copy as gcc's carry libgcc's. One source, two builds: the host build compiles it into libmadc, whose copy the JIT uses.
+- The member is image-only (a new `image_only` field on `madc_crt_member`, threaded through `cir_crt_candidate`/`cir_crt_indexed`/`cir_link_resolves`/`cir_ledger_pull` in `src/madc_cir.cpp`): a JIT session resolves the personality out of the libmadc it runs inside. The personality's references into the exception runtime (`__madc_try_leave`; `__madc_seh_unwind_state` on Windows) are weak in the image build — null in a program that never throws (ld's undefined weak), bound when a throwing program brought the runtime.
+- The `libmadc.so.0` DT_NEEDED decision now counts only strong dynamic imports (`cir_imports_need_madc_runtime(strong, other)`), as GNU ld `--as-needed` counts only non-weak references, so a weak personality reference never makes the runtime needed. A g++ throw crossing a madc object's frame runs the frame's destructor through the object's own personality copy, as g++ destroys a frame's objects for any exception.
+- Gates: `scripts/forest_ledger_gate.sh` legs 6c (a plain C++ image and its g++-linked object need no madc library) and 6d (a g++ throw through a madc object's frame runs its destructor, oracle g++ alone); `scripts/mangle_abi_gate.sh --interop` lane B links with plain g++ (the `-lmadc_rt` flag removed); `scripts/ledger_sources.txt` adds `rt_personality.c`. Both new legs FAIL on the shipped v0.106.0 package binary and pass on this build.
+
+### The unwind personality's object rides the ledger, built once
+
+- A `-c` / `-o` compile now merges a prebuilt native relocatable for each image-only startup member (`crt:personality`) instead of compiling `rt_personality.c`'s text with c2mir in every madc process that writes an image or object. The freezer generates each member's object into the AOT ledger (`CirLedgerForm::native_object` entries beside the MIR modules), and the link merges the pack's copy with `MIR_object_read` as gcc links `crtbegin.o`; a build with no ledger generates the object in-process once. The emitted image and object are unchanged.
+- callgrind `madc-release -c hello.cpp` (packed -O2, container): 473,088,371 Ir -> 453,033,240 (-20.06M, -4.2%); `c2mir_compile` 10.7M gone, `MIR_link` 20.5M -> 11.8M. This removes the per-process personality compile B229 added to v0.106.0 (+4.9% Ir, ~3 ms of 85).
+- `--dump-forest` of the Linux release pack reports `crtobj crt:personality symbols=1 bytes=4960`, outside the ledger module count. The `-c` object carries `W __madc_personality` and weak `w __madc_try_leave`, links with plain g++ and prints "Hello, World"; the `-o` image still NEEDs libstdc++, libgcc_s, libm and libc only.
+- A `-static-libmadc` C++ program that never throws no longer pulls `rt_except.c`'s whole runtime module: the emit-time checks count only strong undefined `__madc_*` dynamic symbols, so the personality's weak `__madc_try_leave` reference stays `w` (null at run time) rather than selecting the module, as GNU ld pulls no archive member for a weak reference (oracle: `gcc -static-libgcc` keeps crtbegin's weak `_ITM_*` / `__gmon_start__` undefined).
+- Gates: `scripts/forest_ledger_gate.sh` leg 1 asserts the ledger carries the startup object (`crtobj`), and new leg 7b merges the ledger's object for a `-c` of a frame with a destructor while a no-ledger carrier generates the same object (either `.o` links with plain g++ and runs the destructor); `scripts/forest_pack.sh`/`_darwin`/`_windows` refuse a pack whose ledger carries no startup object, and `forest_pack.sh` checks a `-c` through the packed binary reads the ledger's copy. BUGS.md B231 is deleted.
+
+### A cross-built macOS package resolves its int64_t dialect and module functions
+
+- A macOS madc cross-built on the Linux container now calls a dialect or module function that takes or returns `int64_t` / `uint64_t`. On the v0.106.0 x86_64 tarball, `madc::sleep_ms(1)` failed with "MIR error: import of undefined item _ZN4madc8sleep_msEl" while libmadc exports `__ZN4madc8sleep_msEx`, and a `git::relpath` call looked up `..._ZN3git7relpathERN4madc5valueElPKc` where `git.dylib` exports `...ExPKc`. On darwin `int64_t` is `long long` and mangles `x`; on glibc it is `long` and mangles `l`.
+- The dialect registry (`src/Makefile`) and the module tables (`src/madc_modules.mk`) are generated once with the Linux dev madc for every cross and hosted mode. That generator wrote each `int64_t` parameter as `&ddINT64` with the spelling "int64_t"; compiled into a darwin madc, which reads `&ddINT64` as `long`, the lookup mangled `l` where the darwin exports say `x`.
+- `emit_builtin_registry` and `emit_module_table` in `src/madc_builtin_registry.cpp` now parse under `NeutralTypeIdentities`, which pins the int64 alias to `TargetInt64Alias::LongLong`, so `int64_t` / `uint64_t` are the distinct platform integers. `type_expr()` (with `platform_integer_expr()` extracted) writes them by their accessor (`dd_platform_longlong()` / `dd_platform_ulonglong()`) at every layer — a parameter, a reference, a function pointer's return — and `spelling_expr()` writes a parameter spelling whose core is a platform integer through that accessor's name (`builtin_platform_spelling()` for a layered spelling). The loading madc then spells and mangles each as a parse on its own target does (glibc `int64_t`, darwin `long long`).
+- Linux output is unchanged: read back as glibc the generated dialect registry is byte-identical to the shipped v0.106.0 table (964 accessor sites), and `obj/modules/git/git.inc` likewise.
+- Gate: `scripts/check-neutral-tables.sh` (wired into `make gates` in `src/Makefile`) generates a module table from a face with bare, reference and function-pointer `int64_t` forms and fails on any `&ddINT64` / `&ddUINT64` or literal platform spelling; its negative control keeps plain `long` at `&ddINT64`. It passes on this build and FAILs on the shipped v0.106.0 madc.
+
+### A deb or rpm installs its modules beside libmadc, where madc looks for them
+
+- The madc `.deb` and `.rpm` now install the `git`, `markdown` and `ui_web` modules at `madc/modules` beside the libmadc image — `/usr/lib/x86_64-linux-gnu/madc/modules` in the deb, `/usr/lib64/madc/modules` in the rpm — where `madc_module_dir` (`src/madc_modules.cpp`) looks. Before, both packages shipped them under `/usr/lib/madc/modules`, a directory madc never searches, so an installed `madc --import=git` failed with `<command-line>:0:0: error: import: no module named 'git'` and exit 69, and madcide's Ubuntu 22.04 build broke on `import git;`. The tarball and Homebrew keg were already correct (`lib/madc/modules`).
+- `scripts/stage_install.sh` stages the modules at `<libdir>/madc/modules` for every layout; `scripts/package_release.sh` moves the deb's `DEBMOD`, the rpm's `__requires_exclude_from` path for `ui_web.so` and its `%files` list to the libdir; and `docs/building-webview.md` names the new deb/rpm module directories.
+- Gate: `scripts/package_install_gate.sh` `run_linux` step 3 (deb, rpm, tar) asserts the installed madc imports its `git` and `markdown` modules, with a negative control that hides the module directory and requires the import to fail.
+
+### A binary module writes a region change ahead of the labels at its insn
+
+- MIR's binary writer emitted `uregion <region>` immediately before the first non-label insn of a new region, after any labels preceding that insn. The reader holds labels until their insn and refuses a region directive while labels are pending ("uregion should have no labels"), so a module whose region changes at a labelled insn did not read back.
+- `write_item()` in `third_party/mir/mir.c` writes the `uregion` directive ahead of the run of labels; the labels and their insn are written unchanged. The reader is unchanged.
+- With unwind regions on for C++ trees (B205 step 7), the Windows release pack's MIR module cache failed with `MIR_read failed: uregion should have no labels`. `make release-windows` and `make release` (Linux) now exit 0, with `forest_pack_gate` OK.
+- `tests/unit/test_mir_unwind.cpp` gains "binary module I/O: a region changing at a labelled insn". `bin/test_mir_unwind` reports 19 passed, 0 failed (230 assertions).
+
+### A Windows language-specific handler runs a generated frame's cleanups for a madc throw
+
+- On x64 Windows, a generated function with a region table names `__madc_seh_handler` as its SEH language-specific handler (`UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER`). The handler runs the frame's live regions for a madc throw's `longjmp` into its target `try`, and for a host C++ exception crossing the frame. A plain C `longjmp` runs no regions.
+- `madc_run_regions()` in `src/rt/rt_except.c` is the one region walk, shared with `__madc_personality`. The region-table readers are built on every platform.
+- MIR writes the handler's RVA, the region table and a jump to the handler into the UNWIND_INFO of JIT code. Objects and images reach the handler through an in-`.text` stub, and the table's cleanup pointers are PC32 relocations in `.xdata`.
+- Inert until B205 step 7 names a personality for generated functions: no UNWIND_INFO carries a handler yet.
+- Linux: tier1 183 passed, 0 failed (EXE 176, OBJ 176) over the exception and unwind tests and their neighbours; Tier 2 seven lanes 0 outside baseline. Hosted win64 build rc=0 (`-Wall -Werror -O2`, mingw-w64 g++ 13).
+
+### An operator call's extern decline is decided before anything is emitted
+
+- `CirBuilder::class_operator_external_call()` checks `extern_symbol_can_link()` on the callee's pre-set Itanium symbol at entry, before the operand temporaries, the result temporary or the caller's result slot are emitted. Before, a decline after those emissions left a cleanup-tagged result temporary that was declared but never constructed, so its destructor ran on garbage at scope exit, and the operands' temporaries were emitted twice when the caller fell through to body instantiation.
+- Where the symbol links, the emitted code is unchanged; only the position of the check moved.
+
+### A local object in an init-statement, a case or a substatement is constructed
+
+- An object declared in an `if` or `switch` init-statement, as a non-compound substatement, or in a `case`'s statements is constructed where it is declared and destroyed when its scope ends. Before, only its storage and cleanup were emitted, so its destructor ran on uninitialized storage: `if (std::string s = "abc"; ...)` aborted with "double free or corruption" (SIGABRT).
+- `CirBuilder::local_object_decl_into()` is the one owner for these scopes; it reuses `header_declarator_stmts()`. A carrier construction now flushes pending temporaries ahead of itself.
+- `tests/testinitstmt_object.mad` (`--std=c++17`) prints the same lines as g++ 13 and clang++ 18.
+- Known remaining issue: a declaration inside a switch body's case is also default-constructed at the top of the enclosing block, because the switch body opens no scope of its own. The case's own object is constructed correctly.
+
+### An object's cleanup arm follows its construction
+
+- The CIR builder places `__builtin_cleanup_arm(&name);` after the statement that constructs a cleanup-tagged object it declares: class declarations, carrier and class temporaries, returned-object temporaries, foreach elements, block locals, and host-call shim temporaries. A class without a destructor and a static or extern object get no arm.
+- c2mir accepts the arm of a variable with no cleanup as a no-op. It is an error only when the operand is not a variable's address.
+- `--emit=c11` writes an arm as an empty statement, keeping its labels.
+- With c2mir's unwind regions off (the madc default), the arm generates no code, so this change alters no output.
+- `tests/unit/test_mir_unwind.cpp` gains a case for the no-op arm and the non-variable error.
+
+### c2mir's builtin call names live in one table
+
+Consolidated: c2mir_builtin_call_names — gate scripts/check-one-c2mir-builtin-names.sh
+
+- `builtin_names[]` in `third_party/mir/c2mir/c2mir.c` is the one table of c2mir's in-place builtin call names, read through `builtin_kind()`. The `__has_builtin` test, the call check, the definition check and the generator read it. Each site keeps its previous name set as data.
+- `c2mir_builtin_call_name_p()` is exported from `third_party/mir/c2mir/c2mir.h`. madc's `is_c2mir_builtin_call_name` in `src/cir_builder.cpp` calls it instead of keeping its own list. The old list lacked `__builtin_frame_address` and `__builtin_return_address`, which failed the win64 release pack smoke on 2026-10-21.
+- `scripts/check-one-c2mir-builtin-names.sh` (in `make gates`) fails on a builtin-name comparison in `c2mir.c` outside `builtin_kind()`, and on a string literal in madc's predicate.
+- Tier 1 and Tier 2 on Linux are green: tier1 127 passed, 0 failed; c-testsuite 220/0; c-torture 1620, 0 outside baseline; c2mir-tests 368/0; gui 13/0; gxx-c++11 1505, 0 outside baseline; index-c 50/50; commonmark 664, 0 outside baseline.
+
+### On win64, a `try` passes its frame to `_setjmp`, so a throw unwinds through `RtlUnwindEx`
+
+- On Windows targets, a madc `try` calls `_setjmp(jbuf, __builtin_frame_address(0))` in place of `_setjmp(jbuf, NULL)`. Each raise's `longjmp` is an unwinding one: `RtlUnwindEx` walks the frames between the throw and the `try`.
+- `__builtin_frame_address` and `__builtin_return_address` are c2mir builtins with no external symbol, so a template body holding a `try` compiles without an undefined-symbol fallback.
+- Host code keeps `__USE_MINGW_SETJMP_NON_SEH`. `scripts/win_ucrt_gate.sh` keeps its SEH leg as the negative control over a frame with no RUNTIME_FUNCTION.
+- Under wine, `testtrycatch` ran with 230 unwind trace lines and 4 `RtlRestoreContext` calls; the previous PE had 0 of each. The exception tests (JIT, exe, obj) pass under wine and on genuine Windows with unchanged `.expect` files.
+
+### PE/COFF objects and images carry unwind tables for generated functions
+
+- On Windows targets, each generated function's unwind info is written to `.xdata` and a 12-byte RUNTIME_FUNCTION to `.pdata`, with image-relative (ADDR32NB) fields. A function with no frame to describe gets neither entry.
+- The COFF `.o` writer and reader carry `.xdata` and `.pdata`. The PE image writer places `.pdata` (data directory 3) and `.xdata` after `.rdata`, resolves the RVAs at emit, and sorts `.pdata` by begin address. An executable's entry stub and a DLL's DllMain paths get their own entries.
+- The in-process loader registers `.pdata` with `RtlAddFunctionTable` and removes it at unload. Unloading a module now also unmaps its image on Windows.
+- Before, a generated `.exe` built on win64 carried no unwind data, so `testunwind_backtrace` and `testunwind_frameshapes` reported zero frames and exited 0. `testunwind_backtrace`, `testunwind_frameshapes` and `testbuiltin_frame_return_address` no longer carry their win64 `.exe` skips; their exe and obj passes are green under wine.
+- The language-specific handler, its LSDA and an imported handler's stub are not part of this change.
+
+### A forest bind checks a masked arm's differing macro where frozen content expands it
+
+- A forest root whose taken guard arm is skipped as masked no longer declines when another macro the arm writes differs from the consumer's state. The name joins the walk's differs-set and is checked at each frozen expansion point it reaches (the K2c check), so the root declines only where frozen content expands it to a different state. A spelled name that differs still declines.
+- The freeze records the writes of a taken single arm whose condition spells a name it defines, for names the condition does not spell, and keeps their expansion points. A unit's own include guard is not recorded. Container format v73 (`CIR_COND_F_WATCHED`); a v72 container lacks those points.
+- On win64, `<iostream>` binds its frozen roots with no declines, and the masked `stdio.h` arm leaves `getwc`, `getwchar`, `putwc` and `putwchar` to their expansion points.
+- `scripts/forest_bind_gate.sh` `[k2e]` prints `t=4` for the masked shape and `s=9` where frozen content expands the differing macro (g++ 13 prints the same).
+
+### A forest bind follows a run arm's `#include` and withdraws a skipped frozen arm's declarations
+
+- A forest root whose run arm holds an `#include` no longer declines on that include alone. The included header binds as an edge of the walk, at that point of the arm, and its declarations restore with the root. An include the walk cannot bind (not frozen, quoted, `#include_next`, `__need`, or a unit whose own walk declines) still declines the root, which then parses live.
+- A taken frozen arm that the walk skips no longer restores its declarations beside the live copies. The names declared only inside that arm are withdrawn from the restored unit, so `struct fbg_T` and `typedef fbgT` are declared once (gcc's reading). Before, they restored as twins.
+- mingw's `stdio.h` and `wchar.h` hold the same `#ifndef _WSTDIO_DEFINED` block, including `#include <swprintf.inl>`. A consumer that reaches `wchar.h` first now binds its frozen unit instead of declining.
+- `scripts/forest_bind_gate.sh` `[k2d]` `withdraw` prints `inline=41 twice=80` (g++ prints the same) and `unbound` declines and prints `extra=3`. The `[redecl]` corpus 1 asserts the withdrawal; the typedef-twin tolerance moves to corpus 3.
+- The freeze records each captured arm's token range; container format v72 (`CIR_COND_TOK_BEGIN` / `CIR_COND_TOK_END`). `--dump-forest` condnest lines print `tok=`.
+- A run arm's `#include` completes no serving on its own. `bits/value_stream` is injected once, when the root's walk commits or its live parse runs, so under `--std=madc` it no longer lands ahead of `std::ostream` when a root's walk replays `<iostream>`. Before, the win64 release build's forest pack layout failed on `<iostream>` with `use of undeclared identifier 'ostream'` (`bits/value_stream:35:10`). `scripts/forest_bind_gate.sh` `[k2d]` `stream` prints `stream=41` (g++ prints the same).
+
+### A forest bind checks a macro where frozen content expands it
+
+- A forest root whose run arm leaves a macro unlike the freeze's state no longer declines on that write alone. The walk checks the macro at each recorded expansion point it reaches, and declines only where the frozen content would expand it to a different state.
+- Fixes a silent wrong value: after a declined root was parsed live, a later root that froze an expansion of the old macro value bound that frozen value. `scripts/forest_bind_gate.sh` `[k2c]` `declined` case: `early=5 user2=7` before, `early=5 user2=5` after (g++ prints `early=5 user2=5`).
+- The differing macros of a declined root carry into later roots: the walk's set joins the TU's when the walk ends, bound or declined.
+- The freeze records the expansion points of the macros a captured arm writes; container format v71 (`CIR_POINT_WORDS` per point).
+- A captured arm may hold a `#pragma push_macro` / `pop_macro` pair that it closes itself. The shared-prelude cache still refuses every pragma.
+
+### `#pragma push_macro` / `pop_macro` save and restore the whole macro definition
+
+- A push saves an object-like body, a function-like definition, or an undefined name. A pop restores that state: a function-like macro comes back function-like, and a name undefined at the push is undefined again. Before, only an object-like body was saved, so `pop_macro` of a function-like macro left a stale or missing definition ("import of undefined item FN" under MIR).
+- Pushes nest last-in, first-out. A pop with nothing pushed changes nothing.
+- The restore goes through the same macro writer `#define` and `#undef` use, with the same program-write note and freeze event, so a forest walk's undo log sees it. `Program::PushedMacro` is the saved element type; `_macro_save_stack` holds it.
+- `tests/testpragma_push_pop_macro.mad` (`--std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testpragma_push_pop_macro.expect`: `function-like restored: 9`, `undefined restored: 1`, `nested: 8 7`, `function over object: 101`, `unpaired pop: 3`.
+
+### `__builtin_frame_address` and `__builtin_return_address` return the function's own frame and return address
+
+- `__builtin_return_address(0)` yields the address the function returns to, and `__builtin_frame_address(0)` yields an address inside the function's own frame, on every target. Before, the lexer turned `__builtin_return_address` into `0`, and `__builtin_frame_address` became a host helper's own frame address.
+- Both are c2mir builtins that lower to the MIR insns `MIR_FRAME_ADDR` and `MIR_RET_ADDR` (`third_party/mir/mir.h`). Each target fills them from its ABI in `gen_lower_frame_queries` (`third_party/mir/mir-gen.c`): x86-64 SysV uses `rbp` and `[CFA-8]`, x86-64 Windows the establisher frame, aarch64 `x29`/`x30` (LR in a frameless leaf), ppc64 `r1`/LR, riscv64 `s0`/`ra`, s390x `r15`/`r14`. A function using either insn is never inlined.
+- A nonzero level yields a null pointer. The argument must be an unsigned integer constant.
+- `tests/testbuiltin_frame_return_address.mad` (`--std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testbuiltin_frame_return_address.expect`: six lines of `1`. The win64 native `.exe` pass is skipped (`tests/testbuiltin_frame_return_address.win64_exe_skip`): PE output carries no `.pdata`/`.xdata` yet, so the unwinder cannot walk the frames.
+- `gcc.c-torture/execute/frame-address.c` passes and is removed from `docs/parity/torture-skip-manifest.txt`.
+
+### Windows module DLLs export their namespace symbols again
+
+- `git.dll` and `markdown.dll` export the `git::` and `markdown::` publics madc resolves by mangled name (`_ZN3git...`, `_ZN8markdown...`). Before, each DLL exported only its entry point `madc_module_<name>`, so an `import git;` or `import markdown;` under Windows failed with `is not exported by ... GetProcAddress ... (error 127)`.
+- The module link carries `-Wl,--export-all-symbols` (`src/git.mk`, `src/markdown.mk`); `-Wl,--exclude-libs,ALL` still keeps the static libgit2 and cmark-gfm symbols out of the export table.
+- `scripts/check-module-exports.sh` now also requires each module image to export a symbol of its own namespace, with a negative control for an image that exports only its entry point.
+
+### Windows x86-64 MIR frame register sits at most 240 bytes above the frame bottom
+
+- A Windows frame-pointer function now pushes bp, allocates its frame, and sets bp to `lea min(N, 240)(%rsp)`, the canonical mingw gcc and clang frame. Before, bp was set to the frame's top with the saved bp stored below SP, and the x64 unwind rules describe a frame register at most 240 bytes above the fixed allocation's RSP, so no frame over 240 bytes, and no frame with saved registers, had a valid unwind description.
+- The frame's memory layout is unchanged. In a frame over 240 bytes, bp-relative references (stack slots, incoming arguments, the home area, the `-g` stack homes) move down by N - 240 (`win64_rebase_fp` in `third_party/mir/mir-gen-x86_64.c`). Frames of 240 bytes or less are unchanged in their body.
+- `tests/testframeshapes.mad` (`--std=c17`) prints the gcc 13 and clang 18 answers in `tests/testframeshapes.expect`: `vsum 11.50`, `many 249`, `int 5832215563746428664`, `fp 1510.000`, `variable 1158746`.
+
+### Windows x86-64 MIR probes the stack a page at a time
+
+- A frame or an alloca of 4096 bytes or more now touches every page between SP and its new value, in order, before the stack pointer reaches the lowest one. Before, MIR moved SP down by the whole size in one step, so the first store past the committed guard page faulted: a 300000-byte local array or VLA through the packed `madc.exe` JIT, or a madc-built `.exe`, exited with an access violation (exit 5).
+- The probes are inline in `third_party/mir/mir-gen-x86_64.c` (`win64_probe_frame`, and the `MIR_ALLOCA` patterns `r r` and `r i2`), because MIR links no `___chkstk_ms`. A constant alloca size under a page keeps the plain `sub` through the new pattern element `g`. Non-Windows code is unchanged.
+- `tests/teststackprobe.mad` (`--std=c17`) prints the gcc 13 and clang 18 answers in `tests/teststackprobe.expect`: `fixed 74`, `variable 148`, `nested 216`.
+
+### A prototype's leading function attributes are the function's
+
+- A function attribute among a prototype's leading declaration specifiers (`no_instrument_function`, `weak`, `noinline`, `no_strict_aliasing`) now becomes the function's, as one after its declarator already did. Before, only attribute groups after the declarator reached the FuncDef; a prototype returned at its `;` before them.
+- Before the fix, a leading `no_instrument_function` on `__cyg_profile_func_enter` was ignored under `-finstrument-functions` and the hook instrumented itself until the stack overflowed (SIGSEGV). A leading `weak` on an undefined prototype failed with `import of undefined item`, a leading `noinline` was inlined, and `no_strict_aliasing` leaked into the next function parsed.
+- `Program::apply_pending_function_attributes` and `Program::clear_pending_function_attributes` are the one owner each for the four pending flags; the declaration head, the trailing pickup and `_tokenizer_init` use them.
+- `tests/testprotoleadattrs.mad` (`--finstrument-functions --std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testprotoleadattrs.expect`: `result 10`, `entries 1`, `weak null 1`.
+- `tests/testnoinline.mad` puts `outer`'s `noinline` among its prototype's leading specifiers; its expected output is `distinct frames: 1`.
+
+### One FuncDef rebuild serves every return-type change
+
+- `FuncDef::returns` is a reference, so a return-type change rebuilds the FuncDef. parseFunction's two refreshes (an unprototyped C declaration met by its definition, and a definition that changes its declaration's return type) now call `clone_funcdef_with_return`, the one rebuild, in place of two hand-written field-copy lists.
+- The lists had drifted. Both refreshes dropped `no_strict_aliasing`; the return-type refresh also dropped default arguments, `const_params`, `namespace_name` and the capture fields; the clone dropped `c_linkage` and `declared_unprototyped`. The rebuilt FuncDef now carries each of them.
+- `scripts/check-one-funcdef-clone.sh` (in `make -C src gates`) fails on a run of 8 or more member-wise FuncDef field copies outside `clone_funcdef_with_return`.
+
+Consolidated: funcdef_rebuild_field_copies — gate scripts/check-one-funcdef-clone.sh
+
+### `__attribute__((no_instrument_function))` is read in every attribute position
+
+- `no_instrument_function` is recorded wherever it appears in a function's declaration: among the leading declaration specifiers, after another specifier, or after a prior declarator. Before, only an attribute group after the declarator was read, so a function marked in the leading position was instrumented under `-finstrument-functions`.
+- The instrumented `__cyg_profile_func_enter` called itself until the stack overflowed (SIGSEGV). With the attribute honoured, the marked functions are not instrumented, and only `counted` gets the enter hook.
+- `tests/testnoinstrumentlead.mad` (`--finstrument-functions --std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testnoinstrumentlead.expect`: `result 8`, `entries 1`.
+
+### `__has_attribute` and `__has_builtin` expand outside `#if`
+
+- `__has_attribute (x)` and `__has_builtin (x)` in ordinary text, in a macro body, or in a constant expression expand to the same 1/0 answer the `#if` directive gives. Before, only `#if` and `#elif` answered them, and elsewhere `noinline` was read as an undeclared identifier.
+- A user `#define` of either name still wins. `__has_include` and `__has_include_next` remain directive-only.
+- `tests/testhasattrexpr.mad` (`--std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testhasattrexpr.expect`.
+
+### `__attribute__((noinline))` keeps the function out of line
+
+- `__attribute__((noinline))` is carried from the source to MIR. A function so marked, on its definition or on any prior declaration, is not inlined: MIR's inliner refuses it for direct calls and for inline candidates alike.
+- `__has_attribute(noinline)` answers 1.
+- Before, the lexer had no row for `noinline`, so the attribute was dropped and a direct call to a small callee was inlined. A backtrace or frame-identity check then found no frame for the function.
+- `tests/testnoinline.mad` (`--std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testnoinline.expect`: `result 8`, `distinct frames: 1`, `main found: 1`, `has_attribute: 1`.
+
+### C++ cast type-ids accept any parenthesized ptr-operator group
+
+- In C++ mode, a parenthesized abstract declarator made of `*`, `&`, `&&`, cv-qualifiers and attribute groups, closed by `)`, after a type name is the cast's type-id. `(int (**)(void))pf`, `(int (*const)(void))p` and `(int (__attribute__((aligned(8))) *)(void))p` parse as casts. Before, only the exact group `(*)` did.
+- Functional casts such as `(int(*ip))` and `(long(x))` still parse as expressions.
+- `tests/testcasttypeidptrops.mad` (`--std=c++17`) prints the g++ 13 and clang++ 18 lines in `tests/testcasttypeidptrops.expect`.
+
+### Embedded `<stddef.h>` declares max_align_t as `long double` on Apple targets
+
+- The embedded `include/madc/stddef.h` declares `max_align_t` as `long double` when `__APPLE__` is defined, and as gcc's `{ long long; long double; }` struct elsewhere. Apple clang's `__stddef_max_align_t.h` declares `long double`, the same type the darwin prelude carries.
+- Before, the embedded struct and the prelude's `typedef long double max_align_t;` were two different definitions, and the forest pack's layout pass failed on `<wchar.h>` with `Identifier 'max_align_t' already defined` (`make -C src release-macos`). Which definition held depended on include order.
+- An identical typedef redefinition is accepted, as gcc accepts it, so the two definitions are one type in either order.
+- `tests/testmaxaligntype.mad` (`--std=gnu17`) prints `long double` on Apple (`.darwin_expect`) and `struct` on Linux (`.expect`).
+
+### Mach-O objects and executables carry unwind tables
+
+- A Mach-O `.o` carries `__TEXT,__eh_frame` and `__TEXT,__gcc_except_tab`, and the `.o` reader reads both back. Before, Apple targets were excluded from the EH object capture (`GEN_EH_OBJECT_P`), so a Mach-O object or executable had no unwind records.
+- A Mach-O executable carries `__gcc_except_tab` and `__eh_frame` in `__TEXT` after `__text`, plus a version-1 `__unwind_info`. Each function with an FDE has a DWARF-mode entry at its function; a function without one has encoding 0. The macOS unwinder reads `__unwind_info` first.
+- Measured on macOS 14: madc's executable, an executable linked from merged madc objects, and Apple ld over madc objects each unwind two region-bearing frames, with the personality reading both tables and calling each cleanup (`2 2 2`).
+- `scripts/macho_obj_gate.sh` leg 9 checks an FDE per function in the object, no LSDA field against the section label, and that ld64.lld's and madc's `__unwind_info` name each FDE at its function.
+- Windows is unchanged; its unwind tables are step 6.3.
+
+### A program macro defined ahead of an include reaches the packed header that spells it
+
+- A `#define` or `#undef` the program makes before an `#include` is seen by the verified bind. A frozen unit that spells the macro's name in its ordinary tokens declines its root, and the root lexes from text, as gcc does for a precompiled header (a macro defined before the PCH must be as it was at PCH build, or must not affect it).
+- Before, the packed `madc-release` bound the frozen `<time.h>` closure for `#define tm_sec my_sec` followed by `t.tm_sec = 7;`, and refused with `Unidentified member 'my_sec' in 'tm'` (C and C++).
+- A name spelled only in directives (a `#if` condition, an `#include` operand, a `#define` or `#undef` name, `#error` text) keeps binding. A program macro first written while undefined skips directive-only spellings. A condition-only program macro (the `[armreplay]` leg's `FBG_LV_WIDE`) still binds.
+- The freeze's `SPELLED_NAMES` unit word carries `CIR_SPELLED_DIRECTIVE_ONLY` (`0x80000000`) on a name spelled only in directives. A table without the bit reads every name as content.
+- `tests/testprogmacrobind_c.mad` (`--std=gnu17`) and `tests/testprogmacrobind.mad` (`--std=gnu++17`) print `7`, as gcc 13 and clang 18 (C) and g++ 13 and clang++ 18 (C++) do. The packed `madc-release` refused both before this change.
+- `scripts/forest_bind_gate.sh` has a `[progmacro]` leg. C and C++ containers include `fbgate_pm_a.h` (spells `fbg_pm_sec`) and `fbgate_pm_b.h`. A program `#define fbg_pm_sec fbg_pm_mine` declines `a.h`'s root and binds `b.h` (`v=8`, as gcc and g++). An `#undef` of that define binds `a.h` (`v=8`).
+- Parse-cost, measured against the re-recorded baseline: +0.01% to +0.03% on every row (`sqlite3.forest` +3.6M of 13.24G Ir; `rung` rows +4K to +13K). `act_wiz` +0.36M of 1.50G; the madc/c2m ratio stays 1.089x. Objects are byte-identical.
+
+### The verified C++ bind is on for every consumer; an overlapping decline stops binding
+
+- The verified bind is on for every C++ and madc consumer. The `MADC_FOREST_ENV_CHECK` knob and `forest_bind_verified()` are deleted. `ForestWalk` always logs its writes (`forest_macro_undo`) and evaluates every recorded conditional. Before, a C++ consumer followed the frozen arm unless the knob was set.
+- A decline with nothing bound yet stops binding for the TU (`forest_system.bind_stopped`; K1a). A decline after a bind stops binding only when its live closure declares a name a bound unit declares (`forest_decline_overlaps_bound`; K1b). A namespace is excepted. A disjoint decline parses that root live, and later roots still bind. C keeps per-root declines.
+- `tests/testndebugcxxbind.mad` (`tests/testndebugcxxbind.flags`) defines `NDEBUG` after `<cstdio>` and includes `<cassert>`, then calls `assert(0)` and prints `puts("ok")`. Its `.expect` is `ok`, and g++ and clang++ with `-std=gnu++17` print `ok` and exit 0. The packed madc before this change aborted in `assert(0)`.
+- `scripts/forest_bind_gate.sh` has an `[overlap]` leg. An overlapping decline (`fbgate_ov_b.h`, sharing `fbg_ov_fn` with `fbgate_ov_a.h`) stops binding, and `fbgate_ov_c.h` parses live. A disjoint decline (`fbgate_ov_d.h`) keeps binding, and `fbgate_ov_c.h` binds. Both print `v=8`. The `[husk]` leg runs once, with no knob-off or knob-on pass.
+- K1b census: 3 of 1997 suite tests decline, all after a bind, and none overlap (`docs/plans/2026-10-18-verified-cxx-bind.md`).
+- Parse-cost, measured on `a45e16b16` and `7962392ce`, against the committed baseline: every row is at or below baseline. `rung_limits` -0.37%, `rung_stdio` -0.66%, `rung_type_traits` -2.16%, `rung_vector` -4.14%, `rung_c8` -6.09%, `cxx_stl.forest` -2.29%. The walk's own cost (`rung_limits` +226K Ir, `rung_stdio` +238K, `rung_c8` +1.3M) is paid by the B2 hash index and the hash sets that landed first.
+
+### `#include_next` resumes after the search directory the includer was found in
+
+- `#include_next` searches the entries after the search directory the including header was found in (gcc's `file->dir`), not after the includer's own directory. A header found through a subdirectory spelling (`<sub/use.h>`, `<bits/std_abs.h>`) previously restarted the walk at the top of the search list (`include_next_search_list`, `src/lexer.cpp`).
+- libstdc++'s `<bits/std_abs.h>` `#include_next <stdlib.h>` now reaches the C library's header, not the libstdc++ `<stdlib.h>` wrapper. `tests/testincludenextsubdir_c.mad` prints `which=2`, as gcc and clang do; madc printed `which=1` before the fix.
+- The forest pack lists gain `stdlib.h` (`scripts/forest_pack_headers.txt` v11, `scripts/forest_pack_headers_windows.txt` v8).
+
+### The verified C++ bind accepts two equal-in-effect differences: lex-alike macro bodies and a compound `#if` guard
+
+- A written object-like macro whose body lexes to the same tokens as the frozen body counts as the frozen state, not only one spelled alike (`forest_object_states_lex_alike`). glibc's `__attr_dealloc_fclose` is `__attr_dealloc (fclose, 1)` in a frozen `<stdio.h>` and empty in `<wchar.h>` alone; both lex to no token.
+- A frozen arm-state entry is checked after the next recorded conditional when that conditional's captured arm writes the same name and no macro expands in between (`pack_arm_state` marks such an entry `^`; `forest_walk_resolve_deferred` settles it). The freeze format is unchanged.
+- A taken single `#if` arm skipped by the bind is masked when its own live guards skip it, not only for `#ifndef`. The guards are the names the arm defines and its condition spells, read undefined (`forest_arm_guard_passed`). glibc's `off64_t` typedefs (`#if defined __USE_LARGEFILE64 && !defined __off64_t_defined`) bind when `<unistd.h>` is included before `<stdio.h>`.
+- `scripts/forest_bind_gate.sh` `[lexalike]` and `[typedefguard]`: a `<wchar.h>` / `<cwchar>` consumer prints `n=3`, and a `<unistd.h>` consumer that includes `<stdio.h>` / `<cstdio>` prints `o=5`, as gcc and g++ do.
+- Packed `madc-release` with `MADC_FOREST_ENV_CHECK=1`: the nine tests that declined on these two differences (`testforeachauto`, `testforeachiter`, `testforeachscope`, `testforinitscope`, `testmapiter`, `testoutoflinectoroverload`, `testphpdumpiter`, `testsubscriptoverload`, `testvecclassgrowth`) bind with no decline and exit 0.
+
+### A -D that no frozen header spells keeps the pack bound
+
+- A compile with `-D` macros binds the pack when no frozen header spells any `-D` name. Before, any `-D` changed the defines hash, so the pack declined and every system header was lexed from text.
+- The freeze writes an optional `SPELLED_NAMES` segment (slot 29). Absent, a `-D` consumer declines as before. `--dump-forest` prints `spellednames<TAB>N`.
+- `scripts/forest_bind_gate.sh [cdefine]`: with `-DMADC_GATE_UNSPELLED=7`, C (`gnu17`) and C++ (`gnu++17`) bind the pack and print `v=7`, as gcc does. With `-DNDEBUG` over `<assert.h>`, the compile declines and prints `ndebug=ok`.
+- `act_wiz.c` built with `-DREQUESTS -DSMAUG`: callgrind Ir 1,586,854,783 -> 1,502,948,897 (-5.3%); ratio to c2m 1.153x -> 1.092x; object byte-identical. `sqlite3.c` (no `-D`): 13,264.1M -> 13,253.0M Ir (-0.08%); object byte-identical.
+
+### A raw-string prefix needs a well-formed delimiter; an ordinary literal ends at its line's end
+
+- `tokenize_macro_spelling` (`src/lexer.cpp`) reads `R"`, `LR"`, `uR"`, `UR"` and `u8R"` as a raw string only when the delimiter is well formed: at most 16 characters, none of space, quote, backslash, parenthesis or new-line, then `(`. Otherwise the prefix is an identifier token and the quote starts an ordinary literal.
+- An ordinary string or character literal ends at its closing quote, or at the line's end when it is never closed. It does not run on to a later quote.
+- In C, `#define CAT(R) R"x"` substitutes the parameter `R`. Before, the rest of the body was one literal token and the build failed with `use of undeclared identifier 'R'`. `tests/testmacrorawprefixc.mad` (`--std=c11`) prints `ax` and `byz`, as gcc 13 and clang 18 do.
+
+### The expression parser's operand and operator stacks are vector-backed
+
+- `token_stack_t` (`include/madc.h`) is `std::stack<TokenBase *, std::vector<TokenBase *> >`. `Program::parseExpression`'s two local stacks and every helper that takes one use it in place of the deque-backed default.
+- A default `std::stack` is a `std::deque`, which allocates its node map and first chunk on construction, even when empty. A vector-backed stack allocates nothing until its first push.
+- Recognised spellings and parse results are unchanged. The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop from 1,596,140,362 to 1,586,854,783 (-0.6%) for `act_wiz.c` and from 13,332,084,430 to 13,264,137,909 (-0.5%) for `sqlite3.c`.
+
+### DBG has one definition, and madc_verbose has one writer
+
+- `DBG(x)` is defined once, in `include/datadef.h`. The 36 per-file copies in `src/` are deleted. `DBG` first reads the process-wide flag `madc_verbose_requested`, so a process that never turns verbose on reads one plain atomic instead of the thread_local `madc_verbose` through `__tls_get_addr`.
+- `madc_set_verbose(v)` is the only writer of `madc_verbose`. It is called by `-v` / `--verbose` in `src/madc.cpp` and by the embedding verbose scope in `src/madc_program.cpp`. It sets `madc_verbose_requested` before a verbose thread's own flag.
+- A thread whose `madc_verbose` is false stays silent, as before. Trace output is unchanged for a thread that turns verbose on.
+- `scripts/check-one-dbg-macro.sh` (wired into `make gates`) fails on a `#define DBG(` outside `include/datadef.h` and on a `madc_verbose` assignment outside `madc_set_verbose`.
+- `tests/testverbosetrace.mad` (`-v`) checks that the front end's trace lines appear with `-v` and are absent without it.
+- The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop from 1,609,228,176 to 1,596,140,362 (-0.8%) for `act_wiz.c` and from 13,403,586,299 to 13,332,084,430 (-0.5%) for `sqlite3.c`.
+
+### An if condition's template-id probe asks name lookup whether `<` opens a template-argument list
+
+- The statement-scope template-id demand in `Program::resolve_declared_type_token` builds its delimiter tracker with the Program (`DelimDepth d(this)`), so a variable followed by `<` ends the scan at its first step. Before, `if (a < b)` scanned forward to a later `>` in the file, or to the 4096-step guard.
+- The scan is seeded with the name and the token before it when the name is current, so a qualified template name (`ns::Tmpl <`) keeps the opening reading. Template, unknown and dependent names keep the opening reading as before.
+- The demand runs only in C++ (`presents_as_cpp()`). C has no templates.
+- A synthetic file of 2000 `if (a < b)` statements with no `>` token: callgrind instruction counts drop from 1,847,577,510 to 384,084,153 (-79.2%). The `<=` form of the same file is 382,488,233.
+- The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop from 1,619,050,350 to 1,609,228,176 (-0.6%) for `act_wiz.c` and from 13,648,101,620 to 13,403,586,299 (-1.8%) for `sqlite3.c`.
+- `tests/testifcondtpldecl.mad` covers comparisons beside template-id condition declarations; its output matches g++ and clang++ under `--std=c++17`.
+
+### The expression parser's identifier arm asks the ordinary-call lookups only where they are read
+
+- `Program::parseExpr_identifierArm` evaluates `find_variable_for_contextual_type_name` and the dynamic-symbol probe only when the functional-construction test (`name (` / `name {` outside member-access position) can hold. Other identifiers no longer pay for a scope lookup and a dlsym probe whose answer was never read.
+- `Method::findVariable` and `Method::findParameter` compare interned names by identity (`istring` `operator==`) in place of a byte compare.
+- Recognised spellings and parse results are unchanged. The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 13.0M (-0.8%) for `act_wiz.c` and 95.0M (-0.7%) for `sqlite3.c`.
+
+### A class-typed if condition declaration is constructed before the condition reads it
+
+- `if (T q = e)` with a class type now runs q's initialization (copy construction, a prvalue, a braced list) before the condition, and destroys q when the if statement ends. The declaration was lowered to storage only, so the initializer was dropped: a copy read garbage, a zero-valued source took the then-branch, and a class with a destructor was destroyed unconstructed.
+- `CirBuilder::translate_if_core` lowers a class or array condition declaration through `header_declarator_stmts`, the same lowering a for-init declarator uses. Scalar condition declarations are unchanged.
+- `tests/testifcondclassdecl.mad` prints the same lines as g++ and clang++ under `--std=c++17`.
+
+### The builtin type-spelling table and the runtime-eval helper names are interned lookups
+
+- `Program::resolve_builtin_type_spelling` reads the spelling through one interned table (`builtin_spelling_rows`) and a switch on its row kind, in place of a ladder of about 60 byte compares. Each spelling resolves to the same DataDef as before.
+- The runtime-eval helper names are one interned table (`runtime_eval_helper_row`): each `__madc_eval*_runtime` helper names its `_ctx` twin, and the `madc::eval*` public names are a set. `runtime_eval_scope_target` maps a helper to its twin through that row.
+- Recognised spellings and generated code are unchanged. The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 6.2M (-0.4%) for `act_wiz.c` and 68.6M (-0.5%) for `sqlite3.c`.
+
+### The call arm counts arguments only where UFCS or a using-directive can apply
+
+- Outside `--std=madc` the identifier arm's UFCS test asks `ufcs_attempts_here` first, so the queued argument count and the free-callee arity test are not evaluated for a call.
+- With no `using namespace` directive active, the using-directive fallback is not called and the argument run is not counted. The fallback returned the bound variable on every path in that case.
+- The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 16.2M (-1.0%) for `act_wiz.c` and 70.9M (-0.5%) for `sqlite3.c`.
+
+### The CIR referenced-name filter keys its sets on interned string pointers
+
+- The referenced-surface filter in `CirBuilder::translate_module` keeps its name sets as `std::unordered_set<const char *>`, keyed on the c2mir-interned string each node already holds, in place of a byte-ordered `std::set<istring>`. `cir_harvest_type_refs` adds the node's own string and no longer constructs an `istring` per identifier.
+- The admission fixpoint and the order of its removals are unchanged. The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 20.6M (-1.2%) for `act_wiz.c` and 160.0M (-1.1%) for `sqlite3.c`.
+
+### The hottest dynamic_casts in the parser and cir builder use the kind accessors
+
+- Token downcasts at the size-hint walker, the call and subscript helpers, the declaration builders and the brace unwrapper read the TokenBase kind accessors (`as_var_tok`, `as_member_tok`, `as_struct_lit_tok`, `as_assign_tok` and the others). A NULL operand is tested first where the cast accepted NULL.
+- `TokenAdd`, `TokenSub` and `TokenComma` have no accessor; their sites test `id()` and then `static_cast`.
+- DataDef downcasts on an `unqualified()` operand read the DataDef kind accessors (`as_struct_dd`, `as_funcdef_dd`). Sites whose operand can be a qualified wrapper keep `dynamic_cast`, because a qualified wrapper forwards the accessors to its base.
+- Recognised declarations, overloads and generated code are unchanged: the `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 20.0M (-1.2%) for `act_wiz.c` and 135.4M (-1.0%) for `sqlite3.c`.
+
+### The expression parser's identifier arm compares interned names
+
+- `Program::parseExpr_identifierArm` reads the identifier's name once (`contextual_identifier_name`, the token's interned name) and uses it for every lookup and spelling test in the arm.
+- The arm's keyword tests (`operator`, `sizeof`, `_Generic`, `typeid`, `va_arg`, `this`, `await`, and the other spellings the arm recognises) are identity compares against interned literals. The spelling predicates in `src/parser.cpp` (`is_decltype_identifier`, `is_alignof_identifier`, `is_nullptr_identifier`, `is_bool_literal_identifier`, `is_named_cpp_cast`, and the others) compare the same way.
+- Recognised spellings and parse results are unchanged. Generated code is unchanged: the `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change.
+
+### The operand class test asks the class candidate first
+
+- `Program::operand_object_class` (parser) and `CirBuilder::operand_object_class` (cir) compute the class candidate before the array test; `array_operand_type` runs only when a candidate exists. Their answers are unchanged.
+- `Program::lower_free_operator_to_call`, `Program::lower_free_unary_operator_to_call`, `CirBuilder::class_operator_call` and `CirBuilder::carrier_builtin_operator_refusal` return NULL at entry unless `presents_as_cpp()`. A C operator never had an operator function or the carrier; C++ and `--std=madc` are unchanged.
+- `CirBuilder::upcast_class_ptr` asks the rhs's value type only for a bool target, and returns before asking the source's class when the target is not a pointer to a class.
+- Generated code is unchanged: the `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change.
+
+### The platform-width integer test is one virtual call
+
+- `DataDef::platform_integer()` returns `PlatformInteger::piLONG`, `piULONG`, `piLONGLONG` or `piULONGLONG` for the four platform-width integer singletons, and `piNONE` for every other type, including a qualified wrapper.
+- `dd_is_platform_integer()` is `dd && dd->platform_integer() != piNONE`; a NULL argument answers false as before.
+- `unsigned_integer_counterpart()` and `TypeSpeller::scalar_word()` read `platform_integer()` instead of dynamic casts. Their results are unchanged.
+- Generated code is unchanged: the `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change.
+
+### c2mir memoizes each type's alias class
+
+- `get_type_alias` in `third_party/mir/c2mir/c2mir.c` caches its result per (mode, pointee object) for a pointer and per (mode, tag node) for a union or an enum. A cache hit returns the stored alias class; a miss computes it as before and stores it.
+- Generated code is unchanged: the `-c` object for `sqlite3.c` is byte-identical before and after the change.
+- The release build compiles `sqlite3.c` in 2,245 ms (best of 3), down from 2,723 ms.
+
+### A `-g` image describes its frames in `.eh_frame` alone
+
+A `-g` object or executable carries `.debug_abbrev`, `.debug_info` and `.debug_line` and, when it has `.eh_frame`, no `.debug_frame` (the gcc/clang `-g` shape). An image without `.eh_frame` still gets `.debug_frame`. `scripts/check-debuginfo-gdb.sh` (in `make gates`) drives gdb over a `-g` executable: it stops at a breakpoint in a leaf function with its arguments, backtraces through the callers to `main`, and reads locals in each frame.
+
+### MIR emits unwind records for generated code in ELF images
+
+Object files, merged objects, in-process loads and executables carry `.eh_frame` (one FDE per generated function) and `.gcc_except_table` (the region tables). Executables also carry `.eh_frame_hdr` and `PT_GNU_EH_FRAME`. A forced unwind walks through generated frames in AOT images. Region tables are not yet emitted in AOT images: madc does not set c2mir's unwind options.
+
+Consolidated: type_trait_dispatch — gate scripts/check-one-trait-dispatch.sh
+Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
+Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
+Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
+Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
+Consolidated: MIR constant-shift normalizer — gate scripts/check-one-const-shift-normalizer.sh
+Consolidated: dbg_macro — gate scripts/check-one-dbg-macro.sh
+
+### MIR counts object section kinds with MIR_OBJ_SEC_NUM
+
+- `MIR_OBJ_SEC_NUM` closes the `MIR_OBJ_SEC_*` enum in `third_party/mir/mir-debug.h`. The object builder, the relocatable and executable writers, the ELF, Mach-O and PE input readers, the merge reader and the in-process loader size their per-kind tables by it.
+- The section table, its order and its indexes are unchanged for every object.
+- `MIR_object_section_symbol`, `MIR_object_add_symbol` and `MIR_object_symbol_define` return an error for a kind outside `[MIR_OBJ_SEC_UNDEF, MIR_OBJ_SEC_NUM)`.
+- A relocation whose kind has no body (`.bss`, or out of range) now refuses the executable emit instead of patching file offset 0 plus its offset.
+
+### The runtime's throw reaches its try through the platform unwinder
+
+- Outside Windows, `madc_raise` with a try active runs `_Unwind_ForcedUnwind` on a heap-allocated `MadcUnwind` (the Itanium `_Unwind_Exception` header plus the target try). `madc_unwind_stop` longjmps into the try once the walk passes the try's frame, or at `_UA_END_OF_STACK`. A failed allocation or a returning unwinder lands by the plain longjmp.
+- `__madc_personality` (the name c2mir's `unwind_personality` option takes) runs a generated frame's region cleanups innermost first, each with its variable's address, and stops at the target try's guard. A foreign exception runs every region.
+- madc does not set `unwind_personality` yet, so no frame names the personality: the forced unwind runs no generated-frame cleanups and lands where the longjmp did. A g++ frame between the throw and the try runs its destructors (forced unwind reaches it).
+- Windows keeps the plain longjmp, which unwinds no C++ frames.
+- Unit tests: `tests/unit/test_mir_unwind.cpp`, suite "madc runtime personality" (the cleanup order and the caught value; the control without regions records only the pre-try cleanup), and case "a g++ frame between the throw and the try runs its destructor and resumes the unwind".
+
+### MIR gives a generated function's FDE its personality and region table
+
+- A function with unwind regions, a personality (`MIR_set_func_unwind_personality`) and a call inside a region gets an FDE whose LSDA is its region table (`MIR_UNWIND_TABLE_VERSION` 1, format in `third_party/mir/mir.h`). Other functions keep the `zR` CIE augmentation.
+- `MIR_unwind_info_t` states the frame base as a DWARF register plus offset (`base_reg`, `base_offset`), replacing `base_cfa_offset`.
+- `c2mir_options.unwind_personality` names the personality that a function with regions imports. The default is NULL. madc sets neither this option nor `unwind_regions_p` yet, so madc output does not change.
+- Unit tests: `tests/unit/test_mir_unwind.cpp` raises a foreign exception through generated frames under the host unwinder.
+
+### MIR s390x emits the move a constant shift by 0 becomes
+
+- A shift by a constant 0 on s390x was dropped. The s390x emitter inserted a move ahead of the shift and then skipped past it, so the destination kept its old value. The rewrite now runs once, in `gen_normalize_const_shifts` (`third_party/mir/mir-gen.c`), from `target_split_insns` on ppc64 and s390x. Its emission-loop copy in `mir-gen-s390x.c` and its copy in `mir-gen-ppc64.c` are deleted.
+- Gate `scripts/check-one-const-shift-normalizer.sh` (in `make gates`) fails a target file that flips a shift's direction or clamps a count by hand.
+- Reducer `tests/testshift_by_zero.mad` (`--std=c11`): its output matches the `.expect` file, which gcc 13.3 and clang 18.1 print. The JIT, EXE and OBJ runs match on x86-64. s390x execution was not run.
+
+### c2mir runs a for-init cleanup variable's cleanup when the loop condition ends the loop
+
+- A `for` statement's `__attribute__((cleanup))` declarations run their cleanup calls when the loop condition turns false. Before, a false condition skipped them, so the cleanup ran only on `break` and `return`.
+- The cleanups run once, in reverse declaration order, innermost loop first. `continue` does not run them.
+- A `for` with no condition leaves only by a jump (`break`, `return`, `goto`), so it gets no condition-exit cleanups.
+- Reducer `tests/testcleanup_forinit.mad` (`--std=gnu11`): its output matches the `.expect` file, which gcc 13.3 and clang 18.1 print. The JIT, EXE and OBJ runs match.
+
+### c2mir opens an unwind region per automatic cleanup variable
+
+- With `c2mir_options.unwind_regions_p` (default 0), an automatic `__attribute__((cleanup))` variable is an unwind region from the end of its declaration to the end of its scope. `__builtin_cleanup_arm (&var)` starts the region at that point instead; the constructor before it stays outside the region.
+- The variable's own cleanup call runs in the parent region. A scalar cleanup variable lives in the frame block at its region's offset, not in a register.
+- Each function starts and ends in region 0. The option is off by default, so madc output does not change yet.
+- A for-init cleanup variable's cleanup on the loop's condition exit is covered by the entry above.
+- Unit tests: `tests/unit/test_mir_unwind.cpp` (c2mir suite, 4 cases).
+
+### MIR records unwind regions and call sites for generated frames
+
+- `MIR_insn` carries an `unwind_region` number (0 = none). `MIR_new_unwind_region` declares a region in a function under a parent region, and `MIR_set_unwind_region` stamps it onto the instructions created after it. `MIR_set_func_unwind_base` names the register that holds the frame base. Binary and text module I/O carry these fields.
+- After code generation, `MIR_func.unwind` lists each call inside a region with its code range and region number. `base_cfa_offset` is the frame base's offset from the CFA. Each target computes it in `gen_unwind_frame` (`third_party/mir/mir-gen.c`), from the stack pointer's offset after the prologue.
+- A function that has regions is not inlined into its caller. An inlined body takes the region of the call it replaces.
+- The s390x register form of `MIR_ALLOCA` rounds its size to 16 bytes, as its immediate form does. It rounded to 8 bytes before.
+- No code in `src/` or `include/` reads these tables yet.
+
+### MIR builds for ppc64, riscv64 and s390x hosts again
+
+- `mir-target.h` defines `MIR_TARGET_IS_PPC64`, `MIR_TARGET_IS_S390X` and `MIR_TARGET_IS_RISCV64` from the host macros `__PPC64__`, `__s390x__` and `__riscv`. Before, they were undefined there, and `mir-gen.c` stopped with its unsupported-target `#error`.
+- `gen_mov` is one helper in `third_party/mir/mir-gen.c`, and it returns the inserted insn. The five per-target copies are removed, and the ppc64 and s390x CFI marks assign its result.
+- Gate `scripts/check-mir-targets-compile.sh` (in `make gates`) compiles the MIR translation units that name a target selector with `clang --target` for x86_64, aarch64, powerpc64le, riscv64 and s390x (`-linux-gnu`), and fails unless exactly one target is selected per triple.
+
+### MIR indexes instruction patterns with one counting sort for every target
+
+- The five MIR targets (x86-64, aarch64, ppc64, riscv64, s390x) each built their instruction-pattern index with a private `qsort`. `GEN_INDEX_PATTERNS` (`third_party/mir/mir-gen.c`) is the one counting-sort indexer, and each target's `patterns_init` calls it.
+- x86-64 computes a pattern's maximal code size on first use (`pattern_max_insn_size`), where it was computed for all 826 patterns at every `MIR_gen_init`.
+- x86-64 `find_insn_pattern` is `static inline`. Its self cost in the sqlite3 callgrind run is 48.99M Ir (53.95M at 37e149fdd).
+- Gate `scripts/check-one-pattern-index.sh` (in `make gates`) fails a target file that builds its own pattern index. Its negative control covers both directions.
+- Differential: `sqlite3.c` compiled to an object (`-c`) is byte-identical (2711928 bytes) between release 37e149fdd and this tree.
+- parse-cost against `scripts/parse_cost/baseline.tsv`: 0 rows red; `rung_stddef.forest` -3.85%, `dialect_one.live` -3.94%, `dialect_one.forest` -3.92%, `dialect.live` -2.39%, `dialect.forest` -2.41%, `dialect_all.live` -2.92%, `dialect_all.forest` -2.92%.
+
+### MIR describes generated frames as DWARF CFI and registers them with the host unwinder
+
+- Each generated function carries DWARF call frame information (`MIR_func.cfi`) from its target's prologue: the CFA rule and the saved return address and callee-saved registers, one row per prologue mark. Epilogues carry no rows.
+- On a host target (x86-64, aarch64, ppc64, riscv64, s390x; not Windows) each function's `.eh_frame` table is registered with `__register_frame` and deregistered at `MIR_gen_finish`. A host unwinder walk and a C++ exception now pass through JIT frames.
+- `MIR_debug_add_func` takes the function's CFI, and `.debug_frame` is written from it instead of the x86-64 and aarch64 templates in `mir-debug.c`.
+- `gen_delete_insn` hands a deleted CFI mark to its predecessor only when the mark array is non-empty (`gen_cfi_hand_over_marks`). Its self cost in the sqlite3 callgrind run is 7.84M Ir (9.24M at a839e6dc6).
+- Reducer `tests/unit/test_mir_cfi.cpp` (host `_Unwind` walk as oracle; 3 cases).
+
+### `__TIMESTAMP__` expands to the current file's modification time
+
+- `__TIMESTAMP__` is a predefined macro. It expands to the last modification time of the file being read, in local time, in asctime's spelling (`"Sun Sep 16 01:03:52 1973"`), as gcc and clang spell it.
+- With `SOURCE_DATE_EPOCH` set, `__TIMESTAMP__` names that instant read as UTC, so `__DATE__`, `__TIME__` and `__TIMESTAMP__` agree. gcc 13 keeps the file's mtime there; madc follows clang 18.
+- A file served by libmadc has no disk time, and a file that cannot be stat'd, expands to gcc's unknown form (`"??? ??? ?? ??:??:?? ????"`).
+- Reducers `tests/testtimestamp.mad` (oracles gcc 13 and clang 18, `--std=gnu17`) and `tests/testtimestamp_epoch.mad` (oracle clang 18, `SOURCE_DATE_EPOCH=1696377600`).
+
+### A class-type exception is owned by its throw and matched by type in each handler (B202)
+
+- A `throw` of a class object kept the address of the thrower's temporary, which the unwind released, and no type identity, so every class handler matched every class throw and bound a default-constructed object of its own type. A class with a `c_str()` was thrown as its text, so `catch (const char *)` took a thrown `std::string`.
+- The thrown object is constructed into runtime storage (`__madc_exception_alloc`) and passed to `__madc_throw_class` with its destructor and a per-throw-site table of base names and offsets, virtual bases included. A class or pointer handler's guard, `__madc_exception_match`, selects the handler whose type is the thrown type or an unambiguous public base of it, and binds the matched subobject, or the adjusted pointer (a null pointer stays null).
+- The handler's variable is declared from its own exception-declaration, so a reference binds the thrown object, a value handler copies it and destroys the copy at the handler's end, and a pointer handler takes the adjusted pointer. `TokenTRY::parse` reads the exception-declaration through `Program::parse_declarator` (Parameter mode).
+- Each handler ends its catch on every normal exit. `throw;` rethrows the innermost caught exception; the thrown object is destroyed once, when its last handler exits.
+- Reducers `tests/testcatch_class_bind.mad` (by reference, by value, handler selection among unrelated classes), `tests/testcatch_class_base.mad` (public, non-primary and virtual bases; private and ambiguous bases fall through), `tests/testcatch_class_lifetime.mad` (construction and destruction counted once, rethrow, nested try inside a handler) and `tests/testcatch_std_exception.mad` (`std::exception` family, `what()` through the handler). The catch lines of `tests/testlibvirtualcall.mad` are restored. Oracles: g++ 13 and clang++ 18 (`--std=gnu++17`), the lines in each `.expect`.
+- B202 is retired from `BUGS.md`.
+
+### A prvalue returned through the hidden result slot constructs its virtual bases
+
+- A prvalue returned through `__retbuf` built only the non-virtual part of the returned class, so a virtual base was never constructed; `returned:` printed garbage for it (e.g. `returned: 476945 8 476945`) where g++ prints `returned: 6 8 6`.
+- The retbuf prvalue arm (`class_construct_into_slot`, `src/cir_builder.cpp`) now constructs through `complete_object_construct_stmts`, which constructs virtual bases first.
+- Reducer `tests/testreturn_vbase_prvalue.mad` (oracle `tests/testreturn_vbase_prvalue.expect`, g++ 13 == clang++ 18, `--std=gnu++17`).
+
+### A try block left by return, break, continue or goto ends its frame, and a nested-block object is destroyed once
+
+- A try block's frame ended only when its body reached its end. A `return`, `break`, `continue` or `goto` out of the body left the frame live, so a later throw ran in the abandoned frame's handler. An object in a nested block of a try body was destroyed by its cleanup attribute and again by its runtime cleanup entry.
+- The try frame is now a guard local whose cleanup attribute (`__madc_try_leave`) ends the frame on every normal exit of the try arm. Each runtime cleanup entry is a guard local (`__madc_cleanup_leave`) that removes the entry when its object's scope exits normally. `__madc_cleanup_push_dtor` returns the entry.
+- The cleanup attribute is built by one helper, `CirBuilder::cleanup_attrs` (`src/cir_builder.cpp`). `CirBuilder::cleanup_guard_local` builds a guard local for the try frame, the cleanup entry, the static-local guard and the instrumented function's address.
+- Reducer `tests/testtry_scope_exit.mad` (oracle `tests/testtry_scope_exit.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): nested-block objects, a handler object, early return, continue, break and goto out of a try body.
+
+### `__DATE__` and `__TIME__` are the translation's date and time, honouring `SOURCE_DATE_EPOCH` (B168)
+
+- `__DATE__` and `__TIME__` expand to the date and time of translation of the translation unit (C11 6.10.8.1), computed at the first expansion and fixed for the rest of that translation. They were madc's own build date and time. When `SOURCE_DATE_EPOCH` is set it is that instant, read as UTC; a value that is not a non-negative decimal integer no greater than 253402300799 is a compile error, as gcc refuses it. Otherwise the clock is read as local time.
+- `builtin_macro_text` (`src/lexer.cpp`, declared in `include/madc.h`) is the one list of predefined macros the lexer computes at expansion. `__DATE__` and `__TIME__` are no longer `define_map` entries.
+- `utc_time` (`src/madc_posix_io.cpp`, declared in `src/madc_posix_io.h`) is the thread-safe UTC conversion. `utc_now` in `src/madc_history.cpp` calls it in place of its own `gmtime_r` / `gmtime_s` arms.
+- Reducers `tests/testdate_time_epoch.mad` (oracle gcc 13 and clang 18, `SOURCE_DATE_EPOCH=1696377600`) and `tests/testdate_epoch_invalid.mad` (oracle gcc 13, `SOURCE_DATE_EPOCH=-1`).
+- B168 is retired from `BUGS.md`.
+
+### A constructor template's mem-initializer that reads a deduced trait answers per instantiation (B204)
+
+- A constructor template's mem-initializer that reads a trait of a forwarding-deduced parameter (`k((int)std::is_lvalue_reference<U>::value)`) was copied from the pattern, so every instance read the pattern's answer: `A` for `U = A&` as well as for `U = A`. The pattern now captures a constructor's mem-initializer span only when the body's template-id rule admits it. A span it refuses is parsed per instantiation by the shell parse, as for the same read in a constructor body.
+- `tsubst_ctor_initializer_copyable` (`src/parser.cpp`) locates the span (`tsubst_ctor_initializer_begin`) and applies the body rule (`tsubst_template_id_blocks_copy`). `build_dependent_pattern` (`src/parser.cpp`) sets `dependent_pattern_ctor_inits` from it.
+- Reducer `tests/testctortemplate_meminit_trait.mad` (oracle `tests/testctortemplate_meminit_trait.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): scalar, delegating, member-construct, body and explicit-template-argument mem-initializers.
+- B204 is retired from `BUGS.md`.
+- Fix lane Tier 1 60/60 JIT, EXE and OBJ green over the new test and the constructor-template, member-template, tsubst, tuple, map, forwarding and variadic neighbours. Tier 2 `scripts/fast_lanes.sh` at baseline. Static gates 0 red; unit, bind and parse-cost gates green; `scripts/tsubst_flagon_gate.sh --check` green.
+
+### A constructor template's forwarding-reference instances are per argument value category
+
+- A constructor template with a forwarding-reference parameter (`template<class U> W(U &&)`) has one specialization per argument value category ([temp.deduct.call]/3): `W(A&)` for an lvalue and `W(A&&)` for an rvalue. The instantiation memo was keyed on the argument value types alone, so `W w2(std::move(a))` reused the `A&` instance made for `W w1(a)`. Every instance was also an ordinary candidate for later constructions whose argument categories differ.
+- The memo key and the instance symbol both take each argument's value category, read by `Program::forwarding_arg_lvalues` (`src/parser.cpp`, declared in `include/madc.h`). An instance records its categories in `FuncDef::deduced_arg_lvalues`, and `CirBuilder::select_ctor_overload` (`src/cir_builder.cpp`) admits an instance only for a construction whose argument categories match ([temp.over]/1).
+- Reducer `tests/testctortemplate_fwdref_instances.mad` (oracle `tests/testctortemplate_fwdref_instances.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): constructor templates with one and two forwarding parameters, and a member function template as a control.
+- Still open: a mem-initializer that reads a forwarding-deduced `U = A&` as `A` (files B204). This change does not fix it.
+- Fix lane Tier 1 96/96 JIT, EXE and OBJ green. Tier 2 `scripts/fast_lanes.sh` at baseline. Static gates 0 red; unit, `scripts/forest_bind_gate.sh` and parse-cost gates green; `scripts/tsubst_flagon_gate.sh --check` green.
+
+### A member template's constructor argument that is type-dependent picks its constructor per instantiation (B145)
+
+- A local declaration `S s(std::forward<T>(t));` and a placement new `new (buf) S(std::forward<T>(t))` in a member template were lowered once in the shared Tree-1 pattern, and the pattern baked `S(S&&)` for every `T` ([temp.dep.expr]). An lvalue argument was moved from (BUGS.md B145). Only a pack-expansion argument deferred the construction.
+- `tsubst_ctor_args_deferred` (`src/cir_builder.cpp`) defers a construction whose arguments include a type-dependent expression, as it already did for a pack expansion. The test is `Program::type_dependent_expression` (`src/parser.cpp`, declared in `include/madc.h`), a wrapper over the parser's `is_type_dependent`. The local-declaration marker (`class_decl_construction`), the placement-new marker (`copy_cir_subtree` and the `TokenNEW` arm of `translate_expr`) and the copy of a `TokenDecl` construction use it, and the tsubst copy picks the constructor per instantiation through `tsubst_relower_deferred_construction`. A concrete class deferred only by a dependent argument relaxes the class-argument check.
+- The functional-cast temporary `A(std::forward<U>(u))` (a `TokenObjTemp`) defers the same way. `deferred_objtemp_slot` (`src/cir_builder.cpp`) names the temporary by its token slot in the pattern, leaving a marker where the constructor goes; `copy_cir_subtree` builds that constructor into the same-named temporary per instantiation. The member-template and constructor-template forms `A(std::forward<U>(u)).v` and `w = A(std::forward<U>(u)).v;` now copy an lvalue and move an rvalue.
+- Reducers `tests/testmembertmpl_dependent_ctor.mad` (oracle `tests/testmembertmpl_dependent_ctor.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): member, placement, named (a forwarding parameter, always an lvalue: copy) and free-function forms. `tests/testmembertmpl_dependent_temp.mad` (oracle `tests/testmembertmpl_dependent_temp.expect`, `--std=gnu++17`): the functional-cast temporary in a member function template (`get: copy move`) and a constructor template's body (`ctor: copy move`).
+- The functional-cast arm was the last open part of B145, so B145 is retired from `BUGS.md`.
+- Fix lanes Tier 1 96/96 JIT, EXE and OBJ green over the new tests and their member-template, placement, tsubst and container neighbors. Tier 2 `scripts/fast_lanes.sh` at baseline. Static gates 0 red; unit, `scripts/forest_bind_gate.sh` and parse-cost gates green; `scripts/tsubst_flagon_gate.sh --check` green.
+
+### A cast to a reference deduces a forwarding reference by its value category (B144)
+
+- `fn_template_call_arg_is_lvalue` (`src/parser.cpp`) classified a forwarding-reference argument with its own call and named-variable tests, and every cast fell through to rvalue ([temp.deduct.call]/3). `std::forward<T>(t)` over `static_cast<int &>(x)` or `(int &)x` therefore selected `f(int &&)`: madc printed `R R R` (BUGS.md B144) where g++ 13 and clang++ 18 print `L R L`.
+- The helper now asks the one value-category reader first, `Program::argument_value_category`, whose cast arm already gives an lvalue for `T&` and an xvalue for `T&&`. Only an `Unknown` answer falls through to the call, named-variable and addressable tests.
+- Reducer `tests/testforward_cast_category.mad` (oracle `tests/testforward_cast_category.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): casts to `int &`, `int &&` and `(int &)`, a string literal and a named variable as lvalues, a prvalue `x + 1`.
+- Fix lanes Tier 1 67/67 JIT, EXE 63/63, OBJ 63/63 over the new test and the forwarding, value-category and container neighbors. Tier 2 `scripts/fast_lanes.sh` at baseline: c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664. Static gates 0 red; unit 84; `scripts/forest_bind_gate.sh` 47/47; parse-cost 0 red of 21.
+
+### `__is_same` and `std::is_same` answer type identity, not name equality (B156)
+
+- `TraitTypeArg::same_as` (`src/parser.cpp`) compared `dd->name`, so a namespace-scope scalar typedef was not its type: `std::is_same<w::i, int>` (`typedef int i` in `namespace w`) and `__is_same(std::size_t, unsigned long)` were 0 where g++ 13 and clang++ 18 give 1.
+- The identity test is now one owner, `Program::proven_same_type` (`src/parser.cpp`, declared in `include/madc.h`): cv-qualifiers and the reference kind must match at each level; pointers, references and arrays (same bound) descend to the pointee or element; a fundamental type is compared through `proven_scalar_identity`, an aggregate through `denotes_same_type`, a function through `fptr_structural_spelling`. `TraitTypeArg::same_as` keeps its leading-`const` flag and compares the referent's const once, then delegates the rest.
+- Reducer `tests/testis_same_typedef.mad` (oracle `tests/testis_same_typedef.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): alias typedefs (`std::size_t`, `w::i`, `w::j`), levels (`w::i *`, `const w::i &`, `w::i **`, `w::i[3]`), and distinct types (`volatile int`, `wchar_t`, `char` / `signed char`, `int[3]` / `int *`, two same-named structs in different namespaces).
+- `BUGS.md` retires B156. A note on B121 records that a pointee's C++ const (`__is_same(const int *, int *)`, 1 under `--std=gnu++17`, 0 under g++ and clang++) belongs to the const-type model.
+- Fix lanes Tier 1 green JIT, EXE and OBJ over `testis_same_typedef` and the type-trait neighbors. Tier 2 `scripts/fast_lanes.sh` at baseline: c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664. Static gates 0 red; unit 84; `scripts/forest_bind_gate.sh` 47/47; parse-cost 0 red of 21.
+
+### A virtual method bound to a library symbol dispatches through the receiver's vtable
+
+- `CirBuilder::class_method_call` (`src/cir_builder.cpp`) computed a virtual slot only for a callee with no external symbol (`callee->emit_symbol.empty()`), so a virtual method the library defines — libstdc++'s `std::exception::what` — was called directly by its static-type symbol instead of dispatched through the receiver's vtable ([class.virtual]/2, [expr.call]/2). `e.what()` through a `const std::exception &` or `const std::bad_alloc &`, and `p->what()` through a `std::bad_alloc *`, ran `std::exception::what` for every exception rather than the most-derived override.
+- The vslot computation now runs for any non-member-template callee (the `emit_symbol.empty()` guard is removed). `emit_symbol_method_call` gains a `vcallee` parameter and, when it is non-NULL, issues `N_CALL` through it instead of the direct extern symbol (and the `empty`→`size` carrier rewrite is skipped). The vtable-slot callee — `(RET(*)(struct Owner *, params))((void **)recv->__vptr[_<off>])[slot]`, the group and in-group slot resolved by `find_vslot` — is factored into the new one owner `CirBuilder::vtable_slot_callee` (`src/cir_builder.cpp` / `src/cir_builder.h`), shared by the emit_symbol arm and the existing virtual-call arm (whose inline copy is removed).
+- Reducer `tests/testlibvirtualcall.mad` (oracle `tests/testlibvirtualcall.expect`, g++ 13 == clang++ 18): `what()` through `std::exception` / `std::bad_alloc` references and pointers to `std::bad_array_new_length`, `std::runtime_error`, and a user `MyErr` override. The test fails on the archived v0.105.0 release (`scripts/release_bins.sh run`). Fix lanes tier1 29/29 JIT (EXE 29/29, OBJ 29/29), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red, unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### Closing a runtime-eval code destroys its file-scope objects; stale B102 notes cleared
+
+- B102 ("a namespace-scope object's destructor never runs at exit") was fixed by `ddb9f0f2b` (reducer `tests/testglobaldtor`): objects with static storage duration are destroyed at exit. Its `BUGS.md` entry and the `code_state` comment in `src/madc_program.cpp` outlived the fix and are removed/corrected. Closing a runtime-eval code destroys its file-scope objects first, as `dlclose` does: the JIT session's teardown runs the image's exit handlers (`__cxa_finalize` on the code's `__dso_handle`) while its code is still mapped.
+- `tests/testcode_open.mad` gains pin 6: two copies of one shared object the host opens, counts through and closes second-then-first print `closed: dtor calls=4` then `closed: dtor calls=5`, each code destroying its own file-scope object at its close. Oracle: g++ 13 == clang++ 18 over the same TU built as a dlopened shared object.
+
+### A `char *` or `void *` type node the CIR builder spells has one owner each
+
+- A `char *` or `void *` (or `void **`) `N_TYPE` node for a cast target — `node2(N_TYPE, node1(N_LIST, simple(N_CHAR)), node2(N_DECL, ignore(), node1(N_LIST, pointer())))` for `char *`, `simple(N_VOID)` for `void *` — was spelled by hand at 32 sites in `src/cir_builder.cpp`: the base/vbase pointer-adjust casts (`base_subobject_addr`, `object_arg_addr`, `vbase_dynamic_adjust`, `append_ctor_vbase_forward_args`, `append_ctor_vbase_static_args`, `class_method_call`, `vbase_dtor_stmts`, `append_base_default_construct`, `synth_dtor_def`, `vbase_ctor_stmts_addr`, `try_free_operator_call`, `class_operator_call`, `class_unary_operator_call`, `func_def`), the vtable `void *` slot and offset inits (`class_vtable_def`, `class_typeinfo_def`, `append_vptr_and_member_inits`), the `delete[]` cookie cast (`translate_expr`), the dtor-fnptr parameter (`dtor_fnptr_type`), and the thunk-marshal `char *` cast (`flavor_marshal_thunk_def`). Five more built the vtable read's `void **` from a two-`pointer()` declarator list (`virtual_dtor_slot_call`, `class_method_call`, `synth_instr_exit_thunk`, the `typeid` and member-pointer arms of `translate_expr`).
+- `CirBuilder::char_ptr_type()` and `CirBuilder::void_ptr_type()` already owned the `char *` and `void *` type node. Every hand-spelled site now routes through one of the two; `void_ptr_type` gains a `levels` parameter (default 1) and the five `void **` sites call `void_ptr_type(2)`. The `translate_expr` `new[]` arm's local `char_ptr_type` node, which shadowed the method, is removed in favour of the method. Only the two owners spell `simple(N_CHAR)` / `simple(N_VOID)` beside a `pointer()`, each marked `// allowed-exception: the one owner` (`src/cir_builder.cpp` / `src/cir_builder.h`).
+- Gate `scripts/check-one-pointer-type-node.sh` (wired into `src/Makefile`'s `gates`) fails on a `simple(N_CHAR)` / `simple(N_VOID)` spec within an `N_TYPE` beside a `pointer()` in `src/cir_*.cpp`, except a line marked `// allowed-exception`, with a two-sided negative control.
+- Behaviour-preserving. Differential: `--emit=c11` renders of all 792 class-using tests on the binary before this change (HEAD a033d9477 content) vs after — exit codes identical, stderr identical, 792 of 792 renders byte-identical. Fix lanes tier1 + tier2 all green; static gates 0 red (the new gate's control passes both ways), unit 84/84, `scripts/forest_bind_gate.sh` green, parse-cost 0 red of 21.
+
+### A class pointer the CIR builder spells has one owner per shape
+
+- A `struct Cls *` the CIR builder emits — a type node for a cast target, a `struct Cls *<nm> = <init>;` bound temporary, a `struct Cls *<nm>` parameter — was spelled by hand at about thirty sites in `src/cir_builder.cpp`: a `class_tag_ref` call plus a `pointer()` level inside an `N_TYPE`, or the `N_SHARE` / `N_DECL` / three `ignore()` slots of an `N_SPEC_DECL`. The derived→base and vbase-view upcast temporaries, the copy and constructor receiver binds, `new` / `new[]`, the range-for capture, the method-shim slots, every vbase and base cast, and the synthesized destructors' `__this` parameters each repeated the shape.
+- `CirBuilder::class_ptr_type` (now `DataDef *cdd, TokenBase *origin = NULL`, widened from `DataDefCLASS *` with no origin) is the one owner of the `struct Cls *` type node; `CirBuilder::class_ptr_bind` the one owner of a `struct Cls *<nm> = <init>;` bound temporary; and new `CirBuilder::class_ptr_param` the one owner of a `struct Cls *<nm>` parameter declaration (`src/cir_builder.cpp` / `src/cir_builder.h`). Every hand-spelled site routes through one of the three. Only those three owners spell `class_tag_ref(...)` beside a `pointer()`, each marked `// allowed-exception: the one owner`.
+- Gate `scripts/check-one-class-pointer-decl.sh` (wired into `src/Makefile`'s `gates`) fails on a `class_tag_ref(` call with a `pointer()` on its line or the next three in `src/cir_*.cpp`, except a line marked `// allowed-exception`, with a two-sided negative control (an unmarked hand-spelled pointer must match, a marked one must not).
+- Behaviour-preserving. Differential: `--emit=c11` renders of all 792 class-using tests (every `tests/*.mad` defining a class or struct, helpers excluded) on the binary before this change vs after — exit codes identical, stderr identical, 792 of 792 renders byte-identical. Fix lanes tier1 81/81 JIT (EXE 73/73, OBJ 73/73), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red (the new gate's control passes both ways), unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### A counted loop the CIR builder synthesizes has one owner, `CirBuilder::counted_loop`
+
+- A counted `for` loop the CIR builder emits — the i64 index declaration, the `<` / `>=` condition, the `+= 1` / `-= 1` step, the `N_FOR` node — was built by hand at eleven sites: the class-array element loop (`class_array_index_loop`), `delete[]`'s per-element destructor loop, the synthesized array destructor (`synth_array_dtor_def`), the member-pointer null stores (`member_pointer_null_stores`), the four range-for lowerings (`translate_foreach_loop`'s madarray arm, `translate_foreach_class`, `translate_foreach_iterator` with its `++it` advance, `translate_foreach_carray`) and the three `cir_dump.cpp` rows (`dump_array`, `dump_sequence`, `dump_iterator`). Eleven copies of one loop shape drift independently.
+- `CirBuilder::counted_loop` (`src/cir_builder.cpp` / `src/cir_builder.h`) is now the one owner: `for (long <ci> = <start>; <cond>; <ci> += 1) <body>`, with `down` stepping `-= 1` and a non-NULL `advance` joined to the step as `(<ci> += 1, <advance>)` so a `continue` in the body still runs it. `class_array_index_loop` builds on it; `synth_array_dtor_def` and `member_pointer_null_stores` route their per-element loops through `class_array_index_loop` (dropping `synth_array_dtor_def`'s `struct Cls *q` temporary for the shared `class_array_element` cast, and `member_pointer_null_stores`'s hand-rolled counter decl); the four range-for lowerings and the three dump rows call `counted_loop`. Only a user `for` statement's own header (`translate_for`) and the owner itself keep a direct `node5(N_FOR, ...)`, each marked `// allowed-exception`.
+- Gate `scripts/check-one-counted-loop.sh` (wired into `src/Makefile`'s `gates`) fails on a `node5(N_FOR,` on a non-comment, non-`allowed-exception` line of `src/*.cpp` / `src/*.h`, with a two-sided negative control (an unmarked loop must match, a marked one must not).
+- Behaviour-preserving. Differential: `--emit=c11` renders of the 34 affected tests on the binary before this change (HEAD ee9c91119) vs after — exit codes identical, stderr identical, 30 renders byte-identical (every range-for and dump test), 4 differ only in loop shape / temp-counter numbering (the synthesized array destructor loop and the member-pointer null-store loop). Fix lanes tier1 48/48 JIT (EXE 43/43, OBJ 43/43), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red (the new gate's control passes both ways), unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### `delete` runs the destructor of a class whose destructor is implicit but non-trivial
+
+- The scalar `delete` lowering in `CirBuilder::translate_expr` (`src/cir_builder.cpp`) ran the destructor before `free` only for a class with a user or virtual destructor (`cdd->has_user_dtor`); `delete[]` and an explicit `p->~T()` already keyed on `class_needs_dtor`. A class whose destructor is implicit but non-trivial — a member or base with a destructor ([class.dtor]/8) — was freed without destruction ([expr.delete]/6). `delete` of `struct M { D d; }` (`D` has a destructor) or of `struct N : M { D e; }` ran no member destructor; `delete[]` of `M` and a null `delete` already behaved.
+- The scalar-destructor arm now reads `CirBuilder::class_needs_dtor(cdd)` — the predicate `delete[]` and `p->~T()` already use, true when the class, a base or a member has a non-trivial destructor — so an implicit non-trivial destructor runs before `free`. A trivially destructible class or a non-class pointee still frees the operand directly, and a null operand runs nothing.
+- Reducer `tests/testdeleteimplicitdtor.mad` (oracle `tests/testdeleteimplicitdtor.expect`, g++ 13 == clang++ 18). Pre-fix madc printed `~D5` / `~D4` / `end` only — the member destructors of `delete m` and `delete n` (`~D1`, `~D3`, `~D2`) were missing; post-fix every line. Fix lanes tier1 44/44 JIT (EXE 41/41, OBJ 41/41), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red, unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### `delete` evaluates its operand once and runs nothing for a null pointer; explicit `p->~T()` evaluates its receiver once
+
+- The destroying-`delete` lowering in `CirBuilder::translate_expr` (`src/cir_builder.cpp`) translated the operand expression more than once and ran the destructor with no null guard. `delete p` of a null pointer to a class with a user (or virtual) destructor called the destructor on the null pointer and crashed (SIGSEGV); `delete ds[i++]` evaluated `ds[i++]` twice — the destructor on one element and `free` on the next, a double side effect; the explicit virtual `p->~V()` translated its receiver twice (the vptr load and the `this` argument). A `delete` evaluates its operand exactly once and does nothing for a null operand ([expr.delete]/6-7), and a postfix call evaluates its postfix-expression once ([expr.call]).
+- A `delete` that destroys — a virtual destructor, `delete[]` of a class with a non-trivial destructor, or a plain user destructor — now binds the operand once into a `struct C *` temporary (`CirBuilder::class_ptr_bind`), guards the destroy-and-free in `if (__dp) { ... }`, and reads that temporary through fresh id nodes for the vptr load, the destructor/`this` argument and `free`. The hand-built reverse per-element destructor loop for `delete[]` is replaced by the existing `class_array_index_loop` / `class_array_element` owners. The explicit virtual `p->~V()` binds its receiver once through `class_ptr_bind` before the vtable D1 slot call. A trivially destructible class or a non-class pointee still frees the operand directly (`free(NULL)` is a no-op, and `new[]` emits no cookie for it).
+- Reducer `tests/testdeleteoperandonce.mad` (oracle `tests/testdeleteoperandonce.expect`, g++ 13 == clang++ 18): null `delete` / `delete[]` and virtual-null cases, `delete ds[i++]`, `delete vs[j++]`, `delete[] das[k++]` and `ps[n++]->~V()` to witness single operand evaluation. Pre-fix madc crashed with SIGSEGV on the first null `delete`; post-fix every line matches the `.expect`. Fix lanes tier1 44/44 JIT (EXE 41/41, OBJ 41/41), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red, unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### A constructor or destructor of a cv-qualified class object receives the object as its own class pointer
+
+- A `volatile` (or `const`) class object is constructed and destroyed by its class's own constructor and destructor — cv-qualifiers do not apply to an object under construction or destruction ([class.ctor.general]/5, [class.dtor]/5). cir built the receiver as `&obj`, a pointer to the cv-qualified class, and passed it into the callee's `struct Cls *` parameter: c2mir accepted it only with a discarded-qualifier diagnostic (7 on `tests/testvolatile_ctor_dtor.mad`), and the cleanup-attribute destructor of a cv-qualified object passed a `volatile ...*` into the handler's plain `void *` parameter, which clang rejected on the `--emit=c11` output.
+- `CirBuilder::structor_receiver` (`src/cir_builder.cpp` / `src/cir_builder.h`) is the one owner that converts a cv-qualified object's address to the plain class pointer the C callee declares (`class_ptr_type`), passing an unqualified object's address through unchanged. The member default-construct (`member_default_construct_stmts`), member-initializer (`member_initializer_stmts`), member-destruct (`class_member_destruct`), complete-object construct, inherited-constructor and self-constructor arms (`class_ctor_call`), the `delete` operand and the explicit `p->~T()` receiver (`translate_expr`) all build their receiver through it. A `delete` of a pointer to any other cv-qualified pointee casts the operand to `void *` for `free`.
+- `class_object_dtor_symbol` routes a cv-qualified object through the one-element array destructor, whose parameter `synth_array_dtor_def` now declares `volatile void *` — a type the cleanup attribute's `&v` (a pointer to a volatile object or array) binds without a discarded-qualifier diagnostic in either lane.
+- Reducer `tests/testvolatile_ctor_dtor.mad` (oracle `tests/testvolatile_ctor_dtor.expect`, g++ 13 == clang++ 18 at `-std=c++17`) adds volatile local / member / array-member / static / `new` / `new[]` / placement-new / virtual-destructor cases; `tests/testvolatile_ctor_dtor.expect_quiet` requires an empty JIT stderr. Pre-fix madc compiled the test with 7 c2mir discarded-qualifier warnings and its `--emit=c11` output was rejected by clang on the cleanup handler's parameter type; post-fix the build is diagnostic-free and the output matches the `.expect`. Fix lanes tier1 54/54 JIT (EXE 51/51, OBJ 51/51), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red, unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### The implicit copy assignment assigns every base and member through its own copy assignment
+
+- The implicitly-defined copy assignment operator ([class.copy.assign]/12) was lowered memberwise only when the class was returned via retbuf (`class_return_via_retbuf` / `class_nontrivial_for_calls`, the calling-convention question). A class with a trivial destructor whose base or member declares its own `operator=` fell through to the native bit-copy `N_ASSIGN`: the user `operator=` never ran, and a base's inherited `operator=` assigned only the base subobject. `A a2; a2 = a1;` where `A { D s; }` and `D` declares `operator=` printed `member 1` instead of `member 101`; `Der : Base { int k; D s; }` with a `Base::operator=` printed `base 1006 scalar <garbage> member 0`. A class holding a `std::string` member beside a `char buf[4]` member could not be assigned at all (c2mir `assignment of incompatible value` on the array member's bit copy).
+- The implicit copy-assignment arm in `translate_expr`'s `tkAssign` (`src/cir_builder.cpp`) now also fires on `CirBuilder::class_assign_nontrivial` — a memoized test for a class whose implicit `operator=` does more than a bit copy because it, a base, or a member (an array element's class included) declares `operator=`. A non-lvalue rhs of a register-returned class is bound by value first (`Program::argument_value_category`). `class_copy_assign_members` assigns bases through their own `operator=` (`class_assign_bases`, `assigns_own_members` + the shared `member_owned_by_base` that `member_constructed_by_base` / `member_copied_by_base` now also use), recurses into members whose assignment is non-trivial (`class_assign_object_stmts`), and loops array members element by element or copies scalar arrays as storage (`copy_bytes_stmt`, beside `zero_fill_stmt`). The `operator=` call statement's three hand copies become one owner, `assign_operator_call_stmt`; `class_copy_assign`, `class_copy_assign_from_addr` and `multi_return_unpack` route through `class_assign_object_stmts`. `class_operator_call` drops an inherited `operator=` for a same-class rhs ([class.copy.assign]/8: the implicitly-declared copy assignment hides it).
+- Reducer `tests/testimplicitcopyassign.mad` (oracle `tests/testimplicitcopyassign.expect`, g++ 13 == clang++ 18 at `-std=c++17`): member, prvalue, base-and-member, scalar-array, nested, and self-assignment cases. Pre-fix madc printed `member 1`, `prvalue 10`, no `operator= saw this == &o`, `scalar 7 member 2 array 3 4`, `nested 5`, `base 1006 scalar <garbage> member 0`; post-fix it matches the `.expect`. Fix lanes tier1 31/31 JIT (EXE 28/28, OBJ 28/28), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red, unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### A class-type array member is constructed, destroyed and implicitly copied element by element
+
+- A class-type ARRAY member (`D d[2]`) is stored flattened — the element type in `members[]`, the element count in `member_counts` — so cir constructed, destroyed and implicitly copied the member as ONE object at the array's address. Only element 0 ran its constructor and destructor: the other elements stayed uninitialized, only element 0 was destroyed, and a mem-initializer `l{D(), D()}` over an array member was refused as `no matching constructor for call to 'D(D, D)'`. A member array now runs each element — construction in order ([dcl.init]/7.2), destruction last-first ([class.dtor]/13), the implicit copy element by element ([class.copy.ctor]/14), and a mem-initializer `m()` / `m{...}` value- or list-initializing the whole array ([dcl.init]/9.2, [dcl.init.aggr]/5).
+- `DataDefSTRUCT::member_fixed_array` (`include/datadef.h`) reports whether member `i` is a fixed array and its element count. `CirBuilder::class_array_index_loop` + `class_array_element` (`src/cir_builder.cpp`) are the one per-element loop and flattening-cast owner, shared by `class_array_construct_loop` and `class_array_list_init` (which previously carried two hand copies of the flattening cast) and read by per-element arms in `class_member_default_construct`, `member_initializer_stmts`, `class_member_destruct` and `implicit_copy_member_reconstructs` (through the new `implicit_copy_element_reconstructs`, which binds element pointers with `class_ptr_bind`).
+- Reducer `tests/testclassarraymember.mad` (oracle `tests/testclassarraymember.expect`, g++ 13 == clang++ 18). Pre-fix madc printed element 1 of `A` uninitialized (`a 1 32767`), destroyed only element 0, and refused `L() : l{D(), D()}`; post-fix it matches the `.expect`. Fix lanes tier1 38/38 JIT (EXE 34/34, OBJ 34/34), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red, unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### `delete` through a pointer to a cv-qualified class runs the destructor
+
+- `delete p` where `p` is `volatile D *` (or `const D *`) determined the deleted class with a bare `dynamic_cast<DataDefCLASS *>` of the pointee, which answered `NULL` for the `DataDefQUAL` wrapper a cv-qualified class carries, so `TokenDELETE::del_class` stayed `NULL` and cir's delete lowering emitted `free` with no destructor call — the object's destructor never ran before the storage was freed ([expr.delete]/6). `TokenDELETE::parse` (`src/parser.cpp`) now reads the pointee through `as_class_dd()`, which forwards through `DataDefQUAL` to the class. Reducer `tests/testvolatile_ctor_dtor.mad` (oracle `tests/testvolatile_ctor_dtor.expect`, g++ 13 == clang++ 18 at `-std=c++17`): pre-fix madc printed every line but `~D4()` (the destructor of the object deleted through `volatile D *`), exit 0; post-fix every line.
+
+### `__is_polymorphic`, `__is_abstract` and `__has_virtual_destructor` answer, and a non-trait name short-circuits before `type_trait_of`'s table
+
+- `std::is_polymorphic`, `std::is_abstract` and `std::has_virtual_destructor` are implemented in libstdc++ with the gcc-13 builtins `__is_polymorphic` / `__is_abstract` / `__has_virtual_destructor` and no `__has_builtin` guard. madc did not implement the three builtins, so the base clause `integral_constant<bool, __is_polymorphic(_Tp)>` folded the unknown builtin to `0` and the trait read `0` for a polymorphic class — a silent wrong answer, exit 0: `std::is_polymorphic<P>::value` was `0` for `struct P { virtual void f() {} }` where g++ reads `1`, and `std::is_abstract` likewise `0`; written directly, `__is_polymorphic(P)` was `error: use of undeclared identifier '__is_polymorphic'`. They are now three `{ spelling, kind, arity }` rows in `type_trait_of`'s table, three cases in `eval_type_trait` and three trait functions in `src/parser.cpp`, each delegating to the existing class owners — `trait_is_polymorphic` to `DataDefCLASS::is_polymorphic` (the vtable flag; a virtual base alone does not make a class polymorphic, [class.virtual]/1), `trait_is_abstract` to `class_is_abstract` ([class.abstract]/2, a pure virtual destructor included), `trait_has_virtual_destructor` to `vtable_slot("~") >= 0`. All three answer for `remove_cv<T>` and read `0` for a reference or non-class type.
+- `type_trait_of` now answers a non-trait name before walking its table: the expression parser asks about every identifier, so a name shorter than every spelling — or not `__` plus a third character some spelling carries — returns `TypeTrait::None` through a filter derived once from the table itself (a row not starting `__` turns the filter off rather than hiding it).
+- A standalone `template<class T> struct isp : ic<__is_polymorphic(T)> {};` still prints `0` where g++ prints `1`; an ill-formed base-clause template argument reading silently as `0` is a separate instantiation defect, not fixed here.
+- Reducer `tests/testtraits_polymorphic.mad` (oracle `tests/testtraits_polymorphic.expect`, g++ 13 == clang++ 18 at `-std=c++17`); pre-fix madc matched the oracle on no `is_polymorphic` / `is_abstract` / `has_virtual_dtor` line, post-fix every digit. Fix lanes tier1 21/21 JIT (EXE 20/20, OBJ 20/20), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red, unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### Type-trait builtins resolve to one `TypeTrait` kind and one evaluator both parse sites call
+
+- Two hand ladders of `name == "__is_..."` each answered the type-trait builtins (`__is_class`, `__is_same`, `__has_trivial_destructor`, `__is_constructible`, ...): one in the live parse (`Program::evaluate_type_trait`) and one in a template argument's fold (`eval_local_type_trait`, both `src/parser.cpp`). The two lists held the same traits and had to be kept in step by hand, so a trait added to one site but not the other — or a third ladder at a new site — would diverge silently. The spelling is now read ONCE, at the name, into the `TypeTrait` enum (`type_trait_of`'s table of `{ spelling, kind, arity }` rows); both sites dispatch on the kind through one evaluator, `eval_type_trait` — a `switch` with no `default`, so a new `TypeTrait` without a case is a `-Wswitch` build error. `type_trait_arity` reads its arity from the same table. Each case carries the same reference / argument handling the ladders did, so no trait's answer changes (enum over strings, `.claude/rules/enum-over-strings.md`).
+- Gate `scripts/check-one-trait-dispatch.sh` (wired into `src/Makefile`'s `gates`) fails on a `name == "__is_.../__has_..."` spelling compare against a trait builtin on a non-comment line of `src/*.cpp`, with a two-way negative control (a hand compare must FAIL, the `{ "__is_class", TypeTrait::IsClass, 1 }` table form must PASS). The lexer's `__has_include` / `__has_builtin` / `__has_attribute` are `#if` query operators, not type traits; the pattern does not name them.
+- Behaviour-preserving. Fix lanes tier1 15/15 JIT + EXE + OBJ, tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red (the new gate's control passes both ways), unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
+### Class-property type traits read the type through the kind accessors, so a cv-qualified class answers for its unqualified type
+
+- The class-property type traits (`trait_is_enum` / `_class` / `_union` / `_final` / `_empty`, `trait_has_trivial_destructor`, `trait_is_trivial` / `_trivially_copyable` / `_standard_layout`, `trait_is_base_of` in `src/parser.cpp`) read their argument with a bare `dynamic_cast<DataDefCLASS/DataDefSTRUCT/DataDefENUM>(dd)`. A `volatile T` (or `const T`) is a `DataDefQUAL` wrapper, not a `DataDefCLASS`, so the cast returned `NULL` and every class-property trait answered "not a class" for a cv-qualified class — a silent wrong answer. These traits answer for `remove_cv<T>` ([meta.unary.prop]; [meta.rel] ignores cv for `is_base_of`; [basic.types.general]/9 keeps a trivially copyable type trivially copyable behind cv). They now read the type through the kind accessors (`as_enum_dd` / `as_struct_dd` / `as_class_dd`), which forward through a `DataDefQUAL` to the base type (`include/datadef.h`).
+- `complete_class_type_on_demand` now peels a cv-qualified class, completes the underlying class, and re-qualifies, and the trait dispatcher's completion guard matches a cv-qualified class too — so a template-id first named behind `volatile` (`volatile W<int>`) completes before the trait reads it.
+- The cv-sensitive `is_constructible` / `is_assignable` / `is_convertible` helpers keep their `dynamic_cast`s by design: cv-qualification changes those answers.
+- Reducer `tests/testtraits_volatile.mad` (oracle `tests/testtraits_volatile.expect`, g++ 13 == clang++ 18 at `-std=c++17`). Pre-fix madc had every `volatile` column `0` where the oracle says `1` (`is_class` / `is_union` / `is_enum` / `is_empty` / `is_final`) and `1` where it says `0` (`is_trivial` / `is_trivially_copyable` / `is_standard_layout` / `is_pod` / `is_trivially_destructible`), `holder_trivially_destr` `1` vs `0`, and `is_base_of` `1 0 0` vs `1 1 1`; post-fix it matches the `.expect` (fix lanes tier1 14/14 JIT + EXE + OBJ, tier2 rc=0).
+
+### Intern-keyed map lookups by spelling ask the pool for the id the name already holds, never interning a probe key
+
+- `intern_keyed_map`'s string-key lookups (`find` / `find_readonly` / `count` / `erase`, `include/madcdis/intern_table.h`) resolved the spelling with `_pool->intern(k)`, which added the spelling to the pool as a side effect of a read. A map keyed by id answers absence for any spelling the pool never interned, so these now call `_pool->find(k)`; `operator[]`, the only insert, keeps `intern`. Probing one key no longer grows the pool.
+- `intern_table` gains `find(const char *)` beside the existing `find(const char *, uint32_t)` / `find(const std::string &)` — the read-only path (`npos` when the spelling was never interned), the precedent being `template_name_pool.find` in `src/parser.cpp`.
+- Three lexer macro-state probes switch from `strpool.intern` to `strpool.find`: `Program::forest_condition_now`, `Program::pack_cond_elif` and `Program::macro_name_defined` (`src/lexer.cpp`) consult a macro name's defined state, never create it.
+- Behaviour-preserving for program output (fix lanes tier1 + tier2 rc=0, `scripts/forest_bind_gate.sh` GREEN 47/47). `tests/unit/test_stringpool.cpp` adds "intern-keyed map lookups by spelling never grow the pool" — RED on the old header (`CHECK( p.count() == interned )` -> `CHECK( 5 == 1 )`, 8 of 9 cases), GREEN after. Parse-cost gate 0 red of 21, every changed row falls (e.g. `subscript.live` 3,332,587,228 -> 3,324,883,169, `cxx_stl.live` 2,553,306,753 -> 2,544,208,808); baseline re-recorded in `scripts/parse_cost/baseline.tsv`.
+
+### Forest container format v70 retires the branch-dependency and skipped-arm freeze machinery the K2 condition walk replaced
+
+- `cir_forest_fill_pack_payloads` (`src/madc_cir.cpp`) and `Program::pack_note_recorded_consult` (`src/lexer.cpp`, formerly `pack_record_branch_macro`) no longer build the per-unit external branch dependencies (the v55 `CIR_BRANCH_DEP_PP_ARM` and v67 `CIR_BRANCH_DEP_ARM_REPLAYS` tuples), the container-global branch macro names, or a condition record's token positions (`CIR_COND_TOK_BEGIN` / `_END`) and arm-purity flag (`CIR_COND_F_ARM_PURE`). `pack_note_branch_consult` keeps one job — count an external consult so the open conditional is recorded (`SNAP_KIND_CIR_UNIT_CONDS`), which the K2 positional walk (v69) re-evaluates at bind.
+- The container format (`src/cir_freeze.h` / `src/cir_freeze.cpp`) drops the per-unit branch-deps segment (slot +8, `SNAP_KIND_CIR_BRANCH_DEPS`) and the container-global branch-macro segment (`CIR_FOREST_SEG_BRANCH_MACROS`, seg 6); both segment ids, the `cir_forest_unit::branch_deps` / `cir_frozen_forest::branch_macros` payloads and the `CirFrozenForest::unit_branch_deps` / `branch_macros()` accessors are retired and never reused. `CIR_FOREST_FORMAT_VERSION` 69 -> 70.
+- `Program::skip_and_capture_arm`, `skipped_arm_writes_only`, the `PackBranchDep` / `PackSkippedArm` structs and the `SkippedArmCapture::pure` arm-purity tracking in `skipConditionalBlock` (`src/lexer.cpp`) are deleted; a skipped single arm's body still reaches its condition record through `skip_capturing_arm` (v68/v69). `PpDirectiveWord` drops `Define` / `Undef` (the purity classifier's only readers).
+- Behaviour-preserving (`scripts/forest_bind_gate.sh` 47/47, output == live == g++). The freeze shrinks the release pack: the mixed profile by 58.7 KB (13.98 MB, 370 fewer segments), the C layer by 32 KB. Parse-cost gate (callgrind Ir, release build, freeze side): `rung_vector.forest` 73,949,723 -> 73,875,419, `rung_c8.forest` 126,894,066 -> 126,793,077, `rung_type_traits.forest` 27,034,932 -> 26,979,817, `dialect_cxx.forest` 244,963,180 -> 244,950,217, `sqlite3.forest` 18,145,654,482 -> 18,145,074,680; baseline re-recorded in `scripts/parse_cost/baseline.tsv` (rows only fall; gate 0 red of 21).
+- `tests/unit/test_cir_freeze.cpp` round-trips the grove payload through the condition records (v68/v69) in place of the deleted branch-macro set; `scripts/forest_bind_gate.sh`'s condition-record and armreplay cases assert the v70 dump (no `tok=` field, `arm=captured` / `none`).
+
+### `Source::get` / `peek` fast-path the common byte inline; a skipped conditional group classifies its directive word and skips lines without per-character string growth
+
+- `Source::get()` / `Source::peek()` (`include/madc.h`) answer the common read inline — an ordinary buffer byte, nothing pushed back, no drained expansion frame, not a possible line splice (`\`) or line end (`\n` / `\r`) — and defer every other read to the out-of-line `Source::get_slow()` / `Source::peek_slow()`. The hot character read is a handful of inlined instructions in place of a call per byte.
+- `Program::skipConditionalBlock` (`src/lexer.cpp`) reads a skipped group's directive word in one `Source::fast_span` step and classifies it to the `PpDirectiveWord` enum through `pp_directive_word` (enum over strings), in place of growing an `std::string` with one `source.get()` per character and comparing it. A word a line-splice or pushback breaks up (`#el\`+`se`) is still gathered by the char loop. Every other skipped line is read through the new `Source::skip_line_rest()`, which spans each plain run in one step.
+- `is_ascii_letter` (`include/ident_char.h`, new) is the one inline `isalpha`-in-the-C-locale test; `is_ident_start` and the directive-word scan call it.
+- Behaviour-preserving. Parse-cost gate (callgrind Ir, release build): `c_headers.live` 221,523,708 -> 204,747,899, `cxx_stl.live` 2,628,895,034 -> 2,553,306,753, `dialect_cxx.live` 533,765,257 -> 504,257,566, `subscript.live` 3,402,088,461 -> 3,332,587,228, `sqlite3.forest` 18,562,781,749 -> 18,145,654,482; baseline re-recorded in `scripts/parse_cost/baseline.tsv` (rows only fall; gate 0 red of 21).
+- Reducer `tests/testskippedgroupsplice.mad` (`--std=c11`) pins translation-phase-2 splicing inside a skipped group — a line spliced onto a skipped line (its `#endif` is text), a directive word split by a splice (`#el\`+`se`), and a skipped `#define`'s tail consumed with its line; g++ 13.3 and clang 18.1 print `1 2 3`.
+
+### One inline identifier-character test on the lexer's hot loops; `pp_literal_start` scans the encoding prefix directly
+
+- `is_ident_start` / `is_ident_char` (`include/ident_char.h`, new) are the one inline test for an identifier's first character and every following one ([lex.name]), answering `c == '_' || isalpha(c)` / `c == '_' || isalnum(c)` in the C locale without an out-of-line `<cctype>` call per character. `Source::fast_ident_span` (`include/madc.h`, via a lambda so the test inlines into the scan), `tokenize_macro_spelling`'s identifier and pp-number loops, and the wide-string identifier loop in `Program::_getToken` (`src/lexer.cpp`) call them.
+- `pp_literal_start` (`src/lexer.cpp`) reads a string-literal / character-constant start by walking the optional encoding prefix (`u8` `u` `U` `L`), an optional `R` (raw: a string only) and the quote directly, in place of two static prefix tables scanned with `strlen` + `compare` per entry. `tokenize_macro_spelling` reserves its token vector once and constructs tokens with `emplace_back`.
+- Behaviour-preserving. Parse-cost gate (callgrind Ir, release build): `c_headers.live` 238,307,835 -> 221,523,708, `cxx_stl.live` 2,654,286,606 -> 2,628,895,034, `subscript.live` 3,426,287,661 -> 3,402,088,461, `dialect_cxx.live` 544,405,870 -> 533,765,257; baseline re-recorded in `scripts/parse_cost/baseline.tsv` (rows only fall; gate 0 red of 21).
+- Reducer `tests/teststringizeprefixes.mad` (`--std=c++17`) pins the `#` stringize operator over encoding-prefixed string / character literals and prefix-shaped identifiers (`uR` `Rx` `u8x`, a lone `R` / `u8` / `U` / `L`); g++ 13.3 and clang++ 18.1 print the three `.expect` lines.
+
+### `#if` / `#elif` condition text reads a plain-byte run in one step off the flat buffer
+
+- `Program::read_if_condition_text` (`src/lexer.cpp`) appends, in one `Source::fast_span` call, a maximal run of condition bytes that no state below it acts on — not a line end, not a `\` (a possible splice), not the current state's quote (`"` inside a string, `'` inside a char), and outside a literal not a `/` (a comment introducer) or a quote. The char loop then reads the byte that stopped the run. This replaces the per-char `peek()` / `get()` (with their pushback and line-splice branches) and the char-by-char string growth on the condition-reading hot path.
+- `Source::fast_span(base, len, keep)` (`include/madc.h`) is the one-step flat-buffer scan generalized from `Source::fast_ident_span`: it scans the maximal run `keep` accepts off `_buf`, advances the cursor and column in one step, and returns false inside a pushback frame. `fast_ident_span` now calls it with the `isalnum || '_'` predicate.
+- Behaviour-preserving: the char loop classifies with the same test, so the two paths are byte-identical. Parse-cost gate (callgrind Ir, release build): `c_headers.live` 240,150,779 -> 238,307,835, `cxx_stl.live` 2,657,629,732 -> 2,654,286,606, `subscript.live` 3,429,755,978 -> 3,426,287,661; baseline re-recorded in `scripts/parse_cost/baseline.tsv` (rows only fall; gate 0 red of 21).
+- Reducer `tests/testifcomment.mad` adds three `#if` shapes — a backslash line-splice mid-condition, `'\''` / `'\\'` escaped-quote char literals, and block comments beside `'"'` / `'/'` — that pin where the plain-byte run stops; g++ and clang++ accept every shape (expected `all-ok`).
+
+### A plain segment the codec does not shrink is stored raw and binds in place, not framed at a size not smaller than its raw bytes
+
+- `snapshot_writer::add_segment` (`src/madcdis_snapshot.cpp`): when a plain (non-blocked) segment's codec frame is not smaller than the payload (`p.payload.size() >= len`), the writer keeps the payload's own bytes, untransformed, with codec `None` and flags 0 — the rule `blocked_encode` already applies per block. A reader then binds the segment in place through `raw_ptr` instead of decoding a frame that is larger than the raw bytes.
+- Before the fix the release pack's mixed profile held 206 such plain segments stored with a codec at a size not smaller than their raw bytes (kinds `SNAP_KIND_CIR_DECL_INDEX`, `SNAP_KIND_CIR_BRANCH_DEPS`, `SNAP_KIND_CIR_UNIT_SOURCE`: 6,164 bytes stored vs 4,770 raw); after it, none, and the mixed container goes 14,043,776 -> 14,040,816 bytes.
+- Gate: unit test "a segment the codec does not shrink is stored raw and binds in place" (`tests/unit/test_madcdis_snapshot.cpp`) — incompressible bytes added under zlib were RED (stored 611 >= raw 600, codec 1, `raw_ptr` NULL), now store raw (codec None, flags 0, `comp_size == raw_size`, `raw_ptr` non-null and untransformed) while a compressible payload stays framed; 22/22 cases. Found while measuring K2 step 3's cost.
+
+### The bind walks a root's closure in frozen item order and re-evaluates each external conditional in the consumer's macro state — forest format v69, bind side (K2 step 3)
+
+- `Program::forest_walk_unit` (`src/lexer.cpp`), one walk per root used by every bind entry through `forest_bind_include_root`, visits a unit's conditions, include edges and PP events in the freeze's item order and re-evaluates each recorded conditional in the consumer's macro state at that position (`macro_name_defined` for `#ifdef` / `#ifndef`, `evaluate_if_text` for `#if` / `#elif`). Same outcome -> the unit binds; a single-arm `#ifndef` guard taken at freeze but skipped now -> skip the arm's events, keep its decls (masked bind); an arm skipped at freeze but taken now -> run it in place on its own `Source` and push its tokens after the walk commits; anything else -> decline verified / follow the frozen outcome knob-off. The undo log (`Program::forest_macro_undo`, written by `set_macro`) restores every macro write on a decline.
+- Forest format bumps 68 -> 69. Each condition record gains `CIR_COND_REC_END` (the records nested in its arm), `CIR_COND_ARM_STATE` (the frozen state of every macro a captured arm writes — an arm the walk runs must leave the same state for each name the freeze expanded into a token after it; v67's value check generalized to every name the arm writes) and `CIR_COND_CONSULT_AT` / `CIR_COND_CONSULT_N` (the `#if` / `#elif`'s consulted macros with their state hashes); the conditions slot ends with each unit's inclusions, so the walk reads a guard-less unit's Nth inclusion at the Nth edge to it (`src/cir_freeze.h`, `src/cir_freeze.cpp`, `src/madc_cir.cpp`; `--dump-forest` prints `condnest` / `incl` / `consult`).
+- Cost (parse-cost gate, callgrind Ir, release build): the first walk cost +2.6% on `rung_stdio` and +5.1% on `c_headers.forest`. The walk slots (events, edges, conditions) are now stored raw (`forest_kind_walk_slot`, `src/cir_freeze.cpp`) so the bind reads them without a zstd frame decode (~14K Ir each); each `#if` / `#elif` records the macros it consulted with a state hash (`CIR_COND_CONSULT_*`) and a matching hash takes the frozen outcome without evaluating; table writes go by spelling id (`set_macro_id`), never building an `istring` for a frozen name, and the undo log moves each prior value out of its table instead of copying. Result: `rung_stdio` 19.35M -> 19.09M Ir, `c_headers.forest` 38.01M -> 38.16M; the mixed profile grows 0.23 MB to 14.04 MB (cap 15 MB). Baseline re-recorded in `scripts/parse_cost/baseline.tsv` (gate 0 red of 21).
+- Knob on (`MADC_FOREST_ENV_CHECK=1`, `bin/madc-release`): 32 -> 9 failures, the 9 one class — `wchar.h`'s `#ifndef __attr_dealloc_fclose` arm, whose value a frozen token expanded after the arm; a real difference that declines after a bind (K1b). Knob off (the shipping default): 2098 / 2098. Deleted with the walk: `forest_bind_env_ok`, `forest_bind_include`, `forest_install_pp`, `forest_replay_pp_arms`, `skipped_arm_defines`, `pp_install_mask`, `pp_arms`, `husk_live_pending` and the husk path. `scripts/istring_keep.tsv` re-records the kept condition and consult text (`src/lexer.cpp` 280 -> 299, `include/madc.h` 131 -> 134).
+- Gate: `scripts/forest_bind_gate.sh` `[k2walk]` (new) — a position-equal outcome binds, a two-name directive arm with an inert spelling difference and a typedef arm bind through their replayed arms, a value expanded after the arm declines, and the undo runs on decline (g++ and clang++ oracles in the leg: `c=3 b=4` / `min=1 max=9` / `pid=6` / `xv=2` / `saw=1 s=20`); `[redecl]`, `[husk]` and `[armreplayc]` now go through the walk; GREEN 47/47. See `docs/plans/2026-10-18-verified-cxx-bind.md` section K2 step 3.
+
+### The freeze records each unit's item order and each external conditional's outcome, arm and body — forest format v68, freeze side (K2)
+
+- Forest format bumps 67 -> 68. A new per-unit segment `SNAP_KIND_CIR_UNIT_CONDS` (`CIR_FOREST_SEGS_PER_UNIT` 10 -> 11, slot +10) records each include edge's place among the unit's PP events, then each conditional the unit evaluated over an EXTERNAL macro — its kind, raw text, outcome, the arm's events / edges / tokens and a skipped single arm's body (`cir_forest_cond_field` words). Together the edge positions and the condition records give one total order per unit — events, includes and conditionals, as the freeze met them — for the bind's positional walk. The bind does not read them yet (`src/cir_freeze.h`, `src/cir_freeze.cpp`, `src/madc_cir.cpp`).
+- The lexer opens a conditional group's frame at its `#if` / `#ifdef` / `#ifndef`, ends the open arm at each `#elif` / `#else` and closes it at `#endif`, from both the live directive handlers and `skipConditionalBlock` (`Program::pack_cond_open` / `pack_cond_elif` / `pack_cond_branch` / `pack_cond_close`, `src/lexer.cpp`). A conditional is recorded only when its condition consulted an external macro (`pack_external_consults`); a skipped single arm's body is captured through `Program::skip_capturing_arm`, generalizing `skip_and_capture_arm`.
+- `Program::evaluateIfCondition` splits into `read_if_condition_text` (the raw directive text) and `evaluate_if_text` (evaluate it in the current macro state) — the one evaluator for the live `#if` / `#elif` and, next, for a frozen condition the bind re-evaluates (`src/lexer.cpp`, `include/madc.h`).
+- `--dump-forest` prints each unit's `edgepos` and `cond` lines. `scripts/istring_keep.tsv` re-records the kept condition and arm source text (`src/lexer.cpp` 273 -> 280, `include/madc.h` 125 -> 131). On the release build the mixed-profile pack grows 13,661,352 -> 13,782,176 bytes and the raw C layer 3,400,536 -> 3,607,336 bytes, both under their caps.
+- Gate: `scripts/forest_bind_gate.sh` `[condrec]` — the dump shows each edge's place and each external conditional's outcome, single-arm flag, arm events / edges / tokens, captured arm and text; an `#elif` after a taken arm is never recorded (never evaluated). See `docs/plans/2026-10-18-verified-cxx-bind.md` section K2.
+
+### A C++ or madc TU's system content is all-bound or all-live — a bind decline with nothing bound yet stops binding for the rest of the TU (K1a)
+
+- `Program::forest_bind_include_root` (`src/lexer.cpp`): in a C++ or madc compile, a bind decline while nothing is bound yet (`ForestSide::chain` empty) sets `ForestSide::bind_stopped`, so every later system include in the TU parses live instead of binding. The restore installs each name a bound unit declares as the whole freeze defined it, ahead of the live tokens, and C++ resolves default arguments, class patterns and templates by name, so bound and live system content cannot mix. A C compile keeps per-root declines — its restored structs, typedefs and functions merge with a live twin.
+- `ForestSide::bind_stopped` is marked and rewound with the rest of the bind side (`forest_side_mark` / `forest_side_rewind`, `src/parser.cpp`), so an interactive-entry rollback restores it.
+- The knob-on packed suite (`MADC_FOREST_ENV_CHECK=1`, `bin/madc-release`) drops from 159 to 32 failures; the 32 remaining are TUs where a bind precedes the first decline (K1b). Knob-off behaviour changes only when a C++ TU's first bind attempt declines.
+- Gate: `scripts/forest_bind_gate.sh` `[allornone]` — a C++ TU whose first include declines (nothing bound) parses the rest live (`m=3 extra=20`, g++ and clang++), its control binds (`m=3 extra=10`); `[redecl]` is now a C corpus plus a C++ decline-stops-binding check. See `docs/plans/2026-10-18-verified-cxx-bind.md` section K1a.
+
+### A C++ or madc compile reads only C++-family pack profiles; a C compile binds the C layer — the division is a language-family rule, not the stack's order (K0)
+
+- `cir_forest_profile_serves_family(producer_config, consumer_config)` (`src/cir_freeze.cpp`) answers whether a consumer may read a profile frozen under a producer config at all, over the config word's `language_std` family (`madc::file_kind_family`): a C++ or madc consumer refuses a C-family profile, a C consumer reads either. Every forest probe mode (`forest_probe_arm`, `src/lexer.cpp`) consults it before a match, so a C++ compile never binds or reads the C layer even when that layer sits newest in the stack.
+- Gate: `scripts/forest_bind_gate.sh` `[division]` — on a stack with the C layer on top, a C++ compile reads the mixed profile's header text (`which=1`), the C control reads the C layer's (`which=2`). See `docs/plans/2026-10-18-verified-cxx-bind.md` section K0.
+
+### A guard-less system header bound from the pack is re-read on every inclusion, as gcc's multiple-include rule requires (`<assert.h>` under a changing NDEBUG)
+
+### The C layer binds `<stdio.h>` under the verified C bind — open-ancestor definers and a skipped arm that replays the frozen value (forest v67)
+
+### --no-embedded-headers sends every core system header to disk, the grove bind and the pack source arm included
+
+### A C compile searches the C view of the flavor table, never its C++ directories (B199)
+
+- `Program::search_view(c_view, toolchain_only)` (`src/lexer.cpp`) is the one cut
+  of the selected stdlib flavor's include table at its compiler-owned dir: the C
+  view is the list FROM that dir on — gcc's and clang's `-x c` list — and the
+  toolchain-only view (`--no-sysroot-includes`) is the list up to and including
+  it. `sys_include_paths()` is this compile's live view,
+  `search_view(is_c_mode(), !enable_sysroot_includes)`.
+- Before the fix a `.c` compile searched the flavor's whole C++ list in every
+  mode: `<stdlib.h>` / `<math.h>` resolved to libstdc++'s C++ wrappers (libc++'s,
+  for nearly every C header, on darwin), and `<vector>` was visible to C.
+- `forest_unit_under_build_roots` (packed-unit naming, the one direct reader of
+  the whole table) takes the C cut through the same owner;
+  `sys_include_prefixes_canonical` keys its cache on flavor AND view.
+- Reducer `tests/testcsearchnocxxdirs_c.mad` (`--std=gnu17` → "no vector / no
+  cstdio / stdlib visible / 1 2"; gcc and clang oracles named in it). The three
+  release packs re-freeze with their C layers now holding the C library's own
+  headers. See `docs/plans/2026-10-18-c-pack-layer.md` section J, slice J4.
+- The frozen-forest source lookup now carries the same language-view cut: `Program::forest_source_unit` (the one owner for `forest_source_path` / `forest_source_text` / `forest_unit_named_by_include`) passes `path_outside_language_view` to `CirFrozenForest::find_unit_path_tail` as an `accept` predicate, so the packed release binary stops resolving `<vector>` / `<cstdio>` via a C++-library path-tail match under C — `tests/testcsearchnocxxdirs_c.mad` now passes on `bin/madc-release` (was "vector visible" / "cstdio visible").
+
+### An embedded header reached through a C wrapper's `#include_next` is recorded (J5)
+
+- `named_include_provider_exists` (`src/lexer.cpp`) — the one owner of "does a
+  named provider resolve", read by the `#include` handler and `__has_include` —
+  gains an `include_next` parameter. On an `#include_next` the predicate skips
+  the from-the-top embedded-outranked test exactly as the tokenize site does:
+  its caller reaches it only when `embedded_wins_include_next` placed the
+  embedded slot next in the walk, so the embedded copy is what resolves and its
+  once-only key must be recorded. Without it a later bind of a closure holding
+  that unit installs its frozen decls a second time beside the live copy.
+  `__has_include_next` already answers through `embedded_wins_include_next`;
+  `__has_include` passes `include_next = false`.
+- On the win64 packed binary a `.c` `<stdlib.h>` resolves to libstdc++'s wrapper
+  (B199); the bind declines the wrapper root and mingw's `stdlib.h` (`_SECIMP`
+  differs from the freeze), so the wrapper's `#include_next <stdlib.h>` live-
+  tokenizes the embedded mingw copy. Unrecorded, mingw's tail
+  `sec_api/stdlib_s.h` bound a closure holding the `stdlib.h` unit and installed
+  it beside the live copy: "Identifier 'div_t' already defined". The packed PE
+  now prints `3 1`; the trace reads "already present (`_INC_STDLIB` guard live)
+  — pruned".
+- Reducer `tests/teststdlibreincludebind_c.mad` (`--std=gnu17` → `3 1`, gcc and
+  clang oracles named in it). See `docs/plans/2026-10-18-c-pack-layer.md`
+  section J, slice J5.
+
+### The bare family spellings c, c++, cpp name gcc's and g++'s gnu defaults
+
+- `--std=c` now names gcc's default C dialect, gnu17 (was c11); `--std=c++` and
+  `--std=cpp` name g++'s default C++ dialect, gnu++17 (was c++11). The defaults
+  are the standards the release pack precompiles, and the bare family spelling is
+  the default (owner 2026-10-18).
+- `kLanguageStdTable` in `src/parser.cpp` — the one spelling → (standard, gnu
+  bit) table read by the CLI, the REPL and the session's `%std` switch — carries
+  a `gnu` bit, set on those three alias rows; `standard_of_spelling` returns it in
+  place of a hard-coded `false`.
+- `--std` help text names the new meaning (`c = gnu17, c++ = gnu++17`).
+- Reducers `tests/teststdaliasgnu_c.mad` (`--std=c` → gnu17: `gnu`, `201710`) and
+  `tests/teststdaliasgnu_cxx.mad` (`--std=c++` → gnu++17: `201703`), with gcc /
+  g++ oracles named in each; `tests/unit/test_repl_session.cpp` pins the `gnu`
+  bit on `c`, `c++`, `cpp`.
+
+### The suite and lanes compile under the gnu defaults gnu17 / gnu++17
+
+- The pack precompiles only the defaults gnu17 and gnu++17 (owner 2026-10-18),
+  so the suite and lanes compile under them: 424 `tests/*.flags` rewrite
+  `--std=c17` → `--std=gnu17` (197) and `--std=c++17` → `--std=gnu++17` (227),
+  binding the pack's layers instead of parsing header text.
+- `tests/testimplicitlibcprotoc17` keeps `--std=c17` on purpose — its `.mad`
+  header says why: the pack precompiles only gnu17, so the strict compile is the
+  fall-through this twin exists to cover.
+- `scripts/index_c_lane.sh` drops `-D_DEFAULT_SOURCE`: gnu17 exposes glibc's
+  POSIX clock names itself, and a `-D` on the line would decline the C-layer
+  bind. `tests/testrepl_std.expect`'s `%std` line now reads `gnu17`.
+- The lanes and gates follow suit — `scripts/c_torture_lane.sh` (default
+  `MADC_TORTURE_STD=gnu17`), `benchmark_lane.sh`, `macho_obj_gate.sh`,
+  `macho_dylib_gate.sh`, `check-alias-symbol-emission.sh`,
+  `check-dialect-std-gated.sh`, `check-volatile-accesses.sh`,
+  `aarch64_ldouble_lane.sh` — and the `ufcs_gate.sh` and
+  `docs/rules/indirection.md` comments track the fixtures.
+- `BUGS.md`'s convention header names the gnu defaults for NEW entries; the
+  existing entries' measured flags are unchanged.
+- Explicit version pins (`c89`, `c99`, `c11`, `c23`, `c++11`, `c++20`, …) are
+  untouched — only the strict `c17` / `c++17` suite spellings move.
+
+### The release pack freezes a C layer; C programs bind it (J2, J4, J5)
+
+- The release pack now freezes the standard C headers a SECOND time, under C, as
+  the C preprocessor sees them, into a raw profile stacked below the madc/C++
+  profile. A `.c` compile binds it instead of parsing the pack's header text;
+  a strict `--std=c*` compile parses the text (the pack precompiles only the
+  defaults, owner 2026-10-18); under C++, `<stdlib.h>` and `<math.h>` are
+  libstdc++'s wrappers, so the C++ profile's C units are not the C view. The
+  source arm and the AOT ledger ride the madc profile above them. See
+  `docs/plans/2026-10-18-c-pack-layer.md` section J, slices J2 and J4.
+- `scripts/forest_pack_c_headers.txt` (LIST VERSION 1, canonical order) lists the
+  C layer's roots — the C spellings of the C++ list's C roots plus madc's own C
+  headers (`stdarg.h`, `stdbool.h`, `float.h`, `iso646.h`, `stdalign.h`,
+  `stdnoreturn.h`). A speed-up list, never the coverage boundary: a header off it
+  parses from the pack's text, and every root must freeze quietly under gnu17.
+- `FOREST_C_LAYER` in `scripts/forest_pack_share.sh` holds the C layer's label
+  rows beside the C++ list (one owner, two lists). The pack precompiles ONLY the
+  defaults (owner 2026-10-18), so the C layer is ONE raw profile — `gnu17 gnu11`,
+  directly under the madc profile, so a default `.c` compile reads it second (the
+  gnu11 label rides the gnu17 profile, confirmed by `content` digest). `c17`,
+  `c11`, `gnu99`, `gnu89`, `gnu23`, `c99`, `c89` and `c23` parse the pack's
+  header text. Measured 2026-10-18: `gnu11 == gnu17` and `c11 == c17` by digest;
+  a label is confirmed by digest, never assumed (`__STRICT_ANSI__` hides glibc's
+  POSIX names under c17; `__STDC_VERSION__` gates C11 names under c99).
+- `scripts/forest_pack.sh` freezes the C TU once per `FOREST_C_LAYER` row — raw
+  (`--freeze-raw`), laid out, each profile stacked before the next lands on top —
+  then gates it per profile on the PACKED product: a quiet freeze (no
+  `linux-<std>` pack-errors), every C root a unit, stored raw within its recorded
+  size, still in the stack below the madc profile, and a compile under its
+  standard and each label binds it (a no-`--std=` `.c` compile, `linux-c-default`,
+  first).
+- `scripts/forest_pack_layout.sh` grows `forest_pack_layout_std`, naming the
+  standard a profile was frozen under and the extension its roots take (the C
+  layer is gnu17, `.c`); `forest_pack_layout` stays the `--std=madc` `.mad` case.
+- `scripts/forest_pack_gate.sh` gains `--raw-profile` (profile 0 stores 0 codec
+  segments) and `--bind-log` (a `-v` compile must have bound a grove unit), with
+  selftest legs 9c and 9d as the negative controls for both.
+- `scripts/check-system-headers-from-libmadc.sh` adds `prog_c_off.c`, a C program
+  whose `<inttypes.h>` (off the C list) is served from the source arm of the
+  profile above it, and turns the grove bind off (`--no-forest-bind`) in the
+  `--no-embedded-headers` control — a C program's `<stdio.h>` now binds under
+  `--no-embedded-headers`, as C++ always has, so the control needs the bind's own
+  switch to reach the disk.
+- `docs/parity/pack-degradation-baseline.txt` records the C profile's pack-bytes
+  (`linux-gnu17` 3,409,816); `scripts/parse_cost/baseline.tsv`
+  re-records `c_headers.forest` at the C layer level, 52.1M Ir (-78.6%; gcc
+  `-O0 -c` 144M, clang 127M), with `sqlite3.forest` flat.
+- Open (plan J4): `<stdio.h>` declines under the verified bind and parses live —
+  its `__GLIBC_INTERNAL_STARTING_HEADER_IMPLEMENTATION` dep records an external
+  definer — so `c_headers.forest` reads 52.1M rather than ~38M; a follow-up will
+  record the include position in the freeze. B199 (`BUGS.md`, filed in
+  `fa0dda72e`): a C compile searches libstdc++'s include directories, so the C
+  layer's `stdlib.h` / `math.h` units are the libstdc++ wrappers.
+- win64 (J5): `scripts/forest_pack_windows.sh` now freezes the C layer's one
+  gnu17 row below the madc profile through `scripts/forest_pack_c_layer.sh`
+  (`forest_pack_c_freeze` / `forest_pack_c_gate`, the win64 twin of the Linux
+  stage, over `scripts/forest_pack_c_headers_windows.txt`, the mingw-w64 UCRT
+  chain) and gates it on the shipped PE. Measured on the container (release-win):
+  `[win64-gnu17]` quiet freeze, 25 roots, raw (0 codec segments), 4,112,528
+  bytes, gnu17 and gnu11 bind; `[win64-c-default]` binds (5 grove units);
+  `[win64]` 925 units. `docs/parity/pack-degradation-baseline.txt` records
+  `4112528 win64-gnu17 pack-bytes`. Plan J5 win64 moves from BLOCKED to DONE.
+- darwin (J5): `scripts/forest_pack_darwin.sh` now freezes the C layer's one
+  gnu17 row onto the empty container first, raw, through
+  `scripts/forest_pack_c_layer.sh` (the darwin twin of the Linux and win64
+  stages, over `scripts/forest_pack_c_headers_darwin.txt`, LIST VERSION 1, 45
+  roots — the embedded prelude's manifest of 36 names then madc's own 9 C
+  headers, prelude FIRST or the pack check gate refuses "repeated declaration
+  max_align_t" because the prelude's flattened clang stddef declares it
+  unguarded); the madc profile stacks on top, still one standalone container
+  (footer at EOF). The gate's consumer is the cross freezer reaching the
+  container explicitly (`--forest-bind`, `--emit=c11`, `--no-sysroot-includes`),
+  the split the parse leg already uses. Measured on the container
+  (release-macos): `[darwin-gnu17]` quiet freeze, 45 roots, raw — arm64
+  4,572,304 bytes, x86-64 5,361,392 recorded — gnu17 and gnu11 bind (gnu11 ==
+  gnu17 by content digest, arm64 `9a4d33854d2f0dea`, x86-64 `a295be14db94ca6b`);
+  `[darwin-c-default]` binds; the consumer parse leg OK. The run against the
+  shipped binary rides `mac_battery.sh` at the seam.
+  `docs/parity/pack-degradation-baseline.txt` records `5361392 darwin-gnu17
+  pack-bytes`. B199 fixed (this commit): a darwin C compile no longer searches
+  libc++'s directory (`.../c++/v1`), so the C layer's roots are the prelude's
+  own C headers, not libc++'s C wrappers (libc++ wraps nearly every C header).
+  `scripts/forest_pack_share.sh` now owns the
+  capped-run command `FOREST_PACK_TIMEOUT` (GNU `timeout`, or `gtimeout` on a
+  Mac host) for every pack step, and the C stage calls the pack gate beside
+  itself so it runs from `src/` (darwin) as from the repo root (Linux, win64);
+  the Linux and win64 packs re-run green with the shared change. Plan J5 darwin
+  moves to DONE.
+
+### A C compile's bind honours its feature macros (J4)
+
+- A C program sets feature-test macros ahead of its system includes as a matter
+  of course (`sqlite3.c` defines `NDEBUG` and `_GNU_SOURCE`). The pack's C layer
+  froze `<assert.h>`, `<features.h>` and `<sys/mman.h>` without them, so binding
+  the frozen view handed such a program the wrong declarations — a live
+  `assert()`, no `mremap`. With the pack's C layer bound, the parse-cost
+  workload `scripts/parse_cost/sqlite3.c` (`-c -o sqlite3.o`) failed: "use of
+  undeclared identifier 'mutexIsInit'", "no member named 'nRef'", "use of
+  undeclared identifier 'mremap'", "use of undeclared identifier
+  'MREMAP_MAYMOVE'". See `docs/plans/2026-10-18-c-pack-layer.md` section J,
+  slice J4.
+- `Program::forest_bind_env_ok` (`src/lexer.cpp`) now verifies a C compile's
+  bind whatever the `MADC_FOREST_ENV_CHECK` rollout knob says: `verified` is
+  `enabled != 0 || is_c_mode()`. A C root whose branch macros differ from the
+  frozen `#if` view declines to a live parse. The C++ default stays the knob's;
+  the C layer has no knob-off frontier to burn down. The check costs one
+  `is_c_mode()` test per bind.
+- Gate `scripts/forest_bind_gate.sh` `[cenv]`, knob off: a raw `--std=gnu17` C
+  freeze, then a consumer that sets `_GNU_SOURCE` and `NDEBUG` must print
+  `mremap=1` (gcc, clang and `--no-forest-bind` agree), and a C program that
+  sets no feature macro still binds. Before the fix the bound consumer reported
+  "use of undeclared identifier 'only_in_debug_builds'".
+
+### The ledger and source arm come from the profile that carries them (J3)
+
+- `-static-libmadc` and packed system-header text are now read from the frozen
+  forest profile that CARRIES the segment, not the profile a compile bound. The
+  release pack stacks a raw gnu17 C layer below the madc/C++ profile, and only
+  the C++ profile carries the AOT ledger (`--freeze-ledger`) and the source arm
+  (`--freeze-sources`); a `.c` compile binds the C layer and must still link
+  madc's runtime and read header text from the profile above it. See
+  `docs/plans/2026-10-18-c-pack-layer.md` section J, slice J3.
+- `Program::ensure_ledger_forest` (`src/lexer.cpp`) walks the carrier chain
+  under a new `forestMatchLedger` config match (`Program::ForestConfigMatch`,
+  `include/madc.h`; `forest_probe_arm`) — the first profile whose
+  `CirFrozenForest::has_ledger()` (`src/cir_freeze.cpp`, `src/cir_freeze.h`) is
+  true — and reuses the bound forest only when it carries the ledger.
+- `Program::ensure_source_forest` (`src/lexer.cpp`) takes the newest profile of
+  the consumer's stdlib flavor from the chain
+  (`forestMatchStdlibFlavor`), reusing the bound forest only when the walk finds
+  none; the walk no longer depends on the first system include running ahead of
+  the grove bind. The walk costs a cached image-map lookup
+  (`cir_forest_map_image`'s `map_cache`) plus a reused open reader
+  (`forest_reader_opened`).
+- Gate `scripts/forest_bind_gate.sh` `[clayer]`: a two-profile stack (a raw
+  gnu17 C layer below a madc profile carrying `--freeze-sources` and
+  `--freeze-ledger`); a `.c` compile bound to the C layer prints `pack=7` from a
+  header held only in the source arm, and a `-static-libmadc` VLA binary prints
+  `total=42`. The `[rawgate]` consumers now name `--std=gnu17` (the subject
+  wrapper pins `--std=madc`).
+
+### `--freeze-raw` stores a frozen forest profile uncompressed (J1)
+
+- `--freeze-raw` writes the container — every segment, the MIR cache and the
+  ledger — with no codec: no zstd level and no compressed intern spine, so a
+  bind reads it in place. The release pack's C layer is stored this way (owner
+  2026-10-17: "C is separate, uncompressed"); see
+  `docs/plans/2026-10-18-c-pack-layer.md` section J, slice J1.
+- `madc_cir_freeze` gains a `raw` parameter (`src/madc_cir.cpp`,
+  `src/madc_cir.h`): with it set the codec is `PchCompression::None`, and the
+  pack level and the compressed intern spine are gated on the container being
+  packed. The CLI flag flows through `cli_option::freeze_raw`
+  (`include/madc_cli.h`, `src/madc_cli.cpp`, `src/madc.cpp`).
+- Gate `scripts/forest_bind_gate.sh` `[rawgate]`: a `.c` consumer frozen with
+  `--freeze-raw` reports 0 codec segments under `--dump-forest`, and a `.c`
+  compile bound to it prints `len=3`, equal to the live `--no-forest-bind`
+  output; the control freeze without the flag stores codec segments.
+
+### B198: a program's later `#include` of a header nested in an auto-included one no longer breaks the prelude
+
+- Under `--std=madc` with headers parsed as text (`bin/madc`, or
+  `--no-forest-bind`), a program's own `#include <wchar.h>` written after the
+  use that queued the prelude broke the `<string>` prelude
+  (`'mbstate_t' is not a declaration in '::'`). The prelude is lexed after the
+  unit and parsed ahead of it, so the unit's include was lexed first and the
+  prelude's nested include (`<string>` -> `<cwchar>` -> `<wchar.h>`) was a
+  once-only skip whose tokens stayed behind the prelude's uses.
+- The prelude's once-only state now follows parse order, in the lexer's include
+  path (`Program::relocate_include_for_prelude`, `src/lexer.cpp`): a header the
+  unit first includes after the prelude's position that the prelude skips as
+  already included moves to the prelude's tail, where lexing in parse order puts
+  it; nested headers ride inside the range. Only a unit with such an include
+  arms the relocation, and its prelude bypasses the shared prelude cache.
+- Oracle g++ 13 / clang++ 18 (includes at the top, `std::string`): `len 3` and
+  `len 3 wide 2`; madc now prints both, on `bin/madc` and on the packed release
+  both bound and with `--no-forest-bind`. Tests: `testautoinclude_later_nested`,
+  `testautoinclude_mid_nested`.
+
+### An import's members are the import's, never the builtin table's (R1)
+
+- Imports are not builtins (owner 2026-10-17: "Imports are different than
+  builtins"). A module row's interface member — every LAZY row's prototype
+  carries `dyn_module_library` (the `madcgit_*`, `madcmark_*`, `webview_*`
+  interfaces) — is the import's: the import serves it, the builtin table never
+  holds it. `parse_dialect_as_text` now drops a FuncDef with a non-empty
+  `dyn_module_library` from the dialect key set.
+- Withdraws 744a812eb's module-member carrying and file-scope C++ alias mint:
+  `BuiltinFunctionDecl::module`, the `bfFileScopeCppAlias` flag
+  (`include/madc_builtin_registry.h`), `Program::declaration_cpp_symbol`
+  (`include/madc.h`, `src/parser.cpp`), and the `stamp_lazy_module_member` /
+  `madc_module_library_spelling` registration and `madc_module_find_spelled`
+  skip-reason in `src/madc_builtin_registry.cpp`.
+- Differential `tests/unit/test_builtin_registry.cpp`: 494 declarations
+  compared, identical; 126 keys not yet built (the 17 `madcgit_*` and 31
+  `webview_*` import members leave the dialect's key set). No runtime caller of
+  the table yet (R4).
+
+### The perl/python/ruby/rust/php publics are libmadc's C++, declared bodiless (R1)
+
+- `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, `<ns_rust>`, `<ns_php>` each declare
+  every namespace public with no body and drop their `extern "C"` `__x_*`
+  declaration blocks (the lean publics and the `std::string` interop overloads
+  under the `<string>` guard); the dialect no longer names the C-linkage
+  exports (`cpp-first-api.md`). Continues the move begun for `js::`.
+- `src/ns_perl.cpp`, `ns_python.cpp`, `ns_ruby.cpp`, `ns_rust.cpp`,
+  `ns_php.cpp` gain `namespace X { ... }`: the lean publics and the
+  `std::string` interop overloads defined in libmadc over the same cores the
+  `extern "C"` exports call (perl 37, python 30, ruby 21, rust 33, php 93
+  bodies), resolved mangled-direct. `php::time` calls `::time` directly — its
+  `extern "C"` export is not a pass-through. The `extern "C"` `__x_*` exports
+  stay as C-linkage wrappers over those cores.
+- `ruby::delete` (three overloads) keeps its `<ns_ruby>` bodies over the
+  `extern "C"` cores: `delete` is a C++ keyword, so host C++ cannot define
+  `ruby::delete`; R3's dialect-body compile takes it.
+- Differential `tests/unit/test_builtin_registry.cpp`: 511 declarations
+  compared, identical; the `> 700` function-key-count floor (which counted the
+  retired `extern "C"` declarations) is replaced by a check that the text parse
+  registered publics in each of the 12 dialect namespaces; keys not yet built
+  339 -> 157.
+
+### The js:: publics are libmadc's C++, declared bodiless in `<ns_js>` (R1)
+
+- `<ns_js>` (`include/madc/ns_js`) declares every `js::` public with no body
+  and drops both `extern "C"` `__js_*` declaration blocks; the dialect no
+  longer names the C-linkage exports (`cpp-first-api.md`).
+- `src/ns_js.cpp` gains `namespace js { ... }`: the 9 lean publics
+  (`parseInt`, `btoa`, `atob`, `encodeURIComponent`, `decodeURIComponent`,
+  two `stringify`, two `parse`) and the 5 `std::string` interop overloads are
+  defined in libmadc over the same cores (`js_*_cstr`, `js_parse*`), resolved
+  mangled-direct. The `extern "C"` `__js_*` exports stay as C-linkage
+  wrappers over those cores.
+- Differential `tests/unit/test_builtin_registry.cpp`: 496 declarations
+  compared, identical; the 9 `js::` publics are now built declarations in
+  place of the 9 retired `extern "C"` declarations; keys not yet built
+  348 -> 339.
+
+### The dialect's generated builders carry lazy module members and file-scope C++ aliases (R1)
+
+- A lazy module member (`madcgit_*`, the `<madcgit.h>` interface `ns_git`
+  imports) carries its module row's name in `BuiltinFunctionDecl::module`;
+  registration spells the library for the target
+  (`madc_module_library_spelling`) and stamps the member
+  (`Program::stamp_lazy_module_member`).
+- A file-scope C++ declaration binds its Itanium symbol through the parser's
+  own mint (`Program::declaration_cpp_symbol`, flag `bfFileScopeCppAlias`); the
+  registrar aliases namespace members only.
+- A function the builtin registry registers itself (a libc builtin a dialect
+  body calls, `FuncDef::builtin_registration`) is excluded from the dialect's
+  key set.
+- Differential `tests/unit/test_builtin_registry.cpp`: 496 declarations
+  compared, identical; 348 keys not yet built (6 libc builtins the builtin
+  registry owns left the set). Mismatch lines stream as `std::string` (doctest
+  printed a `const char *` as `1`).
+
+### The madc dialect's builtin registration generator and its differential (R1)
+
+- The dialect is builtin (docs/plans/2026-10-17-dialect-builtin-registration.md):
+  instead of re-parsing the `include/madc/ns_*` and `bits/*` fragment text on
+  every `--std=madc` compile, the build generates one registration builder per
+  namespace member and a sorted `(namespace, name)` table. R1 lands the
+  generator, the registration owner and the fidelity differential; there is no
+  runtime caller of the table yet (the lookup-miss hook is R4), so compile
+  behaviour is unchanged.
+- Generator `madc --std=madc --emit-builtin-registry=<out.cpp>`
+  (`src/madc_builtin_registry.cpp`; CLI `cli_option::emit_builtin_registry`, row
+  in `src/madc_cli.cpp`, handled in `src/madc.cpp`). It parses every dialect root
+  as text with the pack bind off (`parse_dialect_as_text`), groups the functions
+  it registers beyond an empty program by `(namespace, name)` in overload-set
+  order (`plan_builtin_registry`), and writes one builder per group plus the
+  table.
+- Registration owner `declare_builtin_function` builds the `FuncDef` and
+  registers it through the existing `Program::register_forest_func` (namespace
+  member, overload set, storage alias). Output is target-neutral: types are
+  DataDef singletons and minting-owner calls
+  (`getPointerType` / `getReferenceType` / `getQualifiedType`), and an emit
+  symbol is never spelled (`bfEmitIsAlias` takes the alias the registrar mangles
+  per target).
+- Two-stage build (`src/Makefile`): `obj/<mode>/madc-stage1` links the same
+  objects with the empty table (`src/madc_builtin_registry_stage1.cpp`),
+  generates `obj/<mode>/dialect_registry.cpp` (moved only when its text changes),
+  and libmadc compiles it in the empty table's place. Cross and hosted modes link
+  the empty table for now.
+- `src/parser.cpp`: `template_tokens_spelling` widens from static to external
+  linkage (declared in `include/madc.h`) so the differential can spell default
+  and template token runs.
+- Differential `tests/unit/test_builtin_registry.cpp` compares
+  `builtin_function_line` (types by their builder expression, parameter spellings
+  and names, alias, flags, overload index) for the generated builders against a
+  live parse of the same files — 479 declarations compared, identical; 371 keys
+  not yet built, each with a stated reason (class members R2, bodies R3,
+  templates, defaults).
+
+### A program's later `#include` of an auto-included header is served by the prelude
+
+- Under `--std=madc` with headers parsed as text (`bin/madc`, or
+  `--no-forest-bind`), `string s` before the program's own
+  `#include <string>` was refused (`use of undeclared identifier 'string'`).
+  The program's later include was served in place at the end of the file, and
+  the prelude's synthetic include of the same header was a once-only no-op.
+- The include handler's defer arm (`Program::_getToken`, the
+  `pending_auto_include_headers` check in `src/lexer.cpp`) deferred only when
+  `named_include_provider_exists` (PCH / embedded). The injector feeds every
+  prelude include through the same handler (`tokenize_synthetic_system_include`)
+  — filesystem walk and loud miss on a true miss included — so every queued
+  header now defers, unconditionally.
+- Oracle g++ 13 / clang++ 18 (includes at the top, `std::string`, printf):
+  `len 3`; madc now prints `len 3`. Test: `testautoinclude_later_include`.
+
+### The madc dialect's stdio streams are built in, as println is
+
+- Under `--std=madc`, `stdin` / `stdout` / `stderr` are the compiler's, needing
+  no header and no include flag. `Program::add_stdio_streams` enters them in
+  every dialect Program's `lazy_map` (replacing the dead `add_stdio` /
+  `_include_stdio` placeholder); `lazy_resolve`'s stream arm
+  (`Program::stdio_stream_stand_in`) makes a stand-in `Variable` carrying its
+  `StdioStream` (`include/datatokens.h`, `find_stdio_stream`), which the CIR
+  lowers through `CirBuilder::stdio_stream_value` to the runtime's
+  `__madc_stdio_stream(which)` (`src/rt/rt_dump.c`; wire enum `madc_stdio_stream`
+  in `rt_dump.h`). No provider row, no header.
+- A program's own `#include <stdio.h>`, before or after the first use, declares
+  the one real `stderr`, which adopts the stand-in (`Program::declare_object`);
+  `--emit=c11` defines `struct _IO_FILE` once. Strict modes are unchanged — gcc
+  13 `-std=c17` and madc under `--std=c17` both report `stderr` undeclared.
+- Bind: a loaded body's callee takes its producer forest's own extern
+  declaration (`Program::forest_extern_node` now asks the producer forest
+  first), and a stdio stand-in is never frozen (`cir_forest_fill_globals` skips
+  it). This settles the bound-vs-live divergence a dialect program naming
+  `stderr` exposed — a restored `extern void *stderr;` and the system pack's
+  `extern void *malloc(size_t p0);` ahead of the image's `void *malloc()`.
+- `--print-dialect-roots` names the 13 `ns_*` fragments only; the dialect image
+  went from 51 units / 4,722,144 bytes to 26 / 4,188,888.
+- `--std=madc` gates the whole dialect builtin registration, the entire `madc::`
+  namespace included — a docs ruling recorded in
+  `docs/plans/2026-10-17-dialect-builtin-registration.md`.
+- Tests: `testdialectstdiostreams`, `testdialectimage_ctypes(_after)`,
+  `testdialectimage_streams` (oracle g++ 13 / clang++ 18); leg 3 of
+  `scripts/check-autoinclude-position.sh`; `test_cir_freeze`'s dialect-image
+  roots case.
+
+### Every appended container starts on a page, so its in-page layout never moves with the host
+
+- `SNAPSHOT_APPEND_ALIGN` (`madcdis/snapshot.h`) is 4096, beside the 16-aligned
+  payload contract (`static_assert` a multiple of 16). `snapshot_append_blob`
+  (`madcdis_snapshot.cpp`) pads the host with zeros to it before the blob — an
+  empty file takes no pad — so a container's position within its 4096-byte page
+  no longer moves with the size of the code ahead of it, which
+  `__strcmp_avx2`'s page-cross path had read as parse-cost at identical call
+  counts. The B2 + B3 review ruling's follow-up.
+- `snapshot_reader::previous_image_len` walks back over fewer than
+  `SNAPSHOT_APPEND_ALIGN` zero bytes to the previous footer's non-zero magic and
+  opens that one end (was 16 candidate opens for pads 0..15). An older writer's
+  16-byte pad still reads; a host ending in zeros with no container, or more
+  zeros than a pad, is no previous blob.
+- Offsets in `lib/release/libmadc.so` (read from the footers): the system pack
+  at 17,412,096, the dialect image at 12,689,408, both 0 mod 4096.
+  `__strcmp_avx2` self cost `cxx_stl.forest` 18,409,052 → 18,220,612,
+  `rung_stdio.forest` 255,042 → 247,817 at the same call counts; parse-cost
+  gate 0 red of 21, no re-record.
+- `test_madcdis_snapshot` gains the page-start and zero-pad-walk cases (21/21);
+  `test_cir_freeze`'s stacked carrier reads an older writer's 16-byte pad
+  (48/48).
+
+### A dialect compile binds the dialect image; discovery and readers split by role
+
+- `Program::ForestSide` (`madc.h`) holds one bound forest's state — directory,
+  forest, holder, chain and chain-set, the walk's pp/husk/live state, the four
+  registered vectors, the restore filter, the dialect units, their activations,
+  decoded names and namespaces. Two instances, `forest_system` (role 0) and
+  `forest_dialect` (role 1); `forest_dialect_side()` is the side the dialect
+  binds on — the image when it bound, else the system pack. `ForestBindMark`
+  marks and rewinds both sides.
+- Discovery (`lexer.cpp`): `forest_probe_arm` takes the walk's role and skips a
+  profile of another role from its footer and segment table
+  (`forest_profile_skipped`), never its forest directory; the forest opened next
+  adopts that read (`snapshot_reader::adopt`), and a skipped profile is
+  remembered per compile (`_forest_skipped_profiles`), so each profile's table
+  is scanned once. `forest_reader` counts the profiles it opens by role
+  (`_forest_profiles_opened`); the group key is `(role, config, defines)`.
+  `forest_dialect_image_permitted()` gates the image to `--std=madc`, not
+  freezing, no touch log.
+- The dialect fragment bind (`forest_bind_dialect_fragment`) takes the image's
+  unit when the image binds, else the system pack's; an angle `#include <ns_*>`
+  tries the image first, under `--no-forest-bind` too. `forest_unit_for_include`
+  declines a fragment's system-pack unit outside `--std=madc` and whenever the
+  image's directory opened.
+- Restore: `forest_restore_side(ForestSide&, CirFrozenForest&, delta)` carries
+  the A4/A5 withholding, activation and demand memo over that side's forest;
+  `forest_restore_if_grown` restores each grown side, system first; a delta
+  names its side (`ForestRestoreDelta::side`); `forest_apply_pending` walks each
+  side's namespace surface, default bodies and parameter defaults.
+- Each record carries the forest that restored it: `FuncDef::forest_body_src`
+  (set by `materialize_pass`, cleared on the adoption copy and the lazy module
+  prototype), `PendingForestGlobal::def_forest`, `ForestFrozenGlobalDef::forest`,
+  `forest_unsettled_defaults`. The owners `forest_body_node(fd)`,
+  `forest_body_unit_name(fd)`, `forest_dialect_body_p(fd)` and
+  `forest_extern_node(sym, node)` (`parser.cpp`) replace every former
+  `bind_forest->` reader in `cir_builder.cpp`, `parser.cpp`, `madc_cir.cpp` and
+  `lexer.cpp`.
+- `--show-stats`: `forest profiles` names system + dialect opened; `dialect
+  image` reports units bound / packed and zstd frames; the seed-parity probe
+  heads each generation with its forest's role (`SEEDPAR-GEN dialect`) and the
+  gate keeps each forest's last block.
+- `forest_pack_gate.sh` adds `--image-stats` and `--strict-stats` (both
+  repeatable) and nine new / rewritten selftest legs (40 in all);
+  `forest_pack.sh`'s system-pack stage runs the split legs — `c17` and `c++17`
+  strict compiles, `dialect.mad`, and `dialect.mad` under `--no-forest-bind`.
+- Differential against the B1 packed release: 100 tests, 100 identical.
+  `--emit=c11` of the dialect workloads drops 6 lines (`struct
+  __madc_va_list_tag`, the system pack's always-list record a dialect compile no
+  longer binds), adds none. `dialect.restored` 12 → 11; parse-cost re-recorded
+  (the eight dialect rows, e.g. `dialect.forest` 29,953,917 → 26,745,317).
+
+### A raw dialect image, tagged with a role, built in every product mode
+
+- A frozen forest carries a ROLE segment (`CIR_FOREST_SEG_ROLE`, id 28, kind
+  `SNAP_KIND_CIR_ROLE`): one u32 `CirForestRole` — `SYSTEM` 0 (the segment
+  absent, every container before B1) or `DIALECT` 1. One table, `forest_roles`
+  (code, name, `raw`), read by `cir_forest_role_info`, `cir_forest_role_named`
+  (the `--freeze-role=` word boundary) and `cir_forest_storage_codec`; its one
+  reader `cir_forest_read_role` is kept at `CirFrozenForest::open_header` as
+  `role()` (directory-level, ahead of `complete_open`, like the shared configs),
+  and the content digest skips it.
+- `cir_frozen_forest::role` becomes the segment unless `SYSTEM`, so the system
+  pack is the container it was. `madc_cir_freeze(…, role)` takes every segment's
+  codec — the forest, the MIR module cache, the ledger — from the role's row: a
+  raw role writes no codec, no level, an uncompressed intern spine, and `add_seg`
+  applies no transform, so every segment reads in place (`raw_ptr`).
+  `--freeze-role=<role>` selects it (an unknown word is refused).
+- `--print-dialect-roots` prints the image's roots from
+  `Program::dialect_image_roots` (the provider table's dialect fragments through
+  `queue_fragment_prerequisites`, ordered by `ordered_auto_include_headers`):
+  `<stdio.h>` and the 13 `ns_*` fragments; refused outside `--std=madc`.
+  `--dump-forest` gains `profile` lines (`cir_forest_profiles`) — the carrier's
+  stack newest first: role, bytes, codec-stored segments.
+- `forest_pack.sh --dialect-image` (was `--dialect-only`) freezes the printed
+  roots with `--freeze-role=dialect`, no layout pass; it packs the image first,
+  then the system pack. `src/Makefile release` ships the image in every mode
+  (`none` alone; `embedded` / `sidecar` both). The run fails loudly unless the
+  printed `ns_*` fragments equal `include/madc/`'s and the list's.
+- `forest_pack_gate.sh` adds `check_dialect_image`, `--image-stats` (a
+  `--show-stats` bind of `dialect.mad` decodes 0 zstd frames) and `--image-roots`
+  (every edge of the image's TU is a printed root); eleven selftest legs.
+  `test_cir_freeze` gains the role table, a dialect-role container (every segment
+  raw) and the roots legs.
+- Sizes: dialect image 4,722,144 bytes raw (51 units); system pack 14,557,768
+  bytes, unchanged; `lib/release/libmadc.so` 27,229,112 → 31,959,480 bytes.
+  `dialect.mad` bound to the image alone 26,706,493 Ir, to the system pack
+  29,953,372 Ir — same output.
+
+### The seed-parity gate holds dialect records to demand; parse-cost re-recorded
+
+- The seed-parity probe (`MADC_SEED_PARITY_PROBE=1`, `materialize_pass`) labels a
+  record the generation was asked for `demanded`, ahead of `listed` and
+  `carried`, and marks a record a dialect fragment's decl index names with a role
+  — `anchor` (a global with storage) or `dialect`. `CirDeclRecordFacts::anchor()`
+  is the one predicate for a global with storage; `forest_dialect_activation`
+  reads it in place of its inline `CIR_GLOBALF_CONST_SCALAR` /
+  `CIR_GLOBALF_EXTERN_REF` test.
+- `check-pack-seed-parity.sh` fails a `dialect listed` line — a dialect record
+  restores only as demanded, carried or an anchor — and caps a workload's
+  restored count with a sibling `<name>.restored` file
+  (`scripts/parse_cost/dialect.restored` = 12, may only fall). Negative controls:
+  a synthetic listed-dialect line, and a dialect program compiled with the
+  withholding off (`--forest-touch-log`) must show `dialect listed` lines.
+- On the packed release `dialect.mad` restores 12 records (`php::count`,
+  `php::explode`, `php::strtoupper` and its `__o2`, their three shims,
+  `__ns_madc_serve_run_child` demanded; `madc::__madc_run_child` anchor;
+  `__madc_va_list_tag`, `__make_integer_seq`, `__type_pack_element` listed, not
+  dialect); the withholding off restores 455, 419 `dialect listed`. `dialect_one`
+  8 (4 demanded), `dialect_all` 23 (19), `dialect_cxx` 2,556 (66).
+- `scripts/parse_cost_gate.sh` takes a workload that is a symlink to a real
+  codebase on the build host (`sqlite3.c` → SQLite's amalgamation, never copied
+  into the repo; a symlink whose source is missing is RED, not skipped), a
+  `<name>.flags` adding madc flags per row (`{scratch}` → the run's scratch dir),
+  and `<name>.modes` = `forest`.
+- Parse-cost re-recorded on the packed release (no `--accept-increase`; check
+  mode 0 red of 21): every existing row fell — `dialect` −29.8%, `c_headers`
+  −0.74%, `cxx_stl.forest` −0.19%, the rungs −0.8% to −2.2% — with new rows
+  `sqlite3.forest`, `dialect_one`, `dialect_all`, `dialect_cxx`.
+- A6 measured the per-name demand cost under a large closure (`dialect_cxx`
+  against `small20`): in proportion to `dialect_one`'s; no task follows.
+
+### A dialect compile restores only the types, enums and templates it names
+
+- After the functions-per-name change, a bound dialect fragment's types, enums,
+  enumerator constants, extern references and owner-less templates still
+  restored and registered at the bind (dialect.mad: 11 enums, `madc::SysInfo`
+  and `madc::channel` with its 32 method imports, 68 enumerator constants,
+  `madc::sys`, four templates — two of them `php::print_r` / `php::var_dump`).
+  A5 withholds those too: a type, enum, constant, extern reference or owner-less
+  template of an active unit registers only when a lookup first names it.
+- `CirFrozenForest::decl_record_facts(kind, record, CirDeclRecordFacts &)` reads
+  a decl entry's record once — shape (free function, type, template, object),
+  namespace, name, leaf, enum flag, a global's flags, an enumerator constant's
+  enum record; `decl_entry_scope` becomes an inline reader over it.
+- `forest_dialect_activation` gains `objects` beside `funcs` — each type,
+  owner-less template and storage-less global (an enumerator constant, an extern
+  reference) as (leaf, namespace, record, group), sorted by leaf — `groups` (an
+  enum's record → its constants), and `withheld` now holds the funcs' and
+  objects' records.
+- `CirMaterializeFilter::withheld` holds a record of any kind out of a
+  generation's candidates (the aggregate / typedef / enum buckets, the global
+  and template seeds and lists) unless asked; a withheld type an admitted
+  record's chain pulls still restores. `demand_restored(record, idx)` replaces
+  `asked_restored_func` for every kind, and `CirRestoredType` / `Global` /
+  `Template` carry `record`.
+- In `forest_restore_decls`, a withheld global or template registers only when
+  this `Program` asked it (`withheld_here`); a restored type registers (a pulled
+  one included — the gate covers functions, globals and templates, never types).
+  `ForestRestoreDelta::rewalk` re-walks the type, global and template lists for
+  an asked record an earlier generation restored and this `Program` never
+  registered (a rolled-back entry, a sibling TU's demand); `delta.objects`
+  counts the asked non-function registrations.
+- `forest_dialect_object_records(ns, name)` collects objects whose leaf is the
+  name in that namespace; at the global scope also a type whose unit's
+  `DECL_NAMES` carries the bare name (the bare twin, `SysInfo`); an enum and its
+  constants expand as one group. `forest_dialect_ask` appends them to the
+  function records — one materializer.
+- Each type lookup kind reaches the materializer through an existing owner:
+  `resolve_namespaced_type_token`, `namespace_chain_datatype`,
+  `lazy_resolve_type`, `canonical_nested_namespace`, the expression `ns::m` site
+  through `activate_forest_member`, and the CIR fixpoint `translate_module` — a
+  loaded dialect body's struct tags not in `struct_map` demanded before the body
+  emits (`ui_web`'s `host *h = (host *)arg;`), the late-struct pass (1.97)
+  defining them.
+- `--show-stats` reports `N functions + N other declarations registered`
+  (`ForestBindStats::dialect_objects`, carried by the bind mark).
+- Reducer `tests/testdialectpername_types.mad` (a qualified scoped enum, a
+  qualified struct, a bare twin of a namespaced struct, an unscoped enumerator
+  named qualified, and the compiler-implemented `php::print_r` / `php::var_dump`
+  templates; JIT, exe, obj); `test_repl_session`, `test_cir_freeze` and
+  `test_mangle` gate the materializer and the record reader.
+- Cost, symbolized packed builds (Ir): `dialect` 32,104,537 → 29,483,964;
+  `dialect_one` 23,983,182 → 21,353,166; `dialect_all` 36,065,257 → 33,390,263;
+  `dialect_cxx` 270,201,290 → 268,923,078; `c_headers` −0.012%, `cxx_stl`
+  +0.015%. On `dialect`, `forest_restore_decls` 3.03M → 1.81M Ir,
+  `flush_forest_pending_globals` 3.44M → 1.82M; `SysInfo` and its two
+  destructors no longer emitted.
+
+### An inlined frame is addressed from its alloca's start, not a realigned frame pointer
+
+- A function holding an object aligned beyond 16 bytes (`_Alignas(32)`, a wide
+  vector type) realigns its frame base in place after the frame alloca
+  (`add`/`and` on the alloca's result register), so the over-16-byte alignment
+  fix left that register no longer holding the allocation's start. `mir.c`
+  `process_inlines` merges an inlined callee's frame into the caller's top alloca
+  and addresses it as that register plus an offset; realigned, the inlined frame
+  landed 0..31 bytes past the allocation, over the caller's saved registers — a
+  SIGSEGV that fired intermittently, depending on the stack's alignment mod 32.
+- `alloca_result_redefined_p` reports whether any insn other than the alloca
+  writes its result register (output operands via `MIR_insn_op_mode`). In
+  `process_inlines`, a top alloca built from a callee that redefines its frame
+  register now takes a fresh base register, and a caller whose own top alloca
+  register is redefined has the alloca write a fresh temp with a following `mov`
+  back to the register, inlined frames addressed from the temp. Code generation
+  is unchanged when no register is redefined.
+- `tests/testalign_over16_inlined_frame.mad` (`--std=c17`) reduces both shapes —
+  a realigned function inlining a callee, and a frameless wrapper inlining a
+  realigned callee that itself inlines one — each run at several stack depths;
+  gcc 13 and clang 18 `-O0 -std=c17` are the oracle.
+
+### A dialect compile registers only the functions it names
+
+- A fragment bound under `--std=madc` stays seeded as before;
+  `forest_activate_dialect_unit` (called by the one bind walk
+  `forest_bind_include` for a dialect fragment reached direct, as a
+  prerequisite, as a child, or by a written `#include <ns_*>`) marks it active,
+  and the new `CirMaterializeFilter::withheld` holds that unit's free functions
+  out of every materialize generation. A withheld function restores into the
+  shared forest and registers in this `Program` only when a lookup demands it by
+  name — `register_forest_func` (the one registration owner) no longer registers
+  a bound fragment's functions up front. The verdict-0 derived free functions
+  were already deferred; this withholds the verdict-1 named functions on top.
+- `forest_dialect_activation` (once per `Program`) reads a unit's decl entries'
+  kinds and records — never an entry's name — through
+  `CirFrozenForest::decl_entry_scope`, now carrying each record's registration
+  key: `funcs` (key, record) strcmp-sorted, `withheld` (those records),
+  `namespaces` (scopes made at the restore).
+- The materializer `Program::forest_dialect_demand(ns, name)` takes the run of
+  `namespace_function_symbol(ns, name)` and its `__oN` overloads in each active
+  unit's `funcs`, keeps an entry whose record names `ns` and the display name,
+  memoizes hits and misses, runs one records-only generation (`materialize_for`
+  with `records`), and applies the delta (`forest_restore_decls` +
+  `forest_apply_pending`) in record order. A sibling TU's demand restores into
+  the shared forest but never registers here (`ForestDialectDemands::asked`).
+- Every lookup kind reaches the materializer through an existing owner:
+  `activate_forest_member` at `find_namespace_member` /
+  `find_namespace_function_overload`, the expression `ns::m` site, and a
+  namespaced `parseDeclaration`; `activate_forest_function_display` at every
+  dialect namespace and the global scope; `lazy_resolve`; `using namespace`
+  (`forest_dialect_demand_namespace`); and the CIR fixpoint
+  `register_loaded_refs` — every callee and address / initializer reference of a
+  loaded body or frozen global, demanded before the registry judgements.
+  `forest_dialect_demand_symbol` resolves a loaded body's callee symbol:
+  `itanium_function_name` (madc_mangle.cpp, the encoders' decoder twin) reads a
+  namespace-scope function's own symbol back to scope + name, any other symbol
+  (template-id, substitution, member, special) as a global-scope name.
+- `register_forest_func` makes its program-scope `Variable` without
+  `addVariable`'s reads of the parse state (namespace binding, `_inst_depth`,
+  `parsing_extern_decl`) — identical at the flush, correct mid-parse. A
+  rolled-back entry rewinds the active units and the registered list with the
+  bind mark; `asked` is rebuilt from the kept demands.
+- `--show-stats` reports `forest dialect ... N units; N names demanded (N hit),
+  N records, N functions registered`.
+- Reducers `tests/testdialectpername_family.mad` (overloads of one name, a
+  using-directive, a bare call through the preference walk, a user
+  `namespace php { }` beside `php::count`) and
+  `tests/testdialectpername_body.mad` (a dialect inline body calling a sibling
+  the program never names; JIT, exe, obj); `test_repl_session`,
+  `test_cir_freeze` and `test_mangle` gate the materializer, the activation and
+  the decoder.
+- Cost, symbolized packed builds (Ir): `dialect.forest` 43,305,443 →
+  32,781,345 (functions registered up front 335 → 8); `dialect_one` 35,570,817
+  → 24,511,883 (335 → 4); `dialect_all` 51,471,727 → 36,678,393 (533 → 19);
+  `dialect_cxx` 287,202,035 → 272,267,487 (817 → 66); `c_headers.forest`
+  +0.002%, `cxx_stl.forest` −0.10%. On `dialect.forest`, `register_forest_func`
+  6.43M → 0.14M Ir.
+
+### libmadc binds its own calls inside the library
+
+- `PIC_CXXFLAGS` (every object in libmadc.so, the library the thin CLI and
+  every host load) gains `-fno-semantic-interposition`: under `-fPIC` gcc
+  otherwise treats every default-visibility function as interposable and
+  neither inlines nor direct-calls libmadc's calls to its own exported
+  functions, even within one file. Nothing interposes libmadc's symbols.
+- Measured on symbolized packed release builds of the same content, with and
+  without the flag, outputs identical: `c_headers.forest` −2.38M Ir (−0.97%),
+  `cxx_stl.forest` −6.06M (−0.43%), `dialect.forest` −0.70M (−1.61%), mostly
+  `Program::parse` and `Program::tokenize`.
+
+### Completion and REPL rollback read the dialect index
+
+- `ForestDeclNames::for_prefix(stem, begin, end)` returns the one run of the
+  pack's sorted `DECL_NAMES` a prefix starts: a binary search to the run's start,
+  then a walk while the stem matches. The run is read with `name_at(i)` /
+  `units_at(i, n)`, the bounds-checked readers `units_of` now shares; `units_of`,
+  the hot per-`name_verdict` probe, keeps its own reads.
+- `CirFrozenForest::decl_entry_scope(kind, record, ns, display)` gives a decl
+  entry's namespace from its record's own `ns` field (arena / template / global)
+  and a free function's display name; it is false for a member.
+- `Program::forest_dialect_names(scope, prefix, offer)` offers the names an active
+  dialect unit declares under a scope. Active units are `forest_chain` ∩
+  `embedded_dialect_fragment_p` (`forest_active_dialect_units`), read through two
+  `DECL_NAMES` runs — the flat ids `namespace_function_symbol` spells (a
+  namespaced function and its `__oN` overloads; at the global scope the bare
+  names) kept when the entry's record names the scope, and `scope::prefix`
+  (templates, types, objects, enumerators), direct members only. The leaf is a
+  free function's display name, `strip_overload_suffix` only for a record without
+  one. A unit's decl index decodes once per `Program` into `forest_unit_names`.
+- Completion reads it: `completion_scope_names` and `visit_top_level_names` (each
+  visible namespace, its names offered as `dialect_word`) each gain one arm.
+- REPL rollback carries the dialect demand log. `Program::ForestDialectDemands`
+  (memo name → hit, log of name + records; `record` refuses a second demand of
+  one name) marks into `ForestBindMark::dialect_demands` and is rewound by
+  `forest_bind_rewind`; `forest_unit_names` holds no registration state and stays
+  across a rewind. Nothing writes the demand log yet.
+- New doctest cases (`tests/unit/test_cir_freeze.cpp`,
+  `tests/unit/test_repl_session.cpp`) are the gate — `for_prefix` over a sorted
+  table, the owner's names over a session bound to an in-process pack, and a
+  rolled-back entry forgetting the dialect demands it made.
+
+### The forest materializer admits records by id and visits only the added ones
+
+- `CirMaterializeFilter` gains two members. `records` holds decl-index record
+  ids (the `(CIR_SEED_DEP_* << 30) | index` tagged form) asked for directly;
+  `materialize_pass` keeps each whatever its name verdict, with its pulls and
+  dependents. `unseeded_units` holds units whose names `name_verdict` counts as
+  bound but whose seed lists no generation visits — what restores of them is
+  asked by record or pulled. A new `binds(unit)` answers "the closure binds this
+  unit" (bound or unseeded); `name_verdict` and the product-definers check read
+  it. An asked name's lookup skips an unseeded unit's list; an exact filter still
+  ignores both unit sets.
+- `materialize_for` counts a new asked record as growth of its own: a generation
+  over the added records alone (`materialize_pass(&added)`), whose pulls stop at
+  aggregates an earlier generation built whole. A new unseeded unit is a full
+  generation. New counters `_stat_mat_generations` and `_stat_mat_visited` report
+  the generations run and the records the last one's Pass 0 visited.
+- The `(kind << 30) | index` decode of a tagged seed item is one pair,
+  `cir_seed_item_kind` / `cir_seed_item_index`; `add_dependents` reads them.
+- Nothing in the compiler sets the new fields yet; three doctest cases
+  (`tests/unit/test_cir_freeze.cpp`) are the gate — a records filter restores one
+  function and its parameter type, a records-only second generation visits one
+  record, and an unseeded unit's names are bound with its list unvisited and its
+  function restored alone when asked by record.
+
+### `--dump-forest` renders a dialect record census; the pack gate holds it at zero
+
+- `madc --dump-forest` now emits a dialect record census. For every unit that
+  `embedded_dialect_fragment_p` (the one fragment-identity owner) names a dialect
+  fragment, each decl entry other than a namespace's is counted; an entry with no
+  record (`CIR_DECL_RECORD_NONE`) prints a `dialectunrecorded <unit> <kind>
+  <name>` line, and the totals print as `dialectrecords units=K entries=M
+  unrecorded=N`.
+- `scripts/forest_pack_gate.sh`'s `check_dump` runs a new `check_dialect_records`:
+  it reports the unrecorded count, is red when any dialect non-namespace entry
+  carries no record (listing the offenders), and red when the dump renders no
+  census. Two selftest legs cover one unrecorded entry and a missing census.
+- Measured on the release pack: 0 of 1,291 non-namespace entries in 22 dialect
+  units lack a record — the record column a per-name dialect lookup reads is
+  complete, and the gate keeps it so.
+
+### A painted frame's argument paint joins the served union once, not per character
+
+- `Source::get` no longer inserts the serving frame's argument paint
+  (`PushbackFrame::arg_disabled`, the C11 6.10.3.4p2 paint of the names an
+  argument already expanded) into `Source::_served_arg_paint` on every character
+  served from a painted frame — formerly a `std::set` range insert per character.
+  It now adds a frame's paint once, the first time that frame serves a character
+  after the last `reset_served_arg_paint()` (a new `_union_frame` member, cleared
+  by that reset). Equivalent because a frame's `arg_disabled` is set only at
+  creation and never changes, frame numbers are never reused within a `Source`,
+  and the union is a set — the per-argument union `served_arg_paint()` returns to
+  its one reader, the macro-argument collector, is unchanged.
+- Measured on the packed `madc-release` parse-cost gate, the C-headers live parse
+  `c_headers.live` drops from 249,641,795 to 245,388,581 instructions, +0.18%
+  over its v0.105.0 baseline (244,938,187) and inside the gate's 0.5% tolerance.
+  The C-headers growth the per-stretch argument paint added (71f64745f, with
+  ead3e9752, 8b2abf7ba, be9c1a24a) is closed. The other rows are unchanged within
+  noise.
+
+### The serving frame is asked of the frames, not stored per character
+
+- `Source::get` no longer writes a `_serving_frame` member on every character it
+  serves. `Source::serving_frame()` — read only by the function-like
+  macro-argument collector — now answers from the pushback frames: the front
+  frame's id, or 0 when there is no frame. A frame that served a character stays
+  at the front until the next `get()` (the delayed pop), and `get()` clears the
+  frames before it reads the buffer, so the front frame right after a `get()` is
+  the one that served it; the collector reads `serving_frame()` immediately after
+  `get()`. The member and both of its per-`get()` stores are gone, and the answer
+  is unchanged.
+- Macro-argument paint-stretch tracking (`ArgPaintStretches::note`) returns
+  inline when unpainted text follows unpainted text — nearly every call — and
+  defers the stretch-building rest to a private `note_paint`.
+- Measured on the packed `madc-release` parse-cost gate, the C-headers live
+  parse `c_headers.live` drops from 250,399,173 to 249,641,795 instructions. The
+  row is still above its v0.105.0 baseline (244,938,187); the remaining distance,
+  and the other rows, are being profiled. The dialect and the other rows are
+  unchanged within noise.
+
+### A macro argument painted alike keeps no paint storage
+
+- Function-like macro-argument collection no longer keeps a
+  `std::vector<PaintSeg>` per argument, nor grows a parallel vector-of-vectors
+  per macro invocation. A new `ArgPaintStretches` holds the first paint stretch
+  in place and starts its vector only at a second, differently painted stretch,
+  so an argument painted alike throughout — nearly every one — allocates
+  nothing; only an argument read across more than one paint keeps its stretches,
+  sparsely by argument index. `trim_macro_argument` stays the one trim owner, and
+  the stretches a multi-paint argument is pre-expanded with are unchanged.
+- Measured on the packed `madc-release` parse-cost gate, the C-headers live
+  parse `c_headers.live` drops from 254,643,686 to 250,399,173 instructions
+  (baseline 244,938,187). Part of what remains over the baseline is
+  `Source::get`'s per-character serving-frame store and the stretch handling of
+  arguments that really are read across two paints.
+
+### A differential harness for madc's command line, old binary against new
+
+- `scripts/cli_differential.sh OLD_BIN NEW_BIN [CORPUS] [OUTDIR]` runs every
+  line of `scripts/cli_differential.corpus` (160 madc command lines — every
+  row's spellings and value forms, options before, after and around sources,
+  `@file`s, `--`, stdin, misspellings) under two madc binaries, each in a fresh
+  scratch directory holding small programs that print their argv, and reports
+  the lines whose exit status, stdout, stderr or created files differ (binary
+  paths, install roots, hex and long decimal addresses, timings, token rates,
+  elapsed counts and frozen-symbol names normalized). It resolves both binaries
+  to absolute paths and refuses one that is not an executable (exit 2).
+- It is the proof for a change meant to keep the command line's behaviour. Run
+  on the build container, 6ae4b007c (the option ladder) against b13284687 (the
+  one reader): 120 identical, 40 differ, every difference intended — none a
+  regression.
+
+### Macro-argument collection no longer copies a paint set per argument
+
+- `Source::current_arg_paint()` now returns a const reference (a static empty
+  set when no macro frame is active) instead of a `std::set` by value, and
+  function-like macro-argument collection copies a paint only into a new
+  `PaintSeg` and moves each argument's segment vector into `arg_segs` instead
+  of copying it. Behaviour is unchanged.
+- Measured on the packed `madc-release` parse-cost gate, the C-headers live
+  parse `c_headers.live` drops from 257,188,052 to 254,643,686 instructions.
+  This recovers part — not all — of the growth that 71f64745f (its per-stretch
+  argument paint) added since v0.105.0; the remainder is being profiled.
+
+### A script's shebang standard reaches the predefined macros and keywords
+
+- A main source's `#!/usr/bin/madc --std=c17` line now sets the language
+  standard BEFORE the tokenizer seeds that standard's predefined macros and
+  keywords, the way the command line's `--std=` does. Before, a `--std=c17`
+  script compiled as C17 but saw `__cplusplus` 201703L and no
+  `__STDC_VERSION__`; now it sees no `__cplusplus` and `__STDC_VERSION__`
+  201710L, matching `gcc -std=c17` / `clang -std=c17`.
+- The lexer's `#!` arm no longer adopts the standard or patches keywords (it
+  had re-erased only 9 C++ keywords, missing `template` and `friend`); the
+  first source line is read once in `tokenize()` / `tokenize_buffer()` through
+  the new `Program::adopt_shebang_standard`, on the same option table the
+  command line uses (`--std=NAME`, gcc's `-std=NAME`).
+- A shebang line in an `#include`'d file no longer switches the standard
+  mid-file.
+
+### A release archived without its callgrind map cannot reach master
+
+- `scripts/release_bins.sh check` — which the master push gate runs after its
+  selftest — now refuses an archived release since v0.102.1 (`MAP_FIRST`) that
+  has no `callgrind/summary.tsv`, the same way it already refuses a release
+  missing from the archive. The map diffs two releases' parse-cost profiles to
+  name the functions that grew when a `parse-cost` row goes red (owner
+  2026-10-08: keep a callgrind map for every release).
+- The map is made beside the archive entry by `scripts/release_bins.sh map
+  vX.Y.Z` (`/release` step 13), on the build container while the release commit
+  is fresh, and `scripts/release_bins.sh sync` mirrors it with the binary.
+- The selftest's negative control now covers it: an archive entry without a map
+  fails `check` and passes once its `callgrind/summary.tsv` is present. It
+  prints "selftest OK (a missing release or map blocks, a complete archive
+  passes)".
+
+### A script's shebang reads gcc's `-std=`; an LSP client's `--stdio` is accepted
+
+- A script's shebang line now reads a standard option the way madc's command
+  line does, so `#!/usr/bin/madc -std=c17` compiles the script under C17.
+  Before, the shebang read only `--std=`, so gcc's `-std=c17` was ignored and
+  the script compiled in the madc dialect — `(int)sizeof('a')` printed `1`
+  instead of C17's `4`. The shebang, `InteractiveSession::begin`, `%std` and the
+  session's `session_open` now read the word through one reader
+  (`madc_cli_standard_of`, on madc's option table).
+- `madc --lsp --stdio` (and `--mcp --stdio`) is accepted: `--stdio` names the
+  stdin/stdout transport that LSP client libraries append, the only one madc's
+  servers speak. `--stdio` without `--lsp` or `--mcp` is an error:
+  `madc: --stdio names the transport of --lsp or --mcp`. Before, the option
+  reader refused `--stdio` as an unrecognized option.
+
+### Response files: a device or FIFO is left as written; a huge `@file` word costs little
+
+- A response file that is not a regular file (a device such as `/dev/zero`, a
+  FIFO) is now left as written, like a name that cannot be opened — it is no
+  longer opened and read to its end (`/dev/zero` never ends). A regular file is
+  read for its `st_size` bytes.
+- The "did you mean" search no longer builds an n×m edit-distance table per
+  spelling for every unknown word: a spelling whose length differs from the word
+  by more than the cutoff is skipped before the table is built, since the edit
+  distance is at least that length difference. A 16 MiB word from an `@file` no
+  longer allocates gibibytes per spelling and throws `std::bad_alloc`.
+
+### Every one-owner gate runs in `make gates`
+
+`src/Makefile`'s `gates` target (what `fulltest` runs) named 55 of the 56
+`scripts/check-one-*.sh` one-owner gates one by one and omitted
+`scripts/check-one-option-parser.sh` — the gate of this release's consolidated
+command-line-reader family, which therefore ran only in the per-commit static
+loop and the seam battery, never in `fulltest`. The `gates` target now names
+it, and a new gate `scripts/check-gates-wired.sh` (also run by `gates`) fails
+when any `scripts/check-one-*.sh` is absent from the target, so a consolidated
+family can no longer regrow under a green `fulltest`.
+
+### A release gate: every release moves C23 or C++20 conformance forward
+
+OWNER LAW (2026-10-16): every release raises at least one C23 or C++20 passing
+count over the previous release and lowers none, on the same in-scope set. The
+measure is four corpora of gcc's own tests — `c23-compile` and `c23-run`
+(`gcc.dg/c23-*`, `c2x-*`, compile-clean and run under `--std=c23`),
+`torture-c23` (`gcc.c-torture/execute` under `--std=c23`), and `cpp2a`
+(`g++.dg/cpp2a` under `--std=c++20`).
+
+- The counts are measured, never typed. `scripts/conformance_measure.sh` is the
+  one writer: it runs a release binary over the corpora and records each
+  release's rows (release, corpus, `--std`, passing, in-scope, commit) in
+  `docs/parity/conformance-ledger.tsv`. The previous release is re-measured on
+  its archived binary (`tmp/release-bins/`), the candidate on the seam
+  battery's `bin/madc-release` — the -O0 development build never stands in.
+- `scripts/check-release-conformance.sh` is the gate. For every versioned
+  CHANGELOG section after the EPOCH it reads the release's and the previous
+  release's ledger rows, refuses a corpus pair whose in-scope counts differ (a
+  different measurement, not a comparison), requires one count up and none
+  down, and checks the section's `Conformance: <corpus> <old> -> <new>` line
+  against the rows that rose. The [Unreleased] section requires nothing, so the
+  per-commit gate loop stays green; `/release` runs it beside the consolidation
+  check.
+- The ledger's baseline is v0.105.0, re-measured on its archived binary (commit
+  `be3be7194`): c23-compile 38/72, c23-run 35/70, torture-c23 1490/1624, cpp2a
+  350/651. The EPOCH (0.105.0) exempts it and every earlier release and moves
+  forward only; 0.106.0 is the first release the gate requires a gain of.
+
+### madc's command line is read by the one option reader
+
+madc's `main()` now reads its command line through the shared option reader
+(`madc::cli::parse`) against madc's own table, in place of the strcmp/strncmp
+ladder: every spelling, value form, operand rule and `@file` expansion lives in
+the table (`src/madc_cli.cpp`) and the reader (`src/cli_options.cpp`), and
+`main()` applies the parsed occurrences with a `switch` on `cli_option`. The
+user-visible changes:
+
+- An unrecognized option is an error in gcc's words —
+  `madc: error: unrecognized command-line option '-fbogus'`, with
+  `; did you mean '--dump-source'?` appended only when a known option is close,
+  as for `--dump-sorce`. `-fbogus` is close to none and gets no suggestion.
+  Before, it was opened as the source file.
+- A missing value is an error: `madc: error: missing argument to '-o'`. Before,
+  a trailing `-o` was opened as a file.
+- `--` ends madc's options.
+- `@file` response files expand while madc's own options are read (gcc), never
+  inside a script's argv: `madc tool.mad -o out @args -- -v` passes every word
+  after `tool.mad` through to the script untouched.
+- `-std=` (gcc's spelling) is accepted beside `--std=`.
+- `--emit-object`, `--emit-executable` and `--dump-source` count as stage
+  options in the compiler-line rule, so `madc x.c --emit-object x.o` builds;
+  before, it ran `x.c` with two arguments.
+- `-Wa,` and `-Wp,` are refused by name (madc has no separate assembler or
+  preprocessor to pass them to).
+- New: `--help=json` emits the table as JSON, and `--completion=SHELL`
+  (`bash`, `zsh`, `fish`, `powershell`) emits a completion script.
+- The help is generated from the table and now lists what the old text omitted:
+  the `modules` and `theme` madc.ini keys, `-dumpmachine`, the `-fPIC` family
+  and `-feval-shims`.
+
+The exit status on a usage error stays 1 (gcc). The `--capabilities` JSON
+`introspection` list is now derived from the rows tagged `mt_introspection`
+instead of a hand-maintained literal, and `Program::set_stdlib_flavor(name)`
+takes the flavor name directly in place of `set_stdlib_flavor_option("-stdlib="
++ name)`.
+
+### A command line stays on the one option reader — gated
+
+`scripts/check-one-option-parser.sh` (static gate loop and `make gates`) keeps
+madc's command line on the one reader `madc::cli::parse`: outside the reader
+(`src/cli_options.cpp`), no C/C++ source under `src/` or `include/` compares an
+argv word with an option spelling (`strcmp(argv[i], "-x")`,
+`strncmp(argv[i], "--x=", n)`) or tests an argv word's leading dash
+(`argv[i][0] == '-'`). A new option adds a row to the program's table
+(`src/madc_cli.cpp`) and a case to its switch instead. Comparing an operand
+with `"-"` (stdin) is not an option read and passes. The gate carries its own
+negative and positive controls. It consolidates the 82-arm strcmp/strncmp
+ladder that `main()` (`src/madc.cpp`) read its options with before the one
+reader landed.
+
+Consolidated: command_line_option_arms — gate scripts/check-one-option-parser.sh
+
+### `madc::path_generic` — a path in the host's generic form
+
+madc's dialect now exposes `madc::path_generic(value &out, const char *path)`,
+which writes each of the host's path separators as '/': on Windows `"a\b/c"`
+comes back `"a/b/c"`, and on POSIX '\' is an ordinary file-name byte so the
+path is unchanged. It is the dialect face over the host path owner
+`host_path_generic` (boost::filesystem's generic format), the form a path is
+stored and printed in.
+
+### Fixed: `git::relpath` keeps a '\' in a POSIX file name
+
+`git::relpath` now writes a working-tree-relative path through the host
+separator rule (`host_path_generic`) at its output boundary, so on POSIX a '\'
+— a file-name byte there, kept as one component by git — is preserved:
+`tests/a\b.txt` comes back `tests/a\b.txt`. Previously the git face rewrote
+every '\' to '/' on every platform, so on POSIX the same input answered
+`tests/a/b.txt` — a different path, returned with success. On Windows '\' is a
+separator and is still written '/'.
+
+### An undefined weak reference links, its address null, as gcc does
+
+madc now links and runs a program that declares `extern T x
+__attribute__((weak))` with no definition: the undefined weak reference binds
+to the null address — a function's and an object's alike — so
+`madc_weak_absent_fn == 0`, `&madc_weak_absent_var == 0`, and a call guarded on
+the function is skipped. A weak declaration of a name a library does define
+(`strlen`) resolves to it and calls it. Previously the JIT refused the program
+(`import of undefined item madc_weak_absent_fn`) and an executable built with
+`-o` failed at load (`undefined symbol`). The ELF executable and `.o` carry the
+undefined weak symbol `STB_WEAK`, the Mach-O writer marks it `N_WEAK_REF` /
+`BIND_SYMBOL_FLAGS_WEAK_IMPORT`, and a PE import no DLL provides leaves the
+import table with its slot 0. On `tests/testc_weak_undefined_reference` gcc 13
+and clang 18 -O0 -std=c17 print `absent: fn_null=1 var_null=1 called=0` and
+`present: bound=1 len=4`, as a program and as an executable; madc now matches.
+Closes the `weak_undefined_reference_unsupported` gap.
+
+### A C function designator not followed by `(` is its address, not a call
+
+madc now treats a bare function name not followed by `(` as the function's
+address in C mode (C11 6.3.2.1p4), in every context — the operand of `!`, the
+condition of `?:`, `&&`, `if`, `==`, and inside a call's argument list — never
+a parenless call. Previously the identifier arm called the designator in these
+contexts: `!f` became `!f()` and `show(abs ? 1 : 0)` became `show(abs() ?
+1 : 0)`, a silent wrong answer that also invoked the function for its side
+effects. On `tests/testc_function_designator_truth` gcc 13 and clang 18 -O0
+-std=c17 print `b=0` and `calls=0` for both a local and an extern designator;
+madc now matches.
+
+### An executable with an undefined reference is refused, as ld does
+
+madc now refuses to link an executable that references a function no library of
+the link defines, printing `madc: <out>: undefined reference to `<name>'` for
+each and exiting nonzero. A function a `-l` library defines links, and so does
+one the C library defines; a shared object (`-shared`) may keep undefined
+references. The link opens its own libraries into the process scope before
+asking. Previously madc wrote the executable anyway (exit 0) and the dynamic
+loader refused it only at run time (exit 127), so every configure "does this
+function exist" link probe answered yes — SQLite's `tgetent` without a library
+and `localtime_s` both came out present. On `tests/testcli_undefined_reference`
+gcc 13 and clang 18 exit 1 on an undefined `madc_no_such_function`, link `cos`
+with `-lm` and `gmtime_r` from libc (rc 0), and build a `-shared` object with
+the undefined reference (rc 0); madc now matches. Closes the
+`aot_link_undefined_symbol_not_refused` gap.
+
+### A C or C++ source before a gcc stage option is a compiler line
+
+madc now treats a C or C++ source (by extension) that is followed by a stage
+option (`-c`, `-shared`, `-r`, `-o`, `-E`, `-dM`) as a gcc-style compiler line:
+options and operands permute as gcc's artifact lanes do, the source is
+compiled, and no program runs. A `.mad` script keeps its argv — `madc tool.mad
+-o out` runs `tool.mad` with `-o out` as its arguments (owner decision
+2026-10-16: C/C++ sources permute by extension only; a script's line stays the
+script's). Previously everything after the first source was the program's argv,
+so a plain `cc -O2 conftest.c -o conftest -lfoo` link probe ran conftest
+instead of building it — SQLite's configure probes for `gmtime_r` /
+`localtime_r` / `pthread_mutexattr_init` crashed, and its `readline` /
+`tgetent` probes never saw `-lreadline` / `-lncurses`. On
+`tests/testcli_compiler_line` gcc 13 and clang 18 build `cc -O2 main.c -o prog`
+and `cc probe.c -o probe -lm` without running them (rc 0), write `main.o` for
+`cc main.c -c -o main.o`, and the built `prog` prints `ran argc=1`; madc now
+matches.
+
+### -E and -dM write their preprocessed text to the file -o names
+
+madc now sends its preprocess-only output — the `-E` / `--dump-source`
+preprocessed text, or the `-dM` macro table — to the file named by `-o`,
+wherever `-o` stands on the line, and to stdout when there is no `-o`. `-dM`
+with `-E` writes the macro table, not the source (`gcc -dM -E`). An `-o` path
+that cannot be opened or written is an error with exit status 1. `-o` alongside
+a preprocess-only stop no longer requests a native executable, and the
+preprocess-only lane interleaves options and operands like gcc's artifact lanes
+(`-E -o x.i x.c`, `-E x.c -o x.i`). Previously `-o` was dropped and the text
+always went to stdout; ccache hashes the output file of `cc -E -o tmp.i x.c`,
+so configure probes of one shape hashed alike and replayed one cached result
+(SQLite's `SIZEOF_OFF_T` came out 4). On `tests/testcli_preprocess_output` gcc
+13 and clang 18 write the `-o` file and print nothing, write the `#define`
+lines for `-dM -E`, and exit 1 on an unwritable `-o`; madc now matches.
+
+### A re-spelled string literal keeps its NUL bytes and its wide prefix
+
+madc now re-spells a string literal by its stored byte length, so a literal
+that holds NUL bytes round-trips whole and a wide literal comes back wide. The
+spelling owner re-escapes a literal's cooked bytes — so the literal re-lexes to
+the same value — when it passes through macro-argument pre-expansion, a
+`--dump-source` round trip, or the `--emit=c++` render. It read the cooked
+value as a C string, stopping at the first NUL: SQLite's FTS5 marks a V2
+structure record with `"\xFF\x00\x00\x01"` and writes it through the
+`fts5BufferSafeAppendBlob` macro, which re-lexed to `"\377"`, and a
+contentless_delete table's first INSERT then reported `fts5: corrupt structure
+record`. A wide literal was re-spelled narrow and lost its units
+(`wcslen("a")`). The re-escape now takes the token's spelling length (NUL-safe)
+and, for a wide `TokenStr`, writes an `L"..."` body whose 4-byte units re-lex
+to the same code points — an ASCII unit by the narrow rule, a Unicode scalar as
+its UTF-8, any other unit (a surrogate, a value past U+10FFFF) as a hex escape
+with the literal split where a hex digit would otherwise join it. The wrong
+answer was silent and predates 0.105.0. On `tests/testpp_literal_respell`
+(`--std=c17`) gcc 13 and clang 18 `-O0` print the NUL-holding bytes, the wide
+literal's length and units, and the split surrogate; madc now prints the same.
+SQLite's `--enable-all` testfixture built by madc now passes all eleven FTS5
+test files that failed before (`fts5contentless`, `fts5delete`, `fts5misc` and
+the rest: 0 errors out of 4147).
+
+### A statement expression that yields no value is void, not a crash
+
+madc now compiles a GNU statement expression whose value statement yields no
+value — one whose last statement is not an expression, is an empty statement
+`({ ...; ; })`, or is an expression of type void such as a void call tail
+`({ f(); })` — as the void construct it is, with no value captured. glibc's
+GNU-C `assert` lowers to `((void) sizeof ((e) ? 1 : 0), __extension__ ({ if (e)
+; else __assert_fail (...); }))`, so an assert of a constant folds its dead
+branch away and leaves `({ ; })` or `({ __assert_fail (...); })`; SQLite under
+`SQLITE_DEBUG` reaches both, through `assert(sqlite3MemdebugHasType(...))` and
+`NEVER(X) = ((X)?(assert(0),1):0)` in a condition. Previously c2mir crashed on
+these: the check pass read the value (`->attr`) of an absent tail expression (an
+empty statement's `N_IGNORE`), and the gen pass emitted a void call's tail in
+value context, reading the call arm's uninitialized result op. A new helper
+returns the expression the value statement yields or NULL when there is none,
+used by both passes; the gen pass also treats a void-typed statement expression
+as valueless, matching c2mir's `N_COMMA` and `N_CAST` arms, which already pass
+`!void_type_p (...)` as their value flag. On `tests/teststmtexpr_empty_tail`
+(`--std=gnu17`) gcc 13 and clang 18 `-O0` print `size=7 n=8 m=2 c=5`; madc,
+which crashed twice before, now prints the same. SQLite's
+`test/sessionfuzz.c` under `SQLITE_DEBUG` now compiles.
+
+### A macro argument's paint is tracked per stretch, not as one union
+
+madc now paints a macro argument's collected text region by region instead of
+as a single union. One argument can be read across differently painted text: a
+replacement passes an inner macro an argument made of an outer ARGUMENT (already
+macro-replaced, C11 6.10.3.1p1, painted with the names it expanded) beside the
+replacement's own body text (unpainted). A name the outer argument expanded is
+hidden only for the tokens that came from it (6.10.3.4p2); the body's own
+spelling of the same name still expands. The per-argument paint union hid the
+body's spelling whenever the painted region beside it had expanded the same
+name, so madc reported `use of undeclared identifier 'NC_A'` on the reducer —
+SQLite under `SQLITE_DEBUG`, where `sqlite3ResolveNotValid`'s assert mixes an
+expanded `NC_IdxExpr|NC_GenCol` with the body's own `NC_IdxExpr`. Source now
+records a per-stretch paint (`PaintSeg`) as the argument is collected — each
+change of the serving pushback frame opens a new stretch — and an argument read
+across more than one stretch is pre-expanded stretch by stretch, each under its
+own paint, through `Source::pushback_painted_text`; a single-stretch argument
+keeps the plain path. On `tests/testpp_arg_paint_stretch` (`--std=c17`) gcc 13
+and clang 18 `-O0` print `hits=1 v=10`; madc now prints the same.
+
+### madc accepts gcc's warning selection and refuses `-Werror`
+
+madc now accepts gcc's warning-selection options — `-Wall`, `-Wextra`,
+`-Wno-<name>`, `-W<name>=<value>` — on every lane and builds the same thing,
+because its diagnostics are one fixed set that a selection does not change.
+Previously the option loop handled only `-w` and the `-Wl,` / `-Wa,` / `-Wp,`
+pass-throughs, so a build that passed `-Wall` (SQLite's All-Debug testfixture
+and fuzzcheck builds) fell through to the file operand and madc reported
+`-Wall:0:0: error: Failed to open file`. `-Werror` and `-Werror=<name>` are the
+one divergence: madc refuses them with a diagnostic and a nonzero exit, since
+its warnings are never errors. On `tests/testcli_warning_options` gcc 13 and
+clang 18 build and run a program compiled with `-Wall -Wextra
+-Wno-unused-parameter -Wformat=2`; madc now does the same and refuses
+`-Werror`.
+
+### An object may be aligned beyond 16 bytes, static or automatic
+
+madc now places an object on an alignment above 16 — gcc's `aligned(N)`, C11
+`_Alignas(N)`, or a wide vector type — up to a page, for both static and
+automatic storage. c2mir had refused any alignment above 16: a static object
+over-aligned past 16 was rejected, and an automatic one sat on the frame's
+16-byte boundary (a vector's over-alignment dropped, `_Alignas` / `aligned`
+refused). A static (or file-scope) object now carries its storage alignment on
+the MIR data/bss item heading it; the JIT's section allocation and the AOT
+object writer place the storage on that boundary, and `MIR_write` / `MIR_output`
+serialize the alignment as an `align <name> <N>` record beside the weak/linkonce
+binding records. An automatic object's frame is over-allocated and its base
+rounded up to the largest alignment any object in it needs, as gcc and clang
+realign the stack. Two reducers pin a static `_Alignas` / `aligned` table, an
+over-aligned struct member, a 4096-aligned bss block and a function-scope static
+(SQLite's `ALIGN128` mutex table), and automatic `_Alignas`, member-, vector-,
+compound-literal- and recursion-frame objects, on their boundaries in a run, an
+executable and an object file; gcc 13 and clang 18 `-O0 -std=c17` give the same
+output. gcc c-torture `20010904-1.c` and `20010904-2.c` (over-aligned objects)
+now pass.
+
+### A tag a parameter list names first is declared at file scope
+
+When a struct or union tag is first named inside a function type's parameter
+list — `struct Obj;` then `typedef int P(struct Obj *const *);` then the
+definition (tcl.h's `struct Tcl_Obj;` and `Tcl_ObjCmdProc`'s
+`struct Tcl_Obj *const *objv`) — madc now prepends a file-scope `struct Obj;` /
+`union Val;` at the head of the module for each such tag. madc models one type
+per tag, but the C it handed c2mir named the tag first in the parameter list, so
+c2mir scoped it to that prototype (C11 6.2.1p4): a different type from the later
+file-scope definition, and every call through a P pointer warned "incompatible
+argument type for pointer type parameter". On `tests/testfnptr_fwd_tag_param`
+(`--std=c17`) gcc 13 and clang 18 `-Wall -Wextra -O0` give no diagnostic and
+print 27; madc warned twice (struct and union) and now gives none, printing 27,
+and `--emit=c11` opens with `struct Obj;` / `union Val;`. SQLite 3.54.0's
+test1.c:7930, test_syscall.c:743 and test_thread.c:358 (calls through
+Tcl_ObjCmdProc pointers) warned before; a tcl.h-based reducer is silent after.
+
+### `-dumpmachine` prints the toolchain's target triple
+
+madc now answers `-dumpmachine` the way gcc and clang do: it prints the target
+triple and exits, before parsing any source. The triple is the toolchain madc
+was built against, probed at build time alongside the include and library paths
+— `scripts/gen_sys_includes.sh` emits its `-dumpmachine` answer as
+`madc_toolchain_target`, and on a cross build that answer is the target
+toolchain's. Previously the word fell through to the file operand and madc
+reported `-dumpmachine:0:0: error: Failed to open file`, which broke build
+systems that query it (seen through `dpkg-architecture` in SQLite's build). On
+the build host gcc 13 and clang 18 print `x86_64-linux-gnu`; madc built there
+now prints the same and exits 0 (`unknown` when the toolchain answered nothing).
+
+### `-g` homes only the locals a debugger describes, not every temporary
+
+madc's `-g` debug codegen (`cir_set_debug_codegen`: O0, no inlining, spill-all)
+gave every non-tied MIR register its own stable frame slot — c2mir's temporaries
+included — so a debuggable frame was far larger than a debugger needs. MIR now
+carries a per-register debug-home mark: a frontend calls
+`MIR_func_debug_homes_only` to opt a function in and `MIR_set_reg_debug_home` to
+mark the registers it describes, and spill-all homes only those marked
+registers; a function no frontend opts in still homes every local (the c2m
+driver and other MIR users are unchanged). c2mir's debug snapshot
+(`c2m_dbg_snapshot_func`) opts each function in and marks the registers it
+reports to the debugger — the named locals and parameters plus the frame block's
+base (`FP_NAME`) — leaving its temporaries to allocate as usual. Every variable
+gdb shows keeps its stable slot; the frame no longer holds one per temporary. On
+`tests/testdebuginfo_frame` (`--std=c17 -g`) the `walk` frame drops from 992 to
+112 bytes (gcc 13 -O0 -g: 112, clang 18 -O0 -g: 128), all printing
+`r=9203375331364059157`. SQLite 3.54.0's testfixture, built `-O2 -g` (which
+madc's `-g` lowers to O0 debug codegen), shrinks `jsonTranslateTextToBlob`'s
+frame from 9496 to 152 bytes; `test/json101.test` 11.0 (1000-deep JSON)
+previously overflowed the 8 MB stack with SIGSEGV and now reports 0 errors out
+of 282, and `testrunner.tcl veryquick` on the madc-built testfixture goes from 1
+error out of 330180 to 0 out of 330461. gdb on madc `-g` of
+`tests/testdebuginfo.mad` (`break`, `info args`, `info locals`) still prints the
+same values as gcc -O0 -g.
+
+### `-l<name>` links what ld finds for it, and an image records what ld records
+
+madc's driver now reads a `-l<name>` library as `ld` does. It searches the `-L`
+directories, then the toolchain's library directories (probed at build time like
+the include paths), for `lib<name>.so`, then `lib<name>.a`, and records the
+shared object it finds by its `DT_SONAME` — `libz.so` is the dev link, so an
+image needs `libz.so.1`. A linker script links its members (`libncurses.so` is
+`INPUT(libncurses.so.6 -ltinfo)`, so `-lncurses` records `libncurses.so.6` and
+`libtinfo.so.6`); an archive with no members links nothing (glibc 2.34+ ships
+`libdl.a` / `libpthread.a` as such stubs, their symbols now libc's), and a
+static archive with members is refused. Previously a `-l<name>` was spelled
+`lib<name>.so` and recorded or opened verbatim: a JIT run refused `-lpthread`
+(`failed to load libpthread.so`), and an AOT image recorded `libpthread.so`,
+`libdl.so` and `libz.so` and did not load (SQLite's testfixture:
+`libdl.so: cannot open shared object file`). On an ELF host `madc_module_open`
+reads a library through the new `src/madc_link_files.cpp`, and the native lanes
+record each library's `DT_NEEDED` through it. `tests/testaot_ld_libs` runs
+`-lscripted -lempty -lpthread -ldl -lz` against the gcc/clang oracle: the program
+prints `pthread=1 dlsym=1 zlib=1 twice=42` and the image's `NEEDED` is
+`lib/libtwice.so`, `libz.so.1` (nothing for `-lpthread` / `-ldl` / the empty
+archive). SQLite 3.54.0's testfixture, built and linked by madc, runs
+`select1.test` with 0 errors out of 199 tests. Continues KG gap
+`cli_multiple_sources_compile_and_link`.
+
+### `-L<dir>` searches for `-l` libraries and `-Wl,-rpath,<dir>` sets a produced image's run-time path
+
+madc's driver now accepts gcc's `-L<dir>` and `-Wl,-rpath,<dir>`. `-L<dir>` (or
+`-L <dir>`) adds `<dir>` to the directories searched for each `-l` library,
+ahead of madc's own lib directory and the loader, in ld's `-L` order; a JIT run
+opens the located library, and an AOT image names the library so the loader
+finds it at run time. `-Wl,-rpath,<dir>` (and `-Wl,-rpath=<dir>`) append `<dir>`
+to the produced image's run-time library path (`DT_RUNPATH` / `LC_RPATH`), after
+madc's own runtime arms, once each; PE carries no runpath. Any other `-Wl,`
+linker option is refused with a loud error, never dropped silently.
+`tests/testaot_link_dirs` runs both spellings against the gcc/clang oracle: a
+`-l` library is found through `-L` wherever it stands on the line, an image
+linked with `-Wl,-rpath` runs with no environment help, and the same image
+without it does not load. Completes the `-L` and `-Wl,-rpath` part of KG gap
+`cli_multiple_sources_compile_and_link`.
+
+### Several source operands on an artifact lane build as a project of translation units
+
+madc's driver now matches gcc's: `madc -o prog a.c b.c` links the sources into
+one program, and `madc -c a.c b.c` writes one object per unit (`a.o`, `b.o`) in
+the working directory. When every operand on an artifact lane (`-o`, `-c`,
+`-shared`) is a compiler unit, the operands become a `ProjectManifest` routed to
+the `--project` AOT lane — one `.o` per unit for `-c`, one image for `-o` /
+`-shared` — each unit built under the command line's `--std`, `-I` and `-D`.
+Previously every source after the first was refused ("unconsumed arguments after
+'a.c' in AOT mode"). An operand that is no compiler unit still keeps the
+single-source lane's loud refusal. `tests/testaot_multi_source` runs both shapes
+against the gcc/clang oracle (`sum=12 std=201112`; `a.o` and `b.o` written).
+Closes the multi-source part of KG gap
+`cli_multiple_sources_compile_and_link`; `-L` and `-Wl,` are follow-up commits.
+
+### A `(` after `=` opens a grouping, not a call through the function pointer on the left
+
+`Program::parseExpr_operatorArm`'s variable-function-pointer invocation arm
+("Direct invocation through a function-pointer variable wrapped in parens")
+gated its `(`-is-call test on `!opstack_has_pending_op`, a scan for pending
+operators of precedence below 14 that does not count `=`. In `fp = ((T)-1)` the
+`(` after `=` was taken as `parseCallFunc(fp)`, so the assignment lost its right
+operand and parsing failed with "Missing operand" (SQLite's `SQLITE_TRANSIENT`,
+`((sqlite3_destructor_type)-1)`, in `src/test1.c`, during the testfixture
+build). The arm now gates on `paren_binds_to_receiver`, the adjacency owner the
+member and subscript arms already read: the `(` binds as a call only when the
+token before it ends the operand (an identifier, `)` or `]`). `fp = ((T)-1)`
+assigns the cast, and `1 + (fp)(3)` still calls through the pointer.
+`tests/testfnptr_assign_paren` runs both shapes against the gcc/clang oracle
+(`1 1 1 1 7 16 12`). Closes KG gap
+`c_paren_after_assign_called_through_fnptr_lhs`.
+
+### glibc's own `__bswap_16/32` are no longer renamed to the madc byteswap helpers
+
+`Program::_tokenizer_init`'s `define_map` renamed both the gcc builtins
+`__builtin_bswap16/32/64` and glibc's own `__bswap_16` / `__bswap_32` to the
+runtime helpers `__madc_bswap16/32`. glibc's `<bits/byteswap.h>` defines
+`__bswap_32` as a static-inline wrapper over `__builtin_bswap32`, so after both
+renames the header's definition lexed as `__madc_bswap32(x) { return
+__madc_bswap32(x); }` — a TU-local function calling itself, shadowing the helper
+and recursing to a stack overflow (the SQLite shell built by madc crashed in
+`sqlite3Get4byte` on its first `select 1;`). The `__bswap_16` / `__bswap_32`
+alias rows are removed; `__builtin_bswap*` still lower to the helpers.
+`tests/testbswap_glibc_inline` runs `__builtin_bswap*` plus glibc's
+`bswap_16/32/64` and `htonl` through `<byteswap.h>` against the gcc/clang oracle
+(`44332211 44332211 2211 8877665544332211 44332211 b2a1`), with
+darwin/win64/wine64 skip fixtures for the glibc-only headers.
+`tests/testbuiltinbswap` is repointed from the bare `__bswap_32` at
+`__builtin_bswap32`. Closes KG gap
+`lexer_glibc_bswap_inline_renamed_to_self_recursion`.
+
+### A host-call shim passing a `const char *` result to its string setter no longer warns
+
+A function returning `const char *` gets a host-call shim whose step-5 result
+setter is `madc_value_set_string` / `madc_value_set_string_n`, declared with a
+`const char *text_value` parameter in `include/madc_api.h`. The shim generator
+spelled that parameter `char *`, so c2mir's `check_assignment_types` warned
+"discarding type qualifiers in passing argument" — with no source position, the
+call being synthesized — once per `const char *`-returning function (nine times
+over the SQLite amalgamation: `sqlite3_libversion`, `sqlite3_errstr`,
+`sqlite3_uri_parameter`, ...). The two `ExternParam` spec lists for those
+setters now spell the text parameter `const char *`, matching the C API, so the
+shim compiles without diagnostics. `tests/testshim_const_text` runs a
+`const char *`-returning function against the gcc/clang oracle
+(`3.54.0 error mut`) with an empty-stderr fixture. Closes KG gap
+`cir_shim_text_setter_prototype_drops_const`.
+
+### A function pointer whose return type is a function-pointer typedef keeps its full declarator
+
+A member, global or local declared `sp (*xGet)(const char *)` — a function
+pointer whose return type is the function-pointer typedef `sp` — now emits the
+full `ret (*name)(params)` declarator, not the alias `sp xGet`. The alias
+spelling erased both the signature and the pointer, so `xGet("a")()` was refused
+("too many arguments", "called object is not a function or function pointer")
+and SQLite's VFS table initializer (`sqlite3_syscall_ptr (*xGetSystemCall)(sqlite3_vfs *, const char *)`)
+warned. `fnptr_alias_is_fn` decided whether the alias names a function pointer;
+it now decides whether the alias is THIS declaration's own type — the alias's
+own fn-pointer or a function type under its `*`, sharing the declaration's target
+signature — so a return-type alias expands inline while a declaration whose type
+IS the alias (`sp plain`, `DO_FUN *fn`, `getter tget`) keeps it.
+`tests/testfnptr_ret_alias` runs the member, global, local, parameter and alias
+forms against the gcc/clang oracle (`a b c p t plain do=9`). Closes KG gap
+`cir_fnptr_returning_fnptr_alias_spelled_as_alias`.
+
+### A struct member that is a pointer to a function pointer keeps its fn-pointer pointee
+
+A struct member `void (**aExt)(void)` now declares a pointer to a function
+pointer, not `long long *aExt`. The member was spelled through the generic arm,
+which peeled every pointer level and rendered the `DataDefFPTR` base as its
+64-bit rawtype — so `aExt[i] == xInit` compared an integer with a pointer and
+`aExt[i]()` was refused ("called object is not a function or function pointer";
+SQLite's `sqlite3AutoExtList`). `member_node` now spells such a member through
+the one declaration owner's pieces (`pointer_to_fnptr_pieces`, shared with
+`var_decl`/`param_decl`), ahead of the member's own array dims and a flexible
+array; a typedef-alias member keeps the alias path. `tests/testfnptr_ptr_member`
+runs the member, an array of them and a typedef form against the gcc/clang
+oracle (`n=2 same=1 calls=3 tab=21 alias=8`). Closes KG gap
+`cir_pointer_to_fnptr_member_spelled_long_long`.
+
+### `->` on an array of const structs reads its first element without a crash
+
+`const struct S b[1]; b->n` now reads `b[0].n` (the array decays to its first
+element). The `->` member access read the const-qualified element type through
+a hard `DataDefSTRUCT` cast, which walked the `DataDefQUAL` wrapper as a struct
+and died with SIGSEGV in `DataDefSTRUCT::m_offset`. The fixed-array arrow now
+derives the layout from the unqualified element type, as the const-pointee
+branch already did; the element's const still qualifies the member's type, so a
+write through `b->n` stays refused. `tests/testconstarray_arrow` reads the
+members (`a=4 b=7 b0=7 tab=8 in=5 tin=6`) and `tests/testconstarray_arrow_err`
+rejects the write, both against the gcc/clang oracle. Closes KG gap
+`const_struct_array_arrow_sigsegv`.
+
+### A cast to a pointer to a function pointer keeps its fn-pointer pointee
+
+`(fp *)v` and `(int (**)(int))v` now cast to a pointer to a function pointer.
+The cast's type name was spelled `(long long *)` — peeled to the `DataDefFPTR`,
+the base printed its 64-bit rawtype — so a call through the cast's deref called
+an integer and c2mir refused it ("called object is not a function or function
+pointer"; SQLite's `(**(finder_type*)pVfs->pAppData)(zFilename, pNew)`). The
+cast's type name now shares the declaration owner's pieces
+(`pointer_to_fnptr_pieces`), rendering `(int (**)(int))`.
+`tests/testfnptr_ptr_cast` runs the typedef and spelled-out forms, the deref
+call, the nested deref and the param form against the gcc/clang oracle
+(`sum=30 finder=7 param=10`). Closes KG gap
+`cir_pointer_to_fnptr_cast_spelled_long_long`.
+
+### A bare function name right of a comparison decays to its address
+
+`p->xCmp == cmp` now compares two function pointers. A bare function name
+beside `==` `!=` `<` `<=` `>` `>=` `&&` `||` `&` `|` `^` is its address
+(function-to-pointer decay), never a call — on either side of the operator.
+Before, only a name FOLLOWED by such an operator decayed; a name AFTER one
+(the right operand) became a zero-argument call `cmp()`, which c2mir refused as
+"too few arguments" (SQLite's `p->xCmp==sqlite3BinaryCompare` and
+`db->xWalCallback==sqlite3WalDefaultHook ? ... : 0`). The right operand now
+decays like the left; the operator set is one predicate used for both sides.
+`tests/testfn_compare_rhs` runs the swapped, member, address-of, ternary and
+`&&`/`||` forms against the gcc/clang oracle
+(`local=1 swap=1 addr=1 dot=1 arrow=1 ne=0 or=1 null=1 tern=7 other=3 and=1`).
+Closes KG gap `c_function_name_right_of_comparison_called`.
+
+### A `T *const p`'s own const no longer refuses writes through `p->m`
+
+`struct S *const db = h->db; db->n--;` now writes the pointee. A `T *const p` is
+a const pointer to a modifiable object, so `p->m` is a writable lvalue (C11
+6.5.2.3p4, [expr.ref]); the member is qualified only as the pointed-to type is.
+The pointer variable's own const declaration (`vfCONSTANT` / `vfCONSTDECL` /
+`vfCONSTBAKED`) rode into the member's proxy variable, so every write through it
+was refused ("decrement of read-only variable 'n'" — SQLite's
+`vdbeCloseStatement`: `sqlite3 *const db = p->db; db->nStatement--;`). An arrow
+member access now drops those flags from the proxy; a dot access keeps them. A
+write to a member of an actual const object stays refused — through a pointer to
+const (`p->a`), on a const object (`c.b`), and through a const pointer to const
+(`q->d`). `tests/testconstptr_member_write` runs the writable cases against the
+gcc/clang oracle (`r=6 n=9 d=42 cq=9`); `tests/testconstptr_member_write_err`
+pins the three refusals that stay. Closes KG gap
+`c_const_pointer_member_write_refused`.
+
+### `-fPIC` is accepted and options may follow the source on an artifact lane
+
+`-fPIC` / `-fpic` / `-fPIE` / `-fpie` are accepted no-ops (a `madc -c` object
+links into a `gcc -shared` library with no text relocations, an executable is
+PIE unless `-no-pie`), so SQLite's `-fPIC`-bearing build command is read. On an
+artifact lane (`-c` / `-shared` / `-r` / `-o` / `--emit-*`) options and the
+source interleave as gcc's do: `-fPIC -c x.c -fpic -fPIE -fpie -DVAL=7 -o x.o`
+and `-o $@ -c x.c -I...` write the object and exit 0. Before, `-fPIC` was read
+as the source file name and any option after the source was refused as an
+unconsumed argument. A second source operand on a `-c` lane is still refused
+loudly, never silently dropped. With no artifact flag ahead of the source, what
+follows the source stays the program's argv. `tests/testaot_flags_after_source`
+runs the three cases against the gcc/clang oracle;
+`tests/testaottrailingargv` pins the second-operand refusal. Closes KG gap
+`cli_fpic_and_flags_after_source`.
+
+### A condition's closing `)` never continues into a postfix call
+
+`if( fp ) (void)0;` for a function-pointer `fp` now parses as the condition `fp`
+and the statement `(void)0`, and SQLite's
+`if( xBusy2 ) (void)walEnableBlocking(pBt);` is accepted. An if / while condition
+reads through `parseExpression(..., stop_on_closing_paren=true, initial_brackets=1)`
+— the caller consumed the `(`. The closing-paren arm of
+`Program::parseExpr_operatorArm` continued a parenthesized sub-expression
+(`(ch)->x`) into a postfix call when the operand had a function or
+function-pointer type, so the `)` that returned brackets to 0 and was followed by
+`(` read `if( fp ) (void)0;` as the call `(fp)(void)` and refused the file with
+"Expecting identifier". A `)` that closes a caller-opened paren
+(`initial_brackets > 0`) now admits no postfix continuation.
+`tests/testif_fnptr_paren_stmt` runs a function-pointer condition followed by a
+`(void)`-prefixed statement against the gcc/clang oracle, closing KG gap
+c_if_condition_fnptr_then_paren_read_as_call.
+
+### The middle operand of `?:` is a whole comma expression
+
+`x ? (v = 7), 3 : 4` now parses: the middle operand of `?:` runs to the matching
+`:` as a whole expression, comma operators included (C11 6.5.15:
+logical-OR-expression ? expression : conditional-expression), so SQLite's
+`getVarint32` (`(*(A) < 0x80) ? ((B) = *(A)), 1 : slow(A, &B)`) is accepted.
+`parseExpression` stops at a top-level `,` by design — a call argument, a for
+clause and an initializer rely on it — and the `?:` arm read its middle operand
+with one `parseExpression` call, so the operand stopped at the comma and the
+ternary was refused with "Expecting : in ternary expression". The comma-chaining
+loop `parseExprStmt` ran over each `parseExpression` (push_back_comma + a peek
+loop building TokenComma) is lifted into `Program::parse_comma_expression`, which
+`parseExprStmt` now calls unchanged in behaviour and the ternary middle operand
+calls in conditional/ternary-branch mode. `tests/testternary_middle_comma` runs
+`?:` middle operands with embedded commas, a nested `?:`, and a call taking the
+conditional as its one argument against the gcc/clang oracle, closing KG gap
+c_ternary_middle_operand_comma_expression.
+
+### A cast through a typedef name heads an integer constant array bound
+
+`int a[(u32)4];` for `typedef unsigned int u32;` now folds to a constant array
+bound, and SQLite's `BITVEC_NPTR` (`((u32)(64/sizeof(Bitvec *)))`) is accepted as
+one. The lexer leaves a typedef or class name an identifier token;
+`parseExpression`'s cast arm resolved it, but the constant-expression folder
+(`Program::parse_constant_primary`'s cast gate and
+`Program::constant_cast_type_id_extent`) admitted only a type token, so `(u32)4`
+read as a parenthesized expression — `(unsigned)4` folded — and `int g1[(u32)4];`
+was refused with "Expecting integer constant expression". A new owner
+`Program::unqualified_type_name_datadef` answers whether an unqualified identifier
+names a type a cast may start with — the live scope's typedef / class name, else
+the class being defined's member type; a struct tag is no answer, since in C
+`(S)x` without `struct` is no cast. The constant folder's two sites now ask it, as
+do the two sites that spelled the same test by hand (`parseExpr_operatorArm`'s
+cast arm and the static-const capture scan in
+`constant_initializer_has_runtime_access`). `tests/testarraydim_typedef_cast`
+folds `(u32)4`, `(unsigned)4`, `BITVEC_NPTR` and a struct/union member array bound
+against the gcc/clang oracle, closing KG gap c_array_dim_typedef_cast_not_folded.
+
+### A subscript of a call returning a reference to an array types its element as the array's own
+
+`ra()[i]` for `int (&ra())[3]` now has element type `int`: `sizeof(ra()[0])`
+is 4 and an `auto` bound to it deduces `int`. A subscript of a reference to a
+multi-dimensional array (`int (&rm())[2][3]`) has its ROW as the element —
+`sizeof(rm()[1])` is 12. The generic-expression subscript arm of
+`Program::parseExpr_operatorArm` had admitted any reference base and kept the
+referent as the element; the referent of a reference-to-array is a real
+`DataDefCArray`, so the element was the whole array and `sizeof(ra()[0])` was
+12 (g++/clang++: 4). The arm now admits an array value through
+`DataDef::as_carray_dd` and types the element as `DataDefCArray::element_type`;
+a reference to a non-subscriptable type is no longer admitted, since a subscript
+of a scalar is invalid C++. `tests/testsubscript_ref_call` gains arr-v /
+arr-sizeof / arr-auto-sizeof / row-sizeof / row-v against the gcc/clang oracle,
+closing KG gap sizeof_subscript_of_ref_to_array_call.
+
+### A subscript of a call returning a reference or a carrier by value types its element
+
+A subscript whose base is a call returning a reference (`int *&rp()`) or a
+carrier by value (`var make(long)` → `make(2)["rows"]`) now types its element
+correctly. The generic-expression subscript arm of
+`Program::parseExpr_operatorArm` read the base's `datadef()` directly: a
+reference-returning call answered `is_pointer()`, so `rp()[0]` took the referent
+pointer (`int *`) as its element — `sizeof(rp()[0])` was 8 and an `auto`
+bound to `rp()[0]` deduced as a pointer (g++/clang++: 4 and `int`) — while a
+carrier returned by value had no case at all and was refused at parse with
+"Expecting a name in lambda capture list". The arm now reads the base's value
+through `operand_value_type` (the one owner every operator reads an operand
+through; a reference denotes its referent) and types a carrier base through
+`Program::madc_array_subscript_type`, the slot model the named-variable and
+expression-base subscript arms already use. A call returning a reference to an
+array still parses and reads its element value as before; the separate
+sizeof-of-an-element defect is recorded (KG gap
+sizeof_subscript_of_ref_to_array_call).
+`tests/testsubscript_ref_call` covers the reference-returning call against the
+gcc/clang oracle; `tests/testcarrier_byvalue_call_sub` covers the by-value
+carrier (copy, `php::count`, range-for, chained subscript) against the C++
+oracle, the range-for holding the temporary alive per C++23 [stmt.ranged]/5.
+
+### An imported module member is declared and called by its real prototype
+
+An `import name as ns;` namespace member (`math::sqrt`, `libc::strcmp`,
+`libc::llabs`) is now declared with the same prototype an undeclared bare call
+of its name takes — the pack's real prototype when it carries one, else the libc
+return types and `<math.h>` parameter shapes (`dynamic_symbol_fallback_signature`)
+— and its slot is called through a pointer of that declared type.
+`Program::resolve_module_member` had registered every alias member as `{dtINT64}`
+and `CirBuilder::dyn_module_callee` cast its dlsym slot to a K&R `long (*)()`, so
+a double result read as an integer and a float argument promoted to double:
+`math::sqrt(2.0)` printed 1, `math::pow(2.0, 10.0)` 4652218415073722368,
+`math::floorf` and `fmodf` read garbage, and `libc::strcmp`'s signed int result
+read as an unsigned 32-bit value. The member now adopts the export's prototype
+through `forest_adopt_declared_function` and the new
+`Program::typed_module_member` (a bodyless, symbol-less copy under the member id,
+registered through `register_forest_func` as `register_builtin_twin_alias`
+registers its copy), and every member casts through its declared type via
+`fnptr_decl_pieces`; the `FuncDef::dyn_module_typed` flag is deleted.
+`tests/testimport_member_types` covers the double, float, signed-int and
+long-long shapes against the gcc/clang oracle.
+
+### A range-for over a class container returned by a call reads its referent
+
+A C++11 range-for whose range is a call returning a class container by reference
+(`std::vector<int> &vec()`) or by value (`std::vector<int> make()`), or a
+reference parameter (`std::vector<int> &v`), iterates the referent/temporary and
+evaluates the range expression once ([stmt.ranged]/1 binds `auto &&__range`
+before the loop) rather than once per `size()` / `operator[]` / `begin()` call.
+The address of a class-object expression used as an object is now one helper,
+`class_object_expr_addr` (`src/cir_builder.cpp`): a by-value call receiver is
+materialized into an addressable temporary and a reference-returning call is
+re-wrapped with `&` over the referent lvalue, so c2mir no longer rejects the
+receiver with "incompatible argument type for pointer type parameter". It is the
+body lifted out of `class_this_arg`'s parent-expression arm. `translate_foreach_class`
+and `translate_foreach_iterator` previously each carried a divergent receiver
+lambda with no reference-call or by-value-call case; both now capture the range
+once into a `struct C *__fe_r_N` prelude declaration via `capture_class_range`,
+and a plain named range variable routes through the named-object owner
+`object_var_addr` via the shared `range_named_variable` predicate.
+`tests/testrangefor_ref_call` covers the reference-call, by-value-call and
+reference-parameter shapes against the g++/clang++ oracle.
+
+### A reference-returned carrier, subscripted or iterated, reads its referent
+
+A carrier returned by reference from a call (`var &fill(var &out, ...)`),
+subscripted or iterated in place, reads the referent carrier and runs its range
+expression once. A keyed carrier subscript and a reference-returning carrier
+call translate to a value lvalue (an `N_DEREF`); their object address is
+re-wrapped with `&` before it is used as a receiver, so `fill(a)["rows"]` reads
+the `"rows"` slot of the referent instead of indexing the value object's `long[]`
+buffer words — formerly an empty count, and a SIGSEGV on the copy. The address
+of a carrier-valued expression is now one helper, `carrier_expr_addr`
+(`src/cir_builder.cpp`), shared by the carrier-receiver and range-for paths, and
+the keyed-subscript and element-read tests ask `operand_value_type` for the
+base's value type so a reference-typed base denotes its referent. A C++11
+range-for over a carrier call binds its range once into a `void *__fe_r_N`
+capture ([stmt.ranged]/1) emitted before the loop, so a range expression with
+side effects (`fill(a)`, `fill(a)["rows"]`) runs once rather than once per test
+and per element fetch. `tests/testcarrier_ref_call` covers both shapes against
+the g++/clang++ `std::map<std::string, std::vector<long>>` oracle.
+
+### Dialect faces for a project manifest's one reader and writer
+
+`madc::project_manifest_read`, `project_manifest_create`,
+`project_manifest_add_tu`, `project_manifest_remove_tu`,
+`project_manifest_set_kind`, `project_default_output`, `project_events_path`
+and `project_kind_name`, declared in `<ns_madc>`, expose madc's one reader and
+writer of a `<base>.prj.json` manifest (`include/madc_project.h`) to the
+dialect, so a host edits the file by madc's rules rather than a copy of them:
+each TU's `file` is resolved against the manifest's directory as the
+`--project` lane reads it, an added TU is named relative to that directory when
+it lies below it, an unknown kind word is refused with its reason, and every
+key madc does not model — an IDE's `commands` — rides through each
+read-modify-write and comes back under `json`. The manifest's kind vocabulary
+is one enum text, `<bits/project_enums>` (`madc::project_kind`, which the
+engine's `ProjectKind` now aliases). `project_manifest_set_kind`
+(`src/madc_project.cpp`) is a new writer verb that records the kind's word,
+`console` written too. `include/madc_project.h` is registered in
+`scripts/dialect_faces.tsv`; `tests/testproject_manifest_faces` and a
+`test_project_manifest` unit case cover the faces. madcide drops its own
+manifest parse and stringify, its kind enum and its events-path copy and calls
+the faces.
+
+### One user-configuration-directory rule, with a Windows %APPDATA% arm
+
+`madc::cfg::user_config_dir` and `user_config_dir_of`
+(`include/madc_config_file.h`) are the single rule for a product's user
+configuration directory: `$XDG_CONFIG_HOME/<app>` when it is set on any host,
+else `%APPDATA%\<app>` on Windows, else `~/.config/<app>`, and `""` when none is
+known. `user_config_dir_of` takes the rule's inputs as arguments, so every
+platform's arm is testable on any host, while `user_config_dir` reads this
+process's environment. The `madc.ini` search and the `--mcp` source directory
+(`<user-config>/madc/mcp/`) both read it, replacing the former
+`config_file::user_config_dir` static method. The Windows `%APPDATA%` arm is
+new: a `madc.ini` user file on Windows was previously looked for only under
+`$HOME/.config`, which Windows rarely sets. `madc::user_config_dir` and
+`user_config_dir_of` (`<ns_madc>`) expose the rule to the dialect, registered in
+`scripts/dialect_faces.tsv`, so a host keeps its settings where madc keeps its
+own. `tests/testuserconfigdir` and a unit case in `test_config_file` cover the
+arms; madcide drops its own `config_dir_of` copy and calls the face.
+
+### Dialect faces for a path's extension, stem and parent directories
+
+`madc::path_drop_extension`, `madc::path_stem` and `madc::path_make_parents`,
+declared in `<ns_madc>`, expose the host path owners
+`host_path_drop_extension`, `host_path_stem` and `host_path_make_parents`
+(`src/madc_posix_io.h`) to the dialect, so a host names an artifact or makes a
+directory by madc's one rule rather than a copy of it. The extension is what
+follows the last dot of the final path component: a dot in a directory and a
+leading dot are not extensions, so `path_drop_extension("dir.d/foo.c")` is
+`dir.d/foo`, `path_drop_extension("dir.d/foo")` and
+`path_drop_extension(".bashrc")` are unchanged, and `path_stem("dir/foo.tar.gz")`
+is `foo.tar` while `path_stem("dir.d/.hidden")` is `.hidden`. `path_make_parents`
+creates every missing directory above a path and leaves the final component
+alone. `src/madc_posix_io.h` is now registered in `scripts/dialect_faces.tsv`,
+with every public carrying a face or an exempt reason, and `tests/testpath_faces`
+covers the faces. madcide drops its own `path_sans_ext` and `dir_ensure` copies
+and calls these faces instead.
+
+### Every function and innermost loop head starts a 32-byte block on x86-64
+
+- MIR's generator now aligns function entry and loop heads the way gcc -O2 and clang -O2 do. On x86-64 every function and every innermost loop head starts on 32, every other loop head on 16 (or on 8 when 16 would cost more than 10 bytes of padding), in the JIT's code pages and in the `-c` object and `-o` executable; the other MIR targets keep functions on 16 and align no loop head. `MIR_TARGET_CODE_ALIGN` is 32 on x86-64 and 16 elsewhere, and the ELF, PE/COFF and Mach-O writers place code so the first function lands on it.
+- Before, MIR aligned functions to 16 and only x86-64 innermost loop heads to 8 at -O2, so a hot loop fell wherever the code before it left it: `funnkuch-reduce` (c-benchmarks, -O2) ran 1945 ms or 2300 ms with identical instructions, by the 16-byte position of its function. On this build the c-benchmarks' geometric mean over 19 is 0.988 of the packaged 0.105.0, outputs identical; code generation is otherwise unchanged.
+- A short-or-long branch is now chosen against a tightened forward-address estimate. B232 counts each loop head's padding at its upper bound in the generator's single size pass, where MIR decides each branch's encoding; that raised a forward label's estimated address, so after B232 alone `heapsort` ran +2.5% over the packaged 0.105.0 — its inner-loop-exit `jge` came out a 6-byte long jump where gcc 13 -O2 and the pre-B232 build emit a 2-byte short one. On x86-64 a not-yet-emitted forward label's estimate is now reduced by the padding every earlier loop head saved against its bound (`label_pad_slack`), which stays an upper bound on the real address; an already-emitted label's address is exact. heapsort over six code placements then averages 1.005 of 0.105.0, funnkuch-reduce 0.933 and virtual-call 0.993, and the c-benchmarks' geometric mean over 19 is 0.985 (`oggenc` excluded). Code generation is otherwise unchanged.
+- The size pass also counts a `MIR_SWITCH`'s jump table at `(nops - 1) * 8 + 7` bytes, covering the up-to-7 pad bytes pass 2 inserts to align the table to 8; the estimate had left them out, and an estimate below the real address can let a short jump be chosen whose displacement does not fit (`gen_assert`, the only patch-time check, is compiled out of the `-O3 -DNDEBUG` MIR build).
+- Tests: `tests/testloopalign.mad` (C, -O2) prints `1152 2400 24`, the output of gcc 13 and clang 18; `scripts/loop_align_gate.sh` (in `make gates`) checks the object's and executable's function and loop-head addresses on x86-64.
+
+### long double is 8 bytes on darwin arm64
+
+- The aarch64 c2mir target now predefines `__SIZEOF_LONG_DOUBLE__` as 8 under `MIR_TARGET_APPLE_P` and 16 otherwise, so the size agrees with the mantissa the same file's Apple arm already sets (`__LDBL_MANT_DIG__ __DBL_MANT_DIG__`, long double is double on darwin arm64). Before, it defined 16 for every aarch64 target, so darwin arm64 claimed a 16-byte long double with a double's 53-bit mantissa. clang on the build container defines `__SIZEOF_LONG_DOUBLE__ 8` and `__LDBL_MANT_DIG__ 53` for `--target=arm64-apple-macos`, and 16 and 113 for `--target=aarch64-linux-gnu`.
+- `third_party/mir/mir.h`'s `MIR_LD_IS_D` reads the predefine — `__SIZEOF_LONG_DOUBLE__ == 8` makes `MIR_T_LD` an `MIR_T_D`, so the MIR source c2mir compiles for darwin arm64 treats long double as double.
+- The existing `tests/testldoublelayout.mad` checks `sizeof(long double) == __SIZEOF_LONG_DOUBLE__` and the alignment; on darwin arm64 it printed `size 0` with the old value.
+
+### An ELF image names only the libraries its imports reach (issue #8)
+
+- An image or object madc emits on ELF now names in DT_NEEDED only the libraries its strong imports reach, as gcc's and g++'s `--as-needed` link does. `madc -o hello hello.c` for a plain C program produces an ELF whose DT_NEEDED is libc.so.6 alone; a `sqrt` call built with `-lm` adds libm.so.6; the `madc -c` then `madc a.o -o` object-link lane names the same set; a C++ program keeps libstdc++.so.6. Before, every ELF image carried libmadc's full implicit runtime set — libstdc++.so.6, libgcc_s.so.1 and libm.so.6 — even for a plain C program. gcc and g++ on the build container name libc.so.6 for the C program and add libm.so.6 for the sqrt call.
+- The C++ runtime has been an unconditional DT_NEEDED of every ELF image since the direct ELF writer (2a598e4d5, 2026-07-20). The Mach-O writer already drops libc++ unless an import is `_Z...` or `__cxa_...` (`cir_apple_extra_dylibs`), and libmadc.so.0 was already dropped when no import reaches it (`cir_import_covered`); the ELF arm had neither for the implicit runtime libraries.
+- `CirLinkEnv` (`src/madc_cir.h`) now carries `needed` plus `as_needed` — the members `cir_native_link_env` adds on its own (the stdlib flavor's C++ runtime, libgcc_s and libm), minus any library the program named with `-l`. `cir_elf_needed` is the one ELF DT_NEEDED selector for the source-image and object-link lanes: libmadc.so.0 unless the image is runtime-free, and each `as_needed` member only when `cir_library_defines_import` finds one of the image's strong imports defined in that library's own image — dlsym through the library's handle, then dladdr to confirm the defining object. An unmapped library or a cross target keeps the member.
+- Gate: `scripts/forest_ledger_gate.sh` leg 10 (in `make gates`) holds madc's NEEDED list equal to gcc's for a plain C image and a sqrt image, runs each with an empty library path and checks it prints gcc's output, checks the `.o` link lane the same way, and requires a C++ image to keep its C++ runtime.
+
+### c2mir's built-in `<stddef.h>` defines NULL on every x86-64 target
+
+- c2mir's built-in `<stddef.h>` now defines `NULL` as `((void *) 0)` on x86-64 darwin and Windows as well as Linux, preceded by `#undef NULL` on every target — the shape of gcc's `include/stddef.h` and clang's `__stddef_null.h`, which undefine the macro first so a system header that spelled `NULL` its own way earlier does not collide. C11 7.19p3 has `<stddef.h>` define `NULL`. Before, the x86-64 built-in header defined it only `#if !MIR_TARGET_APPLE_P && !defined(_WIN32)` — upstream MIR removed it for macOS x86-64 (c4d300bf8) and Windows (deb50f4a8); the aarch64, ppc64, riscv64 and s390x built-in headers already define it. On Linux x86-64 the text gains only the `#undef NULL` line.
+- madc compiles its startup members with c2mir's built-in headers only. On the hosted win64 madc the `crt:mir_calls` member (MIR's own `mir-x86_64-calls.c` text) fails with `undeclared identifier NULL`, so the PE falls back to importing `mir.va_arg` and `mir.va_block_arg` from `libmadc-0.dll`; darwin x86-64 takes the same branch. With `NULL` defined the member compiles and the PE defines those symbols as COFF weak externals, importing no `mir.*` name. The `crt:mir_calls` member and the win64 sub-leg of `scripts/forest_ledger_gate.sh` leg 10 that exercises it land in the next commit.
+
+### MIR's call helpers ride the image, so a C program needs no madc library
+
+- A C program whose generated code calls MIR's call helpers — a by-value struct argument over 16 bytes (`mir.arg_memcpy` on x86-64, `mir.blk_mov` on aarch64) or `va_arg` (`mir.va_arg`, `mir.va_block_arg`) — now emits an image and object that carry their own copy of those helpers and need no madc library (issue #8). The issue's program, a 6k-line Lua 5.3 parser in C, before named `libmadc.so.0` in DT_NEEDED for one `mir.arg_memcpy` import with a peak RSS of 10.3 MB; it now NEEDs `libc.so.6` alone with a peak RSS of 1.67 MB, its output byte-identical to gcc's build of the same source. Before, those helpers lived only in libmir inside libmadc, so an image using one imported it and loaded the whole library; `mir.blk_mov` was exported nowhere (static in `mir-gen-aarch64.c`), so an aarch64 image needing it could not resolve it at all.
+- The new image-only startup member `crt:mir_calls` (`src/madc_crt.cpp`) carries MIR's own helper text — `third_party/mir/mir-<target>-calls.c` with its quoted includes inlined, generated at build time by `scripts/gen_rt_text.sh` and compiled once by c2mir into the AOT ledger as a native object — the `crt:personality` pattern (B231). Its functions are file-local; a new `aliases` field on `madc_crt_member` defines the dotted import names C cannot spell (`mir.va_arg=va_arg_builtin`, ...) as weak global symbols at those functions (`MIR_object_add_symbol`), as gcc's `alias` attribute writes one. The member is image-only: the JIT keeps binding libmir's copies.
+- The `mir.*` names become imports only while a function is generated, after the link-time pull has already chosen the link's members, so `cir_crt_objects_merge` first pulls the image-only members generation added — `cir_crt_pull_generated`, a fixpoint over the context's unresolved imports, selecting each named member once and then its objects' strong references. `CirCrtPicks::carrier` names the program whose forest carries those objects.
+- One MIR source, two builds (libmir and the member): `mir-type.h` (`MIR_type_t` and its predicates, self-contained, out of `mir.h`), `mir-x86_64-calls.c` and `mir-aarch64-calls.c` (`va_arg_builtin`, `va_block_arg_builtin`, `mir_arg_memcpy` / `mir_blk_mov` moved verbatim, static under `MADC_RT_IMAGE`), and `mir-aarch64-abi.h` (the aarch64 ABI predicates out of `mir-aarch64.h`); `mir-aarch64.c` now exports `mir.blk_mov`. `gen_rt_text.sh` inlines quoted includes recursively, each file once. x86-64 and aarch64 carry the member; ppc64, riscv64 and s390x have no object writer (JIT only).
+- Gates: `scripts/forest_ledger_gate.sh` leg 10 adds `c_blkarg.c` (a 32-byte struct by value, prints `sum 10`) and `c_vararg.c` (`va_arg` of an int, a double and a 24-byte struct, prints `total 70`) — madc's NEEDED must equal gcc's (`libc.so.6`), and the image runs with an empty library path and prints gcc's output — plus a win64 sub-leg (SKIP without wine) where the PE of both imports no `mir.*` name from any DLL and prints mingw gcc's output; `scripts/macho_exe_dylib_gate.sh` leg C (the cross arm64- and x86-64-macOS images load libSystem alone, bind no `mir.*`, define the helpers, and a `-c` object marks them `weak external`); `scripts/aarch64_ldouble_lane.sh` gains `tests/cross/aarch64_blkarg.c` (a 160-byte struct by value, aot and jit byte-identical to `aarch64-linux-gnu-gcc` under qemu). The win64 PE still imports `libmadc-0.dll` for `__mingw_vfprintf` — a separate defect, BUGS.md B237.
+
 ## [v0.105.0] — 2026-10-15
 
 The live REPL and the pack slices. A `madc -i` session behaves like a buffer you keep editing: a function defined again reaches every caller, an inline one included; a variable defined again is re-initialized in place, an object with a destructor destroyed and constructed again; a type defined again is the same type when its data members are, and otherwise its name's next version (old objects keep `P#1`, mixing versions is a type error, a C++ function for the new version is an `abi_tag`-mangled overload). An edit to the REPL buffer reparses live, Restart and Run All replays the whole buffer and runs its uncalled `main`, and objects with static storage duration are destroyed at exit. On the pack side, the forest pack now serves every system header the platform ships, so a packed madc compiles a program that includes any of them on a machine with no headers on disk, reading the core system headers from libmadc rather than /usr/include; the pack is cut into per-unit slices with a frozen index, so a bind loads and judges only the units a program's includes reach and a compile that binds nothing never decodes the container, while the dialect prelude binds directly from its own frozen unit. madcide 0.8.0 carries the live reparse and Restart and Run All to its REPL pane.

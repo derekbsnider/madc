@@ -1,6 +1,6 @@
 // commonmark_lane.mad — the CommonMark conformance lane's harness (plan
 // docs/plans/2026-10-03-chthonia-windows-macos.md §7d; driven by
-// scripts/commonmark_lane.sh). It reads the spec the madcmark module's
+// scripts/commonmark_lane.sh). It reads the spec the markdown module's
 // pinned cmark-gfm ships (its test/spec.txt, from the dependency's staged
 // source — never copied into this repository), parses each example's
 // Markdown through markdown:: (the module's tree, the one every madcide
@@ -20,6 +20,9 @@
 // Prints `FAIL <example> <section>` per mismatch, then
 // `commonmark: N passed, M failed (of T examples)`; with EXAMPLE, a failing
 // example also prints its Markdown, the wanted HTML and the rendered HTML.
+// A madc without the markdown module fails the import (the lane's harness
+// failure).
+import markdown;
 
 // HTML text escaping (cmark's houdini_escape_html, not secure mode).
 void esc_html(var &out, var &s)
@@ -357,11 +360,6 @@ int main(int argc, char **argv)
     if ( argc < 2 )
     {
 	println(stderr, "usage: commonmark_lane.mad SPEC.txt");
-	return 2;
-    }
-    if ( !markdown::available() )
-    {
-	println(stderr, "commonmark_lane: the madcmark module is not available");
 	return 2;
     }
     var spec;

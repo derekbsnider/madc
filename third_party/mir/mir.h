@@ -175,6 +175,10 @@ typedef enum {
   /* 1 operand insn: */
   INSN_EL (ALLOCA),             /* 2 operands: result address and size  */
   REP2 (INSN_EL, BSTART, BEND), /* block start: result addr; block end: addr from block start */
+  /* The function's own frame address and return address, as the target's ABI
+     defines them (__builtin_frame_address (0), __builtin_return_address (0)):
+     the result operand only. */
+  REP2 (INSN_EL, FRAME_ADDR, RET_ADDR),
   /* Special insns: */
   INSN_EL (VA_ARG),       /* result is arg address, operands: va_list addr and memory */
   INSN_EL (VA_BLOCK_ARG), /* result is arg address, operands: va_list addr, integer (size), and
@@ -190,33 +194,7 @@ typedef enum {
   INSN_EL (INSN_BOUND), /* Should be the last  */
 } MIR_insn_code_t;
 
-#define TYPE_EL(t) MIR_T_##t
-
-#define MIR_BLK_NUM 5
-/* Data types: */
-typedef enum {
-  REP8 (TYPE_EL, I8, U8, I16, U16, I32, U32, I64, U64), /* Integer types of different size: */
-  REP3 (TYPE_EL, F, D, LD),                             /* Float or (long) double type */
-  REP2 (TYPE_EL, P, BLK),                               /* Pointer, memory blocks */
-  TYPE_EL (RBLK) = TYPE_EL (BLK) + MIR_BLK_NUM,         /* return block */
-  TYPE_EL (V128),                                       /* 128-bit vector */
-  REP2 (TYPE_EL, UNDEF, BOUND),
-} MIR_type_t;
-
-static inline int MIR_int_type_p (MIR_type_t t) {
-  return (MIR_T_I8 <= t && t <= MIR_T_U64) || t == MIR_T_P;
-}
-
-static inline int MIR_fp_type_p (MIR_type_t t) { return MIR_T_F <= t && t <= MIR_T_LD; }
-
-static inline int MIR_vector_type_p (MIR_type_t t) { return t == MIR_T_V128; }
-
-static inline int MIR_reg_type_p (MIR_type_t t) {
-  return t == MIR_T_I64 || MIR_fp_type_p (t) || MIR_vector_type_p (t);
-}
-
-static inline int MIR_blk_type_p (MIR_type_t t) { return MIR_T_BLK <= t && t < MIR_T_RBLK; }
-static inline int MIR_all_blk_type_p (MIR_type_t t) { return MIR_T_BLK <= t && t <= MIR_T_RBLK; }
+#include "mir-type.h" /* MIR_type_t and its predicates */
 
 #if UINTPTR_MAX == 0xffffffff
 #define MIR_PTR32 1
@@ -329,6 +307,7 @@ struct MIR_insn {
   unsigned int nops : 32; /* number of operands */
   uint32_t file_id;       /* frontend source file id (0 = none); see MIR_set_source_loc */
   uint32_t line;          /* frontend source line (0 = none) */
+  uint32_t unwind_region; /* cleanup region live here (0 = none); see MIR_set_unwind_region */
   MIR_op_t ops[1];
 };
 
@@ -348,6 +327,61 @@ typedef struct MIR_reg_loc {
   uint32_t reg;      /* 1-based function register number */
   int64_t fp_offset; /* byte offset of the register's stack home from the frame pointer */
 } MIR_reg_loc_t;
+
+/* Unwind regions: what a stack walk needs to run a function's cleanups when an
+   exception passes through it, with no code on the normal path (the gcc/clang
+   call-site table model).  A frontend declares each cleanup variable as a
+   REGION (MIR_new_unwind_region): the variable lives at the function's frame
+   base + offset (MIR_set_func_unwind_base), the cleanup is called with its
+   address, and regions nest through parent (0 = none).  Insns are stamped with
+   the region live at them (MIR_set_unwind_region); MIR_gen records the region
+   at every call that has one. */
+typedef struct MIR_unwind_region {
+  uint32_t parent;    /* enclosing region, 0 = none */
+  int64_t offset;     /* variable offset from the frame base */
+  MIR_item_t cleanup; /* function called with the variable's address */
+} MIR_unwind_region_t;
+
+DEF_VARR (MIR_unwind_region_t);
+
+/* One call site of a generated function in a region, filled by MIR_gen: the
+   code [start, start + len) holding the call (the LSDA call-site table's
+   range; a return address RA is in it when start < RA <= start + len). */
+typedef struct MIR_unwind_call {
+  uint32_t start, len;
+  uint32_t region; /* region live at the call */
+} MIR_unwind_call_t;
+
+/* A generated function's frame, as an unwinder's personality sees it from one
+   of its calls (filled by MIR_gen; valid_p FALSE when MIR_gen did not describe
+   the frame).  The frame base is the value DWARF register base_reg has in the
+   frame plus base_offset: the body's CFA rule (every target moves the CFA onto
+   its frame pointer once it is set) plus the base's CFA offset.  A personality
+   reads the register from its own frame's context (_Unwind_GetGR); the CFA an
+   unwinder reports there is the callee's. */
+typedef struct MIR_unwind_info {
+  char valid_p;
+  char base_p;          /* base_reg and base_offset are known */
+  uint32_t base_reg;    /* DWARF register number */
+  int64_t base_offset;  /* frame base = base_reg + base_offset, rounded up to base_align */
+  uint32_t base_align;  /* the frame base's alignment rounding (0 = none) */
+  size_t ncalls;        /* the calls in a region */
+  MIR_unwind_call_t *calls; /* in code-offset order */
+} MIR_unwind_info_t;
+
+/* The region table of a function with regions and a personality
+   (MIR_set_func_unwind_personality): MIR_gen points the function's FDE at it as
+   the LSDA (CIE augmentation "zPLR"), and the platform unwinder hands it to
+   the personality (_Unwind_GetLanguageSpecificData).
+     u8    MIR_UNWIND_TABLE_VERSION
+     u8    the cleanup pointers' encoding (a DW_EH_PE_* byte: absptr in the JIT)
+     uleb  base_reg, sleb base_offset, uleb base_align (MIR_unwind_info_t)
+     uleb  the number of calls; per call: uleb start, uleb len, uleb region
+     uleb  the number of regions; per region (region N is the Nth): uleb parent,
+           sleb offset, the cleanup pointer
+   Call ranges are offsets from the function's start (_Unwind_GetRegionStart): a
+   return address RA is in one when start < RA - function start <= start + len. */
+#define MIR_UNWIND_TABLE_VERSION 1
 
 /* Definition of double list of insns */
 DEF_DLIST (MIR_insn_t, insn_link);
@@ -371,6 +405,8 @@ typedef struct MIR_func {
   char vararg_p;                  /* flag of variable number of arguments */
   char expr_p;                    /* flag of that the func can be used as a linker expression */
   char jret_p;                    /* flag of jcall/jret func, set up after MIR_func_finish */
+  char noinline_p;                /* flag of a func never inlined: MIR_set_func_noinline */
+  char frame_query_p;             /* flag of a func with MIR_FRAME_ADDR or MIR_RET_ADDR */
   VARR (MIR_var_t) * vars;        /* args and locals but temps */
   VARR (MIR_var_t) * global_vars; /* can be NULL */
   void *machine_code;             /* address of generated machine code or NULL */
@@ -382,6 +418,15 @@ typedef struct MIR_func {
   size_t line_map_len;      /* number of entries in line_map */
   MIR_reg_loc_t *reg_locs;  /* local reg -> frame slot, or NULL; filled by MIR_gen in spill-all mode */
   size_t reg_locs_len;      /* number of entries in reg_locs */
+  /* DWARF call frame instructions of the function's FDE, after its target's CIE
+     (MIR_gen_cfi_cie), or NULL; filled by MIR_gen on targets that describe frames */
+  uint8_t *cfi;
+  size_t cfi_len;
+  MIR_reg_t unwind_base_reg; /* the frame base regions are relative to, 0 = none */
+  uint32_t unwind_base_align; /* its alignment rounding (0 = none) */
+  VARR (MIR_unwind_region_t) * unwind_regions; /* region N is element N-1; NULL if none */
+  MIR_item_t unwind_personality; /* the routine the function's FDE names, or NULL */
+  MIR_unwind_info_t unwind;  /* filled by MIR_gen */
 } *MIR_func_t;
 
 typedef struct MIR_proto {
@@ -467,6 +512,11 @@ struct MIR_item {
   char binding;
   /* defined for data-bss after loading. True if it is a start of allocated section */
   char section_head_p;
+  /* data/bss storage alignment beyond the target default (MIR_item_set_align;
+     0 = the default, 16) */
+  unsigned align;
+  /* an over-aligned loaded section's allocation, when it is not addr itself */
+  void *section_alloc;
   union {
     MIR_func_t func;
     MIR_proto_t proto;
@@ -590,13 +640,24 @@ extern MIR_item_t MIR_new_forward (MIR_context_t ctx, const char *name);
    made direct, as they are never inlined).  A strong func definition after a
    LINKONCE one is still a redefinition (MIR_set_func_redef_permission governs
    funcs).  Weak data is not replaced: references already bound keep the weak
-   object. */
+   object.
+   madc fork: an IMPORT item may be WEAK (never LINKONCE): an undefined weak
+   reference, C's `extern T x __attribute__((weak));` with no definition.
+   MIR_link binds it to the null address when nothing defines the name and
+   MIR_module_link_check does not report it; the object capture emits its
+   undefined symbol STB_WEAK while every import of the name is weak. */
 typedef enum {
   MIR_ITEM_BIND_GLOBAL = 0, /* strong definition (the default) */
   MIR_ITEM_BIND_WEAK,       /* interposable weak: STB_WEAK, never inlined */
   MIR_ITEM_BIND_LINKONCE,   /* ODR-identical per-TU copy: STB_WEAK, inlineable */
 } MIR_item_binding_t;
 extern void MIR_item_set_binding (MIR_context_t ctx, MIR_item_t item, MIR_item_binding_t binding);
+/* The alignment a data/bss item's storage needs beyond the target default of
+   16 (gcc's aligned(N), C11 _Alignas(N) on a static object): a power of two
+   up to a page.  The JIT's section allocation and the AOT object capture
+   honor it; MIR_write / MIR_output carry it as an `align <name> <N>` record. */
+extern void MIR_item_set_align (MIR_context_t ctx, MIR_item_t item, size_t align);
+extern size_t MIR_item_align (MIR_item_t item);
 extern MIR_item_t MIR_new_bss (MIR_context_t ctx, const char *name,
                                size_t len); /* name can be NULL */
 extern MIR_item_t MIR_new_data (MIR_context_t ctx, const char *name, MIR_type_t el_type, size_t nel,
@@ -634,6 +695,8 @@ extern MIR_reg_t MIR_new_global_func_reg (MIR_context_t ctx, MIR_func_t func, MI
                                           const char *name, const char *hard_reg_name);
 extern void MIR_finish_func (MIR_context_t ctx);
 extern void MIR_finish_module (MIR_context_t ctx);
+/* Discard the module an error's longjmp left unfinished (madc fork). */
+extern void MIR_abandon_module (MIR_context_t ctx);
 
 extern MIR_error_func_t MIR_get_error_func (MIR_context_t ctx);
 extern void MIR_set_error_func (MIR_context_t ctx, MIR_error_func_t func);
@@ -653,6 +716,16 @@ extern void MIR_set_inline_permission (MIR_context_t ctx, int enable_p);
    Pair with optimize level 0.  Default off. */
 extern int MIR_get_spill_all_p (MIR_context_t ctx);
 extern void MIR_set_spill_all (MIR_context_t ctx, int enable_p);
+/* Spill-all mode homes every local of a function -- unless its frontend
+   names the registers a debugger describes (its named variables, not its
+   temporaries): after MIR_func_debug_homes_only, only the registers marked
+   with MIR_set_reg_debug_home are homed, and the rest are allocated as
+   usual.  Every described variable keeps its stable frame slot; the frame no
+   longer holds one per temporary. */
+extern void MIR_func_debug_homes_only (MIR_context_t ctx, MIR_func_t func);
+extern int MIR_func_debug_homes_only_p (MIR_func_t func);
+extern void MIR_set_reg_debug_home (MIR_context_t ctx, MIR_reg_t reg, MIR_func_t func);
+extern int MIR_reg_debug_home_p (MIR_context_t ctx, MIR_reg_t reg, MIR_func_t func);
 /* If reg (1-based function register) was homed in a stack slot by MIR_gen
    (spill-all mode), set *offset to its frame-pointer-relative byte offset and
    return 1; otherwise return 0.  Valid after the function is generated. */
@@ -672,6 +745,25 @@ extern MIR_insn_t MIR_new_jcall_insn (MIR_context_t ctx, size_t nops, ...);
    frontend file index, line a 1-based source line; both 0 means "no location".
    The generator carries these through its passes and fills MIR_func.line_map. */
 extern void MIR_set_source_loc (MIR_context_t ctx, uint32_t file_id, uint32_t line);
+/* Unwind regions (see MIR_unwind_region_t).  MIR_set_unwind_region stamps the
+   region onto every insn created afterwards, as MIR_set_source_loc does.
+   MIR_new_unwind_region declares one in FUNC_ITEM and returns its number (from
+   1).  MIR_set_func_unwind_base names the register region offsets are relative
+   to: it must be defined by a constant ALLOCA at the function's entry, and the
+   base is that address rounded up to ALIGN (0 = no rounding).  A function that
+   declares regions is never inlined.  MIR_set_func_unwind_personality names the
+   routine the platform unwinder calls for the function's frames with its region
+   table (MIR_UNWIND_TABLE_VERSION); without one the function gets no table. */
+extern void MIR_set_unwind_region (MIR_context_t ctx, uint32_t region);
+extern uint32_t MIR_new_unwind_region (MIR_context_t ctx, MIR_item_t func_item, uint32_t parent,
+                                       int64_t offset, MIR_item_t cleanup);
+extern void MIR_set_func_unwind_base (MIR_context_t ctx, MIR_item_t func_item, MIR_reg_t reg,
+                                      uint32_t align);
+extern void MIR_set_func_unwind_personality (MIR_context_t ctx, MIR_item_t func_item,
+                                             MIR_item_t personality);
+/* A func marked noinline (gcc's __attribute__((noinline))) keeps its own frame:
+   no MIR_CALL or MIR_INLINE of it is inlined into a caller. */
+extern void MIR_set_func_noinline (MIR_context_t ctx, MIR_item_t func_item);
 extern MIR_insn_t MIR_new_ret_insn (MIR_context_t ctx, size_t nops, ...);
 extern MIR_insn_t MIR_copy_insn (MIR_context_t ctx, MIR_insn_t insn);
 

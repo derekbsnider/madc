@@ -1,0 +1,3 @@
+program FILE * into the dialect: ok
+dialect body refused on its stderr: 1
+one stderr: 1

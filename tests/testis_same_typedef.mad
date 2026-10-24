@@ -1,0 +1,39 @@
+// __is_same / std::is_same answer type identity ([basic.types]), not name
+// equality (B156): a namespace-scope scalar typedef is its type
+// (std::size_t is unsigned long, w::i is int), at every pointer and
+// reference level; distinct fundamental types over one storage stay
+// distinct (wchar_t / int, char / signed char), and so do cv-qualifiers
+// at any level and two unrelated classes. (A pointee's C++ const —
+// `__is_same(const int *, int *)` — is BUGS.md B121, the const-type model.)
+// Oracle (g++ 13, clang++ 18, -std=gnu++17):
+//   alias: 1 1 1 1 1
+//   levels: 1 1 1 1
+//   distinct: 0 0 0 0 0 0
+#include <type_traits>
+#include <cstddef>
+#include <cstdio>
+namespace w { typedef int i; typedef i j; }
+namespace a { struct host { int x; }; }
+namespace b { struct host { long y; }; }
+int main()
+{
+	std::printf("alias: %d %d %d %d %d\n",
+		    (int)std::is_same<std::size_t, unsigned long>::value,
+		    (int)std::is_same<w::i, int>::value,
+		    (int)std::is_same<std::ptrdiff_t, long>::value,
+		    (int)__is_same(std::size_t, unsigned long),
+		    (int)__is_same(w::j, int));
+	std::printf("levels: %d %d %d %d\n",
+		    (int)std::is_same<w::i *, int *>::value,
+		    (int)std::is_same<const w::i &, const int &>::value,
+		    (int)__is_same(w::i **, int **),
+		    (int)__is_same(w::i[3], int[3]));
+	std::printf("distinct: %d %d %d %d %d %d\n",
+		    (int)std::is_same<volatile int, int>::value,
+		    (int)std::is_same<wchar_t, int>::value,
+		    (int)std::is_same<char, signed char>::value,
+		    (int)__is_same(volatile int *, int *),
+		    (int)__is_same(int[3], int *),
+		    (int)__is_same(a::host, b::host));
+	return 0;
+}

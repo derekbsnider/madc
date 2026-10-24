@@ -1,0 +1,27 @@
+/* A `(` after `=` opens a grouping, never a call through the function
+ * pointer on the left: `fp = ((T)-1)` assigns the cast. The `(` was taken as
+ * a call of `fp` (`fp((T)-1)`) and the assignment lost its operand --
+ * "Missing operand" (SQLite's SQLITE_TRANSIENT, `((sqlite3_destructor_type)-1)`,
+ * in src/test1.c). The paren binds as a call only when it follows its operand
+ * directly -- which also lets `1 + (fp)(3)` call through the pointer.
+ * Oracle: gcc and clang -O0 print "1 1 1 1 7 16 12". */
+#include <stdio.h>
+typedef void (*dtor_type)(void *);
+#define S_STATIC ((dtor_type)0)
+#define S_TRANSIENT ((dtor_type)-1)
+static int twice(int a) { return 2 * a; }
+int main(int argc, char **argv)
+{
+	dtor_type d = ((dtor_type)-1);
+	void (*xDel)(void *) = (argc == 6 ? S_STATIC : S_TRANSIENT);
+	dtor_type d2 = S_TRANSIENT;
+	dtor_type d3;
+	d3 = ((dtor_type)-1);
+	int (*fp)(int) = twice;
+	int a = 1 + (fp)(3);
+	int b = (*fp)(4) * 2;
+	int c = (fp)(5) + (*fp)(1);
+	printf("%d %d %d %d %d %d %d\n", d == S_TRANSIENT, xDel == S_TRANSIENT,
+	       d2 == (dtor_type)-1, d3 == S_TRANSIENT, a, b, c);
+	return 0;
+}

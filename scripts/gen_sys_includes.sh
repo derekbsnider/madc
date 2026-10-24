@@ -173,6 +173,35 @@ emit_standin_array() {
     echo '};'
 }
 
+# The toolchain's library search path, the one `cc ... -l<name>` walks: the
+# driver's own -L list (-print-search-dirs "libraries:"), then its linker's
+# built-in SEARCH_DIRs (ld --verbose; "=" is the sysroot). Each existing
+# directory once, symlinks resolved. Read by madc_module_link_images (the -l
+# search on an ELF target); empty when the toolchain answers neither.
+library_dirs() {
+    local d ld
+    {
+        "$@" -print-search-dirs 2>/dev/null | sed -n 's/^libraries: =//p' | tr ':' '\n'
+        ld=$("$@" -print-prog-name=ld 2>/dev/null)
+        if [ -n "$ld" ]; then
+            "$ld" --verbose 2>/dev/null | grep -o 'SEARCH_DIR("[^"]*")' \
+                | sed 's/^SEARCH_DIR("=\{0,1\}\(.*\)")$/\1/'
+        fi
+    } | while IFS= read -r d; do
+        [ -n "$d" ] && [ -d "$d" ] && (cd "$d" && pwd -P)
+    done | awk '!seen[$0]++'
+}
+
+emit_library_dirs_array() {
+    local d
+    echo 'const char *const madc_toolchain_library_dirs[] = {'
+    library_dirs "$@" | while IFS= read -r d; do
+        printf '    "%s",\n' "$d"
+    done
+    echo '    (const char *)0'
+    echo '};'
+}
+
 emit_paths_array() {
     # $1 = array suffix, rest = probe command
     local idx="$1"; shift
@@ -306,6 +335,12 @@ emit() {
     echo "const char *madc_default_stdlib_flavor = \"$DEFAULT_FLAVOR\";"
     echo
     emit_standin_array "$DEFAULT_FLAVOR"
+    echo
+    emit_library_dirs_array $CXX
+    echo
+    # The toolchain's target triple, as its `-dumpmachine` prints it ("" when
+    # it answers nothing): what `madc -dumpmachine` prints.
+    echo "const char *const madc_toolchain_target = \"$DEFAULT_TARGET\";"
 }
 
 # Idempotent write: rewrite only on real content change, so the parse-time

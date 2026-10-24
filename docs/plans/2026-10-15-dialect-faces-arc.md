@@ -43,6 +43,8 @@ whose behaviour already differs, then the pure duplicates.
 | 6 | manifest writer: create / add TU / remove TU | `src/madc_project.cpp:413,424,454` | `proj_write` / `proj_add` / `proj_del` (`madcide_core.inc:5290,5358,5416`) | stores a path as typed (madc: relative to the manifest; refuses a non-file) |
 | 8 | project kind names (console / gui) | `src/madc_project.cpp:254,260` | `madcide_enums.inc:422,426` | an unknown word becomes console (madc refuses it) |
 | 7 | manifest reader (object shape, `tus`) | `read_project_manifest` (`src/madc_project.cpp:264`) | `proj_load` (`madcide_core.inc:5463`, own `js::parse`) | rides with 6/8: one manifest owner |
+| 19 | `mkdir -p` (found 2026-10-16, landed with row 10) | `host_path_make_parents` (`src/madc_posix_io.cpp:263`) | `dir_ensure` (`madcide_plugins.inc:324`) | grew a Windows absolute path (`C:\...`) from `.` (it split on `/` only) |
+| 20 | a product's user configuration directory (BUGS.md B91, 2026-09-30) | `config_file::user_config_dir` (`src/madc_config_file.cpp:239`) | `config_dir_of` (`madcide_plugins.inc:44`) | on Windows madc read `$HOME/.config`, madcide `%APPDATA%` — owner 2026-10-16: madc's one rule gains the Windows-only `%APPDATA%` arm, madcide keeps only its `MADCIDE_CONFIG_DIR` override |
 
 ### B. Behaviour already differs
 
@@ -71,6 +73,153 @@ whose behaviour already differs, then the pure duplicates.
 | # | Capability | Today | Wanted |
 |---|---|---|---|
 | 18 | the REPL's classes (`madc -i` and madcide's pane) | lexical only — `theme_paint` / `theme_marks` lex each text alone (`lex_classes`, the 1B.9 design), so in `std::string world("World")` only the literal is coloured | the session's parse classes (namespace, typename, variable, function — what `madc::parse_spans` gives the editor): the session parsed the entry with its includes; the painter takes those classes, so the CLI, the pane and the editor agree |
+
+### E. SQLite compiles and passes its tests (owner 2026-10-16: "added to the v0.106.0 arc")
+
+KG Milestone `sqlite_compiles_and_passes_its_tests`; ROADMAP "Real C codebases", row 1.
+Source: SQLite 3.54.0 on the build container (`/workspace/sqlite/3.54.0`, the
+amalgamation in `/workspace/sqlite/build-3.54.0`); Tcl 8.6 + headers installed
+there for the test suite. The first compile (`madc -c sqlite3.c`) refuses with
+ten errors from the four gaps below, each a KG Gap that BLOCKS the milestone.
+A parse error stops the compile, so more surface as each lands.
+
+| # | Gap (KG) | Reducer (`tmp/sqlite_dims/`) | Oracle (gcc = clang) |
+|---|---|---|---|
+| S1 | `c_array_dim_typedef_cast_not_folded` — `int a[(u32)4];` refused (`(unsigned)4` folds); SQLite's `BITVEC_NPTR` | `r1_castdim.c` | `4 4 8 3 72 8` |
+| S2 | `c_ternary_middle_operand_comma_expression` — `x ? (v = 7), 3 : 4` (C11 6.5.15); `getVarint32` / `putVarint32` | `r2_ternary_comma.c` | `3 1 5 2 1200` |
+| S3 | `c_if_condition_fnptr_then_paren_read_as_call` — `if( fp ) (void)f(p);` read as the call `(fp)(void)` | `r3_void_stmt.c` | `called=9` |
+| S4 | `cli_fpic_and_flags_after_source` — `-fPIC` read as a file; options after the source refused | `pic.c` | `madc -c` objects are already position-independent (`gcc -shared` links one, no TEXTREL): `-fPIC` / `-fpic` / `-fPIE` / `-fpie` are accepted no-ops |
+
+Then: the amalgamation compiles (`-c`, then the shell linked), runs, and the
+Tcl suite builds `testfixture` with madc as `CC` and runs. S1-S3 are parser
+changes: each its own commit with its reducer promoted to `tests/` (gcc and
+clang outputs), Tier 1 + Tier 2, never folded together.
+
+Place in the arc: after section A and the three dialect silent wrong answers,
+before sections B-D — a focused parser stretch beside the two C++ compile gaps.
+
+### F. redis compiles and passes its tests (owner 2026-10-16: "more than one tricky project" this release)
+
+KG Milestone `redis_compiles_and_passes_its_tests`; ROADMAP "Real C codebases",
+row 2. The release's second real C codebase beside SQLite.
+
+- Source: a redis release (or Valkey, its BSD-licensed fork) unpacked on the
+  build container beside `/workspace/sqlite`; never vendored into this repo.
+- Build: `make CC=madc MALLOC=libc` (jemalloc stays out). The bundled deps
+  (Lua, hiredis, linenoise, hdr_histogram, fpconv) are compiled by madc too.
+- Tests: the Tcl suite (`./runtest`), Tcl 8.6 being already installed for
+  SQLite; oracle: the same tree built by gcc, its own `./runtest` tally.
+- What it exercises that SQLite did not: threads (bio, I/O threads), C11
+  atomics through `atomicvar.h` (it picks `<stdatomic.h>`, `__atomic` or
+  `__sync` by what the compiler predefines, so madc's predefines decide the
+  path), signals, sockets and the `ae` event loop.
+- Same shape as section E: every refusal or wrong answer a KG Gap that BLOCKS
+  the milestone, fixed at its layer in its own commit with a reducer promoted
+  to `tests/` (gcc and clang outputs), Tier 1 + Tier 2.
+
+Place in the arc: after section G, before sections B-D.
+
+### H. The conformance release gate (owner 2026-10-16: "each release must move the needle forwards towards C23 and/or C++20 compliance")
+
+OWNER LAW, gated like the duplication law (`check-release-consolidation.sh`):
+
+- The measure: the C23 rows of `docs/conformance-coverage.md` (gcc's own
+  `gcc.dg/c23-*` / `c2x-*` tests, compile-clean and `dg-do run`;
+  `gcc.c-torture/execute` under `--std=c23`) and its C++20 row
+  (`g++.dg/cpp2a`).
+- The rule: every release raises at least one of those passing counts and
+  lowers none, against the previous release.
+- Never a hand-typed number: the measuring scripts record each release's
+  counts in `docs/parity/conformance-ledger.tsv` (release, corpus, `--std`,
+  passing, in scope, commit); the release's CHANGELOG section carries a
+  `Conformance:` line naming its gain; `scripts/check-release-conformance.sh`
+  checks the line against the ledger rows of this release and the previous
+  one, with negative controls; `/release` runs it beside the consolidation
+  check.
+- Baseline: v0.105.0, re-measured on its archived binary
+  (`scripts/release_bins.sh`), since the doc's numbers are v0.103.0 content.
+- 0.106.0 is the first release it gates: this release needs a measured C23
+  or C++20 gain.
+- Compile time (owner 2026-10-16: "a gate to ensure compile times don't
+  regress"): the profiling merge gate `parse-cost` already ratchets the
+  shipped -O2 binary's callgrind Ir over 14 workloads at every seam (0.5%;
+  its result rides the push-gated `linux-battery` row). What it lacks is a
+  real codebase: SQLite's amalgamation compile (`madc -c sqlite3.c`) joins
+  `scripts/parse_cost/` as a workload, its cost under callgrind measured
+  first (a lighter instruction counter if callgrind is too slow at that
+  size); redis joins once section F compiles it.
+
+Place in the arc: after the command-line options work, before section G.
+
+### I. The dialect pays per name (owner 2026-10-16: "We need that fix asap")
+
+The three face commits of this arc (161bfcdab, 3790c6e1c, aa67a4fa6) grew
+every dialect compile +2.4% (parse-cost dialect rows): 0.105.0 binds each
+active dialect fragment's whole frozen unit, so every declaration costs
+~100K Ir per dialect compile, used or not. Finishing pack-slices §7 — only
+the names a program uses materialize, and the dialect leaves the
+system-header pack — is `docs/plans/2026-10-16-dialect-per-name-plan.md`
+(parts A and B). Place in the arc: next, after the command-line options
+work, before section G.
+
+### J. C programs bind the pack's C layer (owner 2026-10-17: "just make sure it doesn't get removed again")
+
+A `.c` compile (gnu17 since 146b2aa8c, 2026-10-10) and every `--std=c*`
+compile parse their system headers from text on every run: the pack's one
+profile is frozen under madc and labelled only for gnu++17 / c++17
+(324a8d501), so a C config misses it ("container config mismatch — live
+parse"). Plain C costs 245M Ir on `c_headers.c` against gcc -O0 -c 144M and
+clang 127M (2026-10-17, gcc 13.3 / clang 18.1, every process summed); the same
+headers compiled as C++ cost madc 5x less than either. The fix was measured
+and agreed on 2026-10-13 (`2026-10-13-pack-load-cost-experiments.md` Test 3
+and "The C question": a C layer frozen under C — its own c17 / gnu17 label
+list, separate from the C++ profile's, stored uncompressed, C tables ahead of
+the C++ boundary; 8 everyday C headers 24 ms against 159 ms live) and was then
+dropped when the per-header slices shipped without it. Never again:
+- The pack freezes the C headers a second time under C (gnu17), on the
+  per-header slices, its blocks raw, with its own label list beside the C++
+  one in `forest_pack_share.sh` (one owner, two lists). Which C standards a
+  gnu17 freeze may serve is measured, not assumed: a standard whose header
+  view differs (`__STRICT_ANSI__` hides glibc's POSIX names under c17;
+  `__STDC_VERSION__` gates C11 names under c99) gets its own freeze or none.
+- GATE, landed with it and never without: `forest_pack_gate.sh` compiles a
+  `.c` program and a `--std=c17` program on the packed binary and is RED
+  unless both bind the C layer (`-v`: "container bound"), with a selftest
+  leg; the parse-cost `c_headers.forest` row is re-recorded at the new
+  level, so losing the bind is a several-fold red.
+- `docs/test-status.md` / ROADMAP carry it; KG Decision
+  `c_pack_layer_never_dropped`.
+Place in the arc: after section I's A4 (the dialect fix the owner called
+urgent), before section G.
+
+### G. The BUGS.md burndown slice (owner 2026-10-16: "let's fix those bugs before taking on redis")
+
+BUGS.md held 118 entries at v0.105.0 and 117 now; this arc had fixed only
+B91 from it. Before redis (section F), in this order:
+
+1. Re-check every entry at HEAD with its own reducer and both oracles. An
+   entry the arc already fixed (B41 looks like `90cd2ece1`, B66 like
+   `0211249a4`) gets its reducer promoted to `tests/` if no test pins it,
+   and is deleted from BUGS.md; an entry that still fails is re-measured.
+2. The 17 silent wrong answers ("Silent wrong answers" section) — first, as
+   BUGS.md's own rule says.
+3. The 11 C refusals: B151 (`_Noreturn`), B152 (`offsetof` over a type
+   defined in its operand), B142 (wide string for `wchar_t[]`, an overlong
+   string), B140 (excess initializers), B3, B5, B6 (declarator / enum /
+   typedef forms), B28 (2-D compound literal), B49 (compound literal's
+   address as an initializer), B41, B66.
+4. The 6 dialect refusals: B126, B100 (a temporary for a `value &` /
+   `const var &` input), B98 (a nested brace list in a value literal), B11,
+   B20 (a script's top-level scope), B175 (a REPL entry).
+5. The two crashes: B153 (packed `madc-release`, `--project`, `<string>` in
+   two TUs: SIGSEGV under forest bind — shipped since v0.95.0) and B148 (a
+   constructor template's mem-initializer reading a member of a class
+   temporary crashes c2mir; v0.99.2 refused it loudly).
+
+Each fix is its own commit with its reducer promoted to `tests/` (gcc and
+clang outputs) and the entry deleted from BUGS.md in the same commit
+(BUGS.md's rule), Tier 1 + Tier 2; the batch lane per batch. The C++
+library and header families (B192 ... B169) stay in BUGS.md, after redis.
 
 ## How each row lands (one shape)
 
@@ -104,4 +253,154 @@ packages; madcide's paired release.
 
 ## Status
 
-PLANNED 2026-10-15 (owner). Nothing of rows 2-17 started.
+PLANNED 2026-10-15 (owner).
+
+- Rows 10 + 19 (2026-10-16): `madc::path_drop_extension` / `path_stem` /
+  `path_make_parents` (`<ns_madc>`); `src/madc_posix_io.h` registered in
+  `dialect_faces.tsv` (every public a face or an exempt reason); test
+  `testpath_faces`. madcide: `path_sans_ext` and `dir_ensure` deleted, a
+  `layout-path:` line in `testmadcide`, and `check-madcide-single-owners.sh`
+  red on a hand-rolled extension split.
+- Row 20 (2026-10-16, owner ruling): `cfg::user_config_dir` /
+  `user_config_dir_of` (`include/madc_config_file.h`) — XDG, then `%APPDATA%`
+  on Windows, then `~/.config` — the one rule madc.ini's lookup and the mcp
+  sources read; faces `madc::user_config_dir` / `user_config_dir_of`; test
+  `testuserconfigdir`, unit case in `test_config_file`; BUGS.md B91 closed.
+  madcide: `config_dir_of` deleted (only `MADCIDE_CONFIG_DIR` stays its own),
+  `check-madcide-single-owners.sh` red on an `XDG_CONFIG_HOME` / `APPDATA`
+  read in madcide.
+- Rows 6-9 (2026-10-16): the manifest's one reader and writer as faces —
+  `madc::project_manifest_read` (the struct faces of `ProjectManifest` /
+  `ProjectTU`; each TU resolved against the manifest's directory; the file's
+  own JSON under "json", so an IDE's "commands" ride), `_create` / `_add_tu`
+  / `_remove_tu` / `_set_kind` (the last a new writer verb),
+  `project_default_output`, `project_events_path`, `project_kind_name`; the
+  kinds one enum text, `<bits/project_enums>` (`ProjectKind` aliases it);
+  `include/madc_project.h` registered; test `testproject_manifest_faces`,
+  unit case for `set_kind`. madcide: `proj_write`, its JSON parse and
+  stringify, `ide_projkind` / `projkind_name` / `projkind_of` and its
+  events-path copy deleted; `proj_load` / `proj_add` / `proj_del` /
+  `proj_toggle_kind` / the build rows call the faces; `testmadcide`'s
+  `proj-faces-*` lines (a TU resolved, `<base>` not `<base>.prj`, `output`
+  against the manifest, a relative add, an unknown kind refused) and
+  `proj-addcur-nofile`; `check-madcide-single-owners.sh` red on a manifest
+  parsed, stringified or given a kind word in madcide.
+- The dialect silent wrong answers (2026-10-16):
+  - KG `range_for_over_call_result_subscript_empty` — FIXED `7a28c50fc`: a
+    carrier returned by reference (`fill(a)["rows"]`, `for (var c :
+    fill(a))`) reads its referent, and a carrier range-for evaluates its range
+    once (`carrier_expr_addr`); test `testcarrier_ref_call`.
+  - KG `rangefor_class_ref_call_receiver` (found on the way) — FIXED
+    `8dd64279c`: a C++ range-for over a class container returned by a call or
+    held by a reference parameter compiles and evaluates its range once
+    (`class_object_expr_addr`, `capture_class_range`); test
+    `testrangefor_ref_call`.
+  - KG `import_module_member_double_return` — FIXED `d4002f602`:
+    `math::sqrt(2.0)` printed 1; an alias-form member is declared as the same
+    name's bare call is (the
+    pack's prototype, else `dynamic_symbol_fallback_signature`) and its slot
+    is called through the declared type; test `testimport_member_types`.
+  - KG `var_copy_init_from_keyed_array_slot_empty` — not a carrier defect:
+    script mode runs file-scope initializers before the statements (script
+    mode semantics #6); source-order interleaving is an owner decision.
+  - KG `carrier_byvalue_call_subscript_parse_refused` (found on the way) —
+    `make(2)["rows"]` refused at parse; the generic subscript arm reads the
+    base's `datadef()`, not its value type.
+- Section E, SQLite (2026-10-16):
+  - S1-S4 FIXED: `5c49a45cb` (a cast through a typedef heads an integer
+    constant array bound), `7edb34163` (the `?:` middle operand is a comma
+    expression), `5b6d2b4ee` (a condition's `)` never continues into a call),
+    `7d140ebc8` (`-fPIC` accepted; options may follow the source).
+  - The amalgamation, then the test sources, surfaced: `3ca71975c`,
+    `45c322839`, `11fe93c76`, `d3dd78e88`, `385e7d40e`, `8e64cf623`,
+    `8d708f3ec`, `e67a8dac4`, `cebad16e6` (parser / cir, each with its
+    reducer).
+  - gcc's link vocabulary, so the Makefile's compile-and-link lines run
+    unchanged: `35ce6a38f` (several sources on an artifact lane),
+    `5fa1e9571` (`-L`, `-Wl,-rpath`), `07e54ff76` (`-l` resolved as ld
+    resolves it: SONAME, linker scripts, empty stub archives),
+    `f6ec34ad0` (`-dumpmachine`).
+  - `68b12640c`: `-g` homes only the locals a debugger describes (the
+    testfixture's frames fit the stack again).
+  - `fdcf2a26c`: a tag a parameter list names first is declared at file
+    scope (Tcl's `struct Tcl_Obj` warnings).
+  - `0211249a4`: an object may be aligned beyond 16 bytes, static (the MIR
+    item carries it) or automatic (the frame is realigned) — SQLite's
+    `ALIGN128` mutex table; c-torture `20010904-1/2` pass.
+  - Result: the default configuration's `testfixture`, compiled and linked
+    by madc (`make CC=madc testfixture`), runs veryquick with 0 errors out
+    of 330460 tests.
+  - speedtest1 (`--size 50`, the Makefile's flags): gcc -O2 1.24s, madc
+    -O2 1.74s, gcc -O0 2.25s, madc -O2 -g 2.66s. KG
+    `sqlite_speedtest1_slower_than_gcc`: madc's `-g` costs 53 percent
+    (MIR homes named locals in memory; gcc's `-g` never changes code).
+  - SQLite's `make test` (testrunner `mdevtest`: the All-O0 and All-Debug
+    `--enable-all` builds, veryquick + fuzz + shell on each) surfaced:
+    `6cb2f8c67` (`-Wall` / `-W<name>` accepted, `-Werror` refused),
+    `71f64745f` (a macro argument's paint per stretch: SQLITE_DEBUG's
+    `NC_IdxExpr` was hidden), `76f2df507` (a statement expression yielding
+    no value is void: two c2mir crashes on SQLITE_DEBUG's folded asserts),
+    `9681942cc` (a re-spelled string literal keeps its NULs and its wide
+    prefix — SILENT: every FTS5 `contentless_delete` table "corrupt"; the
+    eleven FTS5 files now pass, 0 errors of 4147).
+  - zeroblob, pcache, tkt1644, misc4 and schema were madc's: configure,
+    run with madc as CC, concluded wrong things (SIZEOF_OFF_T 4, no
+    gmtime_r / localtime_r / readline), and a gcc-built testfixture of that
+    configuration fails them the same way. gcc's own `mdevtest` is 0 errors
+    of 978512. Fixed in the driver and the linker: `31283e348` (`-E` / `-dM`
+    write to `-o`: ccache hashed an empty file and replayed one cached probe
+    result), `0942a4f1f` (a C/C++ source with a stage option after it is a
+    compiler line — the link probes RAN the program; owner: `.mad` scripts
+    keep their argv), `1b6a7d80b` (an executable link refuses an undefined
+    reference, as ld does — KG `aot_link_undefined_symbol_not_refused`).
+    `configure --enable-all` with madc now writes gcc's `sqlite_cfg.h` except
+    HAVE_LOG (madc links libm by default; no SQLite source reads it).
+  - On the way: `90cd2ece1` (SILENT: a C function designator not followed
+    by `(` was CALLED in `!f`, `f ? a : b` inside an argument) and the
+    undefined weak reference, `5a2ba28ed` (KG
+    `weak_undefined_reference_unsupported`; Mach-O runtime rides the seam).
+  - Result: `mdevtest` with madc is 1 error of 932121 — the only one is the
+    All-Debug `fuzzcheck-ubsan` build (`-fsanitize=undefined`: madc has no
+    sanitizers), which skips 18 jobs. Every test file passes in both builds.
+  - Milestone DONE (owner 2026-10-16): the ubsan job is a known exclusion;
+    `-fsanitize=undefined` lands in a future release (KG Gap
+    `sanitizers_unsupported`, first slice trap mode).
+  - Rule from this stretch (owner): every release consolidates an EXISTING
+    duplicate family (`4c63204d5`, `check-release-consolidation.sh`); the
+    candidate here is DupFamily `bare_function_name_call_or_address`.
+  - Open (KG Gaps on the milestone): `aot_link_undefined_symbol_not_refused`,
+    `emit_c11_sqlite_not_recompilable`. Found on the way, not SQLite's:
+    `c11_noreturn_function_specifier_unparsed` (its own parser session),
+    `cpp_linemarker_input_refused`.
+- Command-line options, slices 1–2 (2026-10-16; plan
+  `docs/plans/2026-10-16-cli-options-plan.md`): the one option reader
+  `madc::cli::parse` (`include/libmadc/cli_options.h`) — gcc/GNU syntax,
+  `@file`, typed values, environment / config / default sources, help,
+  `--help=json`, bash / zsh / fish / PowerShell completions — and madc's own
+  command line as one table (`src/madc_cli.cpp`) and one `switch`; the 82-arm
+  ladder deleted; gate `check-one-option-parser.sh`; DupFamily
+  `command_line_option_arms` consolidated (this release's `Consolidated:` line).
+- Sections I, J and K (2026-10-17/18) are recorded in their own plans
+  (`2026-10-17-dialect-builtin-registration.md`, `2026-10-18-c-pack-layer.md`,
+  `2026-10-18-verified-cxx-bind.md`); section H's gate and v0.105.0 ledger
+  rows landed 2026-10-16.
+- Parse-cost (2026-10-18/19): the lexer hot loops, kind accessors for the hot
+  `dynamic_cast` sites, the `TypeTrait` enum, the intern-keyed lookup; every
+  re-record lowered rows, none rose. Consolidated this arc: `counted_loop`,
+  `class_pointer_spelling`, `pointer_type_node` (each with its gate).
+- Section G (2026-10-19):
+  - Step 1 done: every entry re-measured at HEAD. Retired with a pinning
+    test: B102, B153 (packed `--project` bind), B107, B18, B23, B36, B41,
+    B48, B66, B195, and the carried `__sync_*` / static-destruction items.
+  - Step 2 (silent wrong answers): class-object fixes `504e6350c`,
+    `2151a9511`, `dfb6d100d`, `b9038b63a`, `cecc4bf3e`, `ee9c91119`,
+    `13026b2bc` (a library virtual dispatches through the vtable). Fixed:
+    B156 `279fcf0ba`, B144 `ab1a2bf88`, B145 `a51e936f2` `679647b38`
+    `476c16dec`, B204 `2194f8343`, B168 `2e4e4ccb6`, B207 `af381651b` (try
+    frame and cleanup entries end on every normal exit), B208 `ef5601fe7`
+    (a `__retbuf` prvalue constructs its virtual bases), B202 `9f6699078`
+    (class-type exceptions, plan `2026-10-19-class-exceptions.md` DONE).
+    Filed and raised with the owner: B201, B203, B205 (a throw through a
+    try-less frame skips its destructors), B206 (an unspecified base in a
+    class is public). Open: B197, B147, B121, B81, B62, B70, B65, B64, B181.
+  - Steps 3-5 (C refusals, dialect refusals, B148) not started.

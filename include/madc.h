@@ -23,10 +23,12 @@
 #include <initializer_list>
 #include <set>
 #include <stack>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "libmadc/value.h"
+#include "ident_char.h"		// is_ident_start / is_ident_char — the one identifier-character test
 #include "spelling_delim.h"
 #include "madc/bits/diag_enums"	// diag_severity / diag_phase — the shared enum text
 #include "madc/bits/file_kinds"	// madc::file_kind — LanguageStd's values ARE its C/C++/madc ranges
@@ -41,12 +43,19 @@
 class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
+namespace madc { namespace dis { class snapshot_reader; } }	// madcdis/snapshot.h; the discovery walk's role read
 class InteractiveSession;	// madc_session.h; Program::owning_session only
 namespace madc { struct theme; }	// madc_theme.h; Program::echo_theme only
 struct MadcSharedPreludeCache; // project-local immutable auto-include snapshots
 struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_freeze.h)
 struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
 struct CirRestoredFuncDefaults;	// one restored function's default-argument runs (cir_freeze.h)
+struct CirMaterializeFilter;	// the bind's demand filter (cir_freeze.h); held by pointer
+struct ForestWalk;		// the bind walk of one root (lexer.cpp, K2)
+struct ForestUnitItems;		// one frozen unit's items, as the walk reads them (lexer.cpp)
+struct ForestMacroUndo;		// a walk's macro undo log (lexer.cpp); Program::forest_macro_undo
+struct cir_node;		// a CIR tree node (cir_node.h); Program::forest_extern_node
+struct MadcModuleDescription;	// madc_module.h: what an imported module describes; pointer member only
 struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
 class MadcEngine;
 class TokenBase;
@@ -77,7 +86,8 @@ enum class GnuAttributeKind : uint8_t {
     Optimize,
     UsingIfExists,
     Weak,
-    Cleanup
+    Cleanup,
+    NoInline
 };
 
 GnuAttributeKind madc_gnu_attribute_kind(const madc::dis::istring &name);
@@ -132,6 +142,14 @@ void madc_thaw_member_template(FuncDef *fd);	// defined in parser.cpp beside the
 // A dialect fragment's embedded name (`ns_*`, `bits/*`) — the one owner of the
 // rule (lexer.cpp); the pack's seed builder reads it too.
 bool embedded_dialect_fragment_p(const madc::dis::istring &name);
+// A dialect fragment's prerequisite words: every distinct identifier its text
+// uses that the auto-include's provider table names, with whether a use of
+// it is qualified (`word ::`) — the one reader of a fragment's text for its
+// prerequisites (lexer.cpp). The builtin-registry generator writes them into
+// the binary (dialect_fragment_words); queue_fragment_prerequisites reads
+// those, and scans the text only for a fragment the table does not carry.
+void dialect_fragment_scan_words(const std::string &text,
+				 std::vector<std::pair<madc::dis::istring, bool> > &out);
 
 // [over.ics.rank]/3.2.3 for a same-class copy/move constructor's one
 // reference parameter. Higher is better; -1 means the parameter cannot bind.
@@ -170,6 +188,27 @@ protected:
 
 // The reference a declarator spells: none, `&` ([dcl.ref] lvalue), `&&` (rvalue).
 enum class RefKind : uint8_t { None, Lvalue, Rvalue };
+
+// A COMPILER-IMPLEMENTED function's kind: a declaration-only function or
+// template whose implementation IS the compiler. The parser tags it at
+// declaration registration; the CIR builder and its dump and format lowerings
+// dispatch on it (enum-over-strings: never a spelling compare). Its spelling
+// is text only at the forest's boundary — the frozen records keep the
+// spelling, read back once by builtin_kind_named — and in the registry
+// differential's line.
+enum class BuiltinKind : uint8_t {
+    None,
+    Addressof,			// std::addressof's shape: its operand's address
+    Destroy,			// __destroy's shape: run the destructor
+    Forward,			// std::forward / move's shape: an identity reference cast
+    MadcShow, MadcShowRow,	// the REPL's value display, whole and as a row
+    PhpPrintR, PhpVarDump,	// php::print_r / php::var_dump
+    StdFormat, StdPrint, StdPrintln	// std::format / std::print / std::println
+};
+// The kind's spelling ("" for None), and the kind a spelling names (None for
+// NULL, "" or a spelling no kind has). Immutable table; any thread.
+const char *builtin_kind_spelling(BuiltinKind k);
+BuiltinKind builtin_kind_named(const char *spelling);
 
 class FuncDef: public DataDef
 {
@@ -453,7 +492,7 @@ public:
     // internal symbols while preserving the source name.
     madc::dis::istring function_display_name;
     madc::dis::istring namespace_name;
-    madc::dis::istring inline_builtin_kind;
+    BuiltinKind inline_builtin_kind;
     // Overload-set DECLARATION IDENTITY — the ranker's inputs, owned by the
     // declaration (g++: the FUNCTION_DECL carries its parameter-type-list and
     // DECL_TEMPLATE_INFO; the overload set is a list of decls) and frozen on
@@ -498,7 +537,7 @@ public:
     // which its script header declares as a template (inline_builtin_kind,
     // cpp-first-api.md).
     bool stands_for_function_template() const
-    { return is_template_placeholder() || !inline_builtin_kind.empty(); }
+    { return is_template_placeholder() || inline_builtin_kind != BuiltinKind::None; }
     // A member function template's PLACEHOLDER: the declaration-only
     // stand-in a call binds while its arguments are still dependent (its
     // return is fabricated; the instance is resolved per substitution).
@@ -507,16 +546,12 @@ public:
     // import (alias form): a member of a namespace bound to a dynamic module
     // by `import name as ns;`. Non-empty dyn_module_member marks the FuncDef;
     // the CIR builder lowers every call to a runtime-resolved indirect call
-    // (__madc_dl_member(dyn_module_library, dyn_module_member)) — one
-    // lowering for JIT and native. dyn_module_library is the TARGET
-    // spelling the module map chose (madc_modules).
+    // (__madc_dl_member(dyn_module_library, dyn_module_member)) through a
+    // pointer of this FuncDef's DECLARED type — one lowering for JIT and
+    // native. dyn_module_library is the TARGET spelling the module map chose
+    // (madc_modules).
     madc::dis::istring dyn_module_library;
     madc::dis::istring dyn_module_member;
-    // The slot form with the REAL prototype: a lazy module row's interface
-    // function (dyn_module_library/member set by parseFunction under the
-    // lazy pragma) is called through a pointer of its declared type, not
-    // the alias form's K&R `long (*)()`.
-    bool dyn_module_typed;
     // TRUE when this FuncDef is a BUILTIN-STYLE registration (the
     // builtin_registry core/process/dlfcn loops — the caller passes the
     // intent into Program::addFunction). An explicit source (re)declaration
@@ -621,6 +656,13 @@ public:
     // function. Set in instantiate_member_fn_template_for_call so the cir-build
     // seam can find the recipe.
     FuncDef *tsubst_source;
+    // A member CONSTRUCTOR template's instance: whether each construction
+    // argument was an lvalue when deduction formed it (Program::
+    // forwarding_arg_lvalues — a forwarding reference deduces A& from an
+    // lvalue, A from an rvalue). Empty for every other function. One template
+    // contributes one specialization per call: the constructor ranker takes
+    // this instance only for a construction whose arguments match.
+    std::vector<bool> deduced_arg_lvalues;
     // Concrete TYPE template arguments for the instantiated member-template
     // method, in tsubst_source->template_param_names order. These are captured
     // where deduction/defaulting actually happens (the parser's fn-template
@@ -665,7 +707,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_deduce_forwarding(false), template_return_ref(RefKind::None), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), weak_binding(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_deduce_forwarding(false), template_return_ref(RefKind::None), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), weak_binding(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
     DataDef *findParameter(const madc::dis::istring &);
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -737,6 +779,11 @@ public:
     // replaces it (gcc/clang). The CIR builder forwards it as an N_ATTR in the
     // FUNC_DEF specs; c2mir binds the MIR item MIR_ITEM_BIND_WEAK.
     bool weak_binding;
+    // __attribute__((noinline)) on any declaration of this function: never
+    // inlined, at any optimization level (gcc/clang). The CIR builder forwards
+    // it as an N_ATTR in the FUNC_DEF specs; c2mir marks the MIR func
+    // (MIR_set_func_noinline) and MIR's inliner refuses it.
+    bool noinline = false;
     bool has_large_struct_retbuf; // __retbuf was injected for struct return > 16 bytes
     // True when DECLARED with no body (prototype ended in ';' / ',' not '{').
     // For a C++ class method whose class carries canonical C++ spelling, this
@@ -766,12 +813,15 @@ public:
     // frozen container (forest save/load) AND the container held the method's
     // func-def in its AST (an INLINE method, body only in the header — no .so),
     // this locates that Tree-1 func-def subtree by (unit, record idx). On ODR-use
-    // the consumer materializes it from prog->bind_forest and appends it to its
-    // own module — the "copy the saved body into Tree-2" step. False/0 for a
-    // normally-parsed method or a LIBRARY method (body in a .so; declaration_only).
+    // the consumer materializes it from forest_body_src — the forest that
+    // restored the record (unit ids are that container's own) — and appends it to its
+    // own module — the "copy the saved body into Tree-2" step. False/0/NULL for
+    // a normally-parsed method or a LIBRARY method (body in a .so;
+    // declaration_only).
     bool     has_forest_body = false;
     uint32_t forest_body_unit = 0;
     uint32_t forest_body_idx = 0;
+    CirFrozenForest *forest_body_src = nullptr;
     // True for C++ special declarations like `= default` or `= delete`.
     // These are not bodyless shared-library declarations and must not be bound
     // as external symbols just because the class has canonical C++ spelling.
@@ -829,6 +879,14 @@ public:
     // participates in signature identity beside is_const_method. Itanium
     // mangling: 'R' (&) / 'O' (&&) before the CV qualifiers.
     uint8_t ref_qualifier;
+    // The vtable SLOT a virtual member occupies (Itanium 2.5.2: one per
+    // virtual function; [class.virtual]/2: an override has the same name,
+    // parameter-type-list, cv- and ref-qualifier): the display name, each
+    // user parameter's Itanium encoding (the mangler's — typedefs and
+    // template parameters desugared), then K/V/R/O. A destructor's key is its
+    // display name (its slots are "~" / "~$deleting"); a misaligned spelling
+    // array keys by the display name alone. Never asked of a static member.
+    madc::dis::istring virtual_slot_key() const;
     // True when the body was defined in-class or arrived through the
     // deferred-body machinery (parse_deferred_function_body): the C++
     // implicit-inline set — every TU that sees the defining class/header can
@@ -1862,6 +1920,11 @@ typedef madc::dis::intern_keyed_map<TokenKeyword *> keyword_map_t;
 typedef madc::dis::intern_keyed_map<TokenDataType *> flat_datatype_map_t;
 typedef std::map<madc::dis::istring, TokenDataType *> datatype_map_t;
 typedef std::map<madc::dis::istring, DataDef *> datadef_map_t;
+// The expression parser's operand / operator stacks (two per parseExpression):
+// vector-backed, so an empty stack allocates nothing — the default std::deque
+// allocates its map and first chunk on construction. No caller holds a
+// reference to an element across a push.
+typedef std::stack<TokenBase *, std::vector<TokenBase *> > token_stack_t;
 
 // The registries' transactions NEST (an interactive entry's transaction holds
 // the class journals opened inside it, plan §41.3): a transaction begun while
@@ -2286,6 +2349,16 @@ struct typespec_t
 inline typespec_t ptr_of(DataDef &d) { return typespec_t(&d, RefType::rtPointer); }
 inline typespec_t ref_of(DataDef &d) { return typespec_t(&d, RefType::rtReference); }
 
+// A stored token run's spelling, token by token (parser.cpp): a template
+// argument's identity, a default argument's text.
+madc::dis::istring template_tokens_spelling(const std::vector<class TokenBase *> &tokens);
+
+// A namespace-scope object's storage symbol: the Itanium mangling of
+// ns::name for the active target (parser.cpp — addVariable's, the restore's,
+// the builtin registry's).
+madc::dis::istring namespace_cpp_variable_symbol(const madc::dis::istring &ns_name,
+						 const madc::dis::istring &member_name);
+
 // vectors
 typedef std::vector<typespec_t> datatype_vec_t;
 typedef std::vector<Variable *> variable_vec_t;
@@ -2331,6 +2404,7 @@ protected:
 				  // (macro expansion, __FILE__/__LINE__) — its
 				  // chars advance NO column and taint tokens
 				  // with tfSYNTHPOS (fantasy-coordinate guard)
+	size_t id = 0;		  // this Source's frame number (serving_frame())
     };
     // Flat in-memory source buffer + read cursor. The entire input (file or
     // string) is slurped ONCE into _buf; get()/peek()/good()/eof() are then
@@ -2362,9 +2436,12 @@ protected:
     // to ctx->ctx->tab.
     std::set<madc::dis::istring> _served_arg_paint;
     size_t _synth_gets = 0;		// chars served from synthesized frames
+    size_t _frame_ids = 0;		// the last frame number handed out
+    size_t _union_frame = 0;		// the frame last added to _served_arg_paint
     int _lf, _cr, _column;
     int _last_token_line = 0;		// see last_token_line()
     madc::dis::istring _fname;
+    madc::dis::istring _found_dir;	// the search dir an #include found this file in (empty: none)
     void add_pushback_frame_len(size_t len, const madc::dis::istring &disabled_macro,
 			       bool recount = true, bool synthesized = false,
 			       const std::set<madc::dis::istring> *arg_disabled = NULL)
@@ -2372,6 +2449,7 @@ protected:
 	if ( !len )
 	    return;
 	PushbackFrame frame;
+	frame.id = ++_frame_ids;
 	frame.remaining = len;
 	frame.disabled_macro = disabled_macro;
 	if ( arg_disabled )
@@ -2402,6 +2480,45 @@ public:
 	size_t len;
 	madc::dis::istring param;
     };
+    // A stretch of a macro ARGUMENT's collected text, from `off` to the
+    // next stretch, and the paint of the region that served it. One
+    // argument can be read across regions painted differently: SQLite's
+    // `sqlite3ResolveNotValid(P,N,M,X,E,R)` passes `((X)&~(NC_IsCheck|...
+    // |NC_IdxExpr|NC_GenCol))==0` to assert, so assert's argument is X's
+    // already-expanded text (painted with what X expanded, NC_IdxExpr
+    // among it) and the body's own NC_IdxExpr (unpainted, still to expand).
+    struct PaintSeg
+    {
+	size_t off;
+	std::set<madc::dis::istring> paint;
+    };
+    // The frame that served the last get() (0: the buffer, or no frame).
+    // Read right after a get() to see where a character came from. Asked
+    // here, not recorded per get(): a frame that served a character stays
+    // at the front until the NEXT get() (the delayed pop), and get() clears
+    // the frames before it reads the buffer, so the front frame after a
+    // get() is the one that served it.
+    size_t serving_frame() const
+    {
+	return _pushback_frames.empty() ? 0 : _pushback_frames.front().id;
+    }
+    // Serve `s` from the pushback, each PaintSeg stretch as a frame carrying
+    // that stretch's paint (the text before the first stretch joins it) —
+    // a macro argument pre-expanded with the paint of each region it was
+    // read from, never one union over the whole argument.
+    void pushback_painted_text(const std::string &s, const std::vector<PaintSeg> &segs)
+    {
+	push_front_text(s);
+	// add_pushback_frame_len pushes to the FRONT: the last stretch first.
+	for ( size_t i = segs.size(); i-- > 0; )
+	{
+	    size_t from = i == 0 ? 0 : segs[i].off;
+	    size_t to = i + 1 < segs.size() ? segs[i + 1].off : s.size();
+	    if ( to > from )
+		add_pushback_frame_len(to - from, "", true, true,
+				       segs[i].paint.empty() ? NULL : &segs[i].paint);
+	}
+    }
     // gcc's multiple-include optimization, decided DURING the file's one lex
     // (libcpp push_conditional / do_endif / _cpp_pop_file_buffer): the file
     // is guarded by `guard` when its first significant line opens
@@ -2445,6 +2562,10 @@ public:
     const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
     const char *fname(madc::dis::istring &s) { _fname = s; return _fname.c_str(); }
+    const madc::dis::istring &fname_name() const { return _fname; }
+    // #include_next resumes the search after this directory (gcc's file->dir).
+    const madc::dis::istring &found_dir() const { return _found_dir; }
+    void found_dir(const madc::dis::istring &d) { _found_dir = d; }
     void copybuf(std::streambuf *sb)  { std::ostringstream tmp; tmp << sb; _buf = tmp.str(); _gpos = 0; }
     // Source TEXT, never a name: interning it would hash and keep every
     // header's bytes in the process-wide name table.
@@ -2493,13 +2614,16 @@ public:
     // Reset at the START of a function-like macro invocation's argument
     // collection; read after, to learn what paint covered the argument
     // TEXT this invocation consumed.
-    void reset_served_arg_paint() { _served_arg_paint.clear(); }
+    void reset_served_arg_paint() { _served_arg_paint.clear(); _union_frame = 0; }
     const std::set<madc::dis::istring> &served_arg_paint() const
     { return _served_arg_paint; }
-    std::set<madc::dis::istring> current_arg_paint() const
+    // A reference, never a copy: argument collection asks at every frame
+    // change, and a copied set is an allocation per macro argument.
+    const std::set<madc::dis::istring> &current_arg_paint() const
     {
+	static const std::set<madc::dis::istring> none;
 	if ( _pushback_frames.empty() )
-	    return std::set<madc::dis::istring>();
+	    return none;
 	return _pushback_frames.front().arg_disabled;
     }
     // Push a function-like macro's replacement as one frame PER SEGMENT:
@@ -2645,7 +2769,26 @@ public:
     // answer.
     int last_token_line() const { return _last_token_line; }
     void note_token_line(int line) { _last_token_line = line; }
+    // One character. Inline for the byte nearly every read is: nothing pushed
+    // back in front, no drained expansion frame left to drop, an ordinary
+    // byte of the buffer (not a possible line splice, not a line end — those
+    // move the line count). Every other read is get_slow()'s, kept out of line
+    // so this stays small enough to inline at every call site.
     int get()
+    {
+	if ( _pushback.empty() && _pushback_frames.empty() && _gpos < _buf.size() )
+	{
+	    const unsigned char ch = (unsigned char)_buf[_gpos];
+	    if ( ch != '\\' && ch != '\n' && ch != '\r' )
+	    {
+		++_gpos;
+		++_column;
+		return ch;
+	    }
+	}
+	return get_slow();
+    }
+    __attribute__((noinline)) int get_slow()
     {
 	if ( !_pushback.empty() )
 	{
@@ -2665,12 +2808,17 @@ public:
 	    {
 		recount = _pushback_frames.front().recount;
 		synthesized = _pushback_frames.front().synthesized;
-		// Empty in the overwhelming majority of frames, so this costs a
-		// branch on the hot char path and nothing else.
-		if ( !_pushback_frames.front().arg_disabled.empty() )
-		    _served_arg_paint.insert(
-			_pushback_frames.front().arg_disabled.begin(),
-			_pushback_frames.front().arg_disabled.end());
+		// Once per frame, not per character: a frame's paint never
+		// changes while it serves, and frame numbers are never reused.
+		// Empty in the overwhelming majority of frames.
+		if ( _pushback_frames.front().id != _union_frame )
+		{
+		    _union_frame = _pushback_frames.front().id;
+		    if ( !_pushback_frames.front().arg_disabled.empty() )
+			_served_arg_paint.insert(
+			    _pushback_frames.front().arg_disabled.begin(),
+			    _pushback_frames.front().arg_disabled.end());
+		}
 		if ( _pushback_frames.front().remaining > 0 )
 		    --_pushback_frames.front().remaining;
 	    }
@@ -2702,7 +2850,15 @@ public:
 	else { ++_column; }
 	return ch;
     }
+    // The next character, unread. Inline for an ordinary buffer byte; a
+    // pushback, the end, or a possible splice is peek_slow()'s.
     int peek()
+    {
+	if ( _pushback.empty() && _gpos < _buf.size() && _buf[_gpos] != '\\' )
+	    return (unsigned char)_buf[_gpos];
+	return peek_slow();
+    }
+    __attribute__((noinline)) int peek_slow()
     {
 	if ( !_pushback.empty() )
 	    return (unsigned char)_pushback.back();
@@ -2771,32 +2927,55 @@ public:
 	size_t bs = _buf.rfind('\\');
 	return bs != madc::dis::istring::npos && splice_length_at(bs) == _buf.size() - bs;
     }
-    // Fast-path identifier-continuation scan (perf lever, 2026-06-23). When NOT
-    // inside a pushback/macro expansion, scan the maximal identifier-continuation
-    // run directly off the flat buffer and hand it back as a [base,len) span,
+    // Fast-path span scan (perf lever, 2026-06-23). When NOT inside a
+    // pushback/macro expansion, scan the maximal run of bytes `keep` accepts
+    // directly off the flat buffer and hand it back as a [base,len) span,
     // advancing the cursor + column in ONE step — replacing the per-char
     // get()/peek() (with their pushback/line-splice branches) and the char-by-char
     // std::string growth on the hot path. Returns false when a pushback frame is
-    // active (the caller's char loop handles macro-expanded text). A line-splice
-    // mid-run stops the span at the '\\' (not an identifier char); the caller's
-    // char loop then reads the spliced remainder (peek()/get() resolve the splice).
-    // The classification is the SAME `isalnum||'_'` as the slow loop, so the two
-    // paths are byte-identical. `len` may be 0 (1-char identifier, or an immediate
-    // splice) — still a valid fast-path result; the caller's loop continues.
-    bool fast_ident_span(const char *&base, size_t &len)
+    // active (the caller's char loop handles macro-expanded text). `keep` must
+    // refuse '\\' (a possible line splice — the caller's char loop then reads it,
+    // peek()/get() resolve the splice) and the line ends (they move the line, not
+    // the column). The caller's char loop classifies with the SAME test, so the
+    // two paths are byte-identical. `len` may be 0 — still a valid fast-path
+    // result; the caller's loop continues.
+    template <class Keep>
+    bool fast_span(const char *&base, size_t &len, Keep keep)
     {
 	if ( !_pushback.empty() ) return false;
 	size_t start = _gpos;
-	while ( _gpos < _buf.size() )
-	{
-	    unsigned char c = (unsigned char)_buf[_gpos];
-	    if ( c == '_' || isalnum(c) ) ++_gpos;
-	    else break;
-	}
+	while ( _gpos < _buf.size() && keep((unsigned char)_buf[_gpos]) )
+	    ++_gpos;
 	len = _gpos - start;
 	base = _buf.data() + start;
 	_column += (int)len;
 	return true;
+    }
+    // Read through the rest of the physical line, up to (not including) its
+    // line end, as that many get() calls would: plain runs in one step, a
+    // splice continued by get(). A skipped line's text is read for nothing
+    // else.
+    void skip_line_rest()
+    {
+	while ( good() && !eof() )
+	{
+	    const char *run;
+	    size_t n;
+	    if ( fast_span(run, n, [](unsigned char c) {
+		    return c != '\n' && c != '\r' && c != '\\'; }) && n )
+		continue;
+	    const int c = peek();
+	    if ( c == '\n' || c == '\r' )
+		return;
+	    get();
+	}
+    }
+    // The identifier-continuation run (is_ident_char, the slow loop's test).
+    // A lambda, not the function's address: its type names the call, so the
+    // test inlines into the scan instead of an indirect call per character.
+    bool fast_ident_span(const char *&base, size_t &len)
+    {
+	return fast_span(base, len, [](unsigned char c) { return is_ident_char(c); });
     }
     bool getline(std::string &s)
     {
@@ -2869,6 +3048,20 @@ private:
     const char *_deferred_refusal = NULL;
     int _deferred_row = 0, _deferred_column = 0;
 };
+
+// Every identifier a C / C++ text spells outside its comments and literals —
+// each #if arm and directive included — into `names`: the identifier tokens
+// of tokenize_macro_spelling, the one reader of a spelling. True when the
+// text carries a ## paste, which can form a name no token spells. Read for a
+// macro replacement's names (the shared prelude cache) and for the pack's
+// SPELLED_NAMES: every name a frozen header spells, the names a macro defined
+// ahead of it could change (GCC's PCH rule). `content` (optional) gets the
+// names that stand where a macro expands: text, a #define body (its own
+// parameters aside), a computed #include — not a directive's word, condition,
+// header-name or #define / #undef name (B211). Defined in lexer.cpp.
+bool source_spelled_names(const std::string &text,
+			  std::set<madc::dis::istring> &names,
+			  std::set<madc::dis::istring> *content = NULL);
 
 // Diagnostic source-echo helpers (lexer.cpp). show_error_source_line is the
 // one formatter for the offending-line + caret display; madc_show_file_error
@@ -3139,6 +3332,7 @@ public:
     {
 	return i < _buf.size() ? madc_token_for_slot(_buf[i]) : NULL;
     }
+    size_t buf_size() const { return _buf.size(); }
 
     // -- backtrack: save/restore is {cursor, pushback} — NEVER the buffer. A
     //    parser rewind goes through Program::mark_stream / rewind_stream,
@@ -3235,6 +3429,17 @@ public:
 	_buf.erase(_buf.begin() + from, _buf.end());
 	_buf.insert(_buf.begin() + insert_at, tail.begin(), tail.end());
     }
+    // Move [from, to) to the end, everything after it one range earlier (the
+    // prelude's parse-order once-only rule, Program::relocate_include_for_
+    // prelude; same cursor==0 / empty-pushback precondition).
+    void move_range_to_end(size_t from, size_t to)
+    {
+	if ( from >= to || to > _buf.size() )
+	    return;
+	std::vector<uint32_t> range(_buf.begin() + from, _buf.begin() + to);
+	_buf.erase(_buf.begin() + from, _buf.begin() + to);
+	_buf.insert(_buf.end(), range.begin(), range.end());
+    }
 
     // -- tokens popped from the logical FRONT since `before` (callers that only
     //    pop the front, e.g. skip_requires_clause), reconstructed WITHOUT copying
@@ -3270,13 +3475,14 @@ struct MadcCompileGroup
 {
     std::shared_ptr<madc::dis::intern_table> strpool;
     std::shared_ptr<madc::dis::id_table<DataDef> > project_types;
-    // S3: ONE bound forest instance per dialect — keyed (producer-config
-    // word, -D defines hash), the same pair the probe's config gate
-    // matches — so sibling TUs adopt it instead of re-opening and
-    // re-materializing the same container. Valid ONLY because the group
-    // also shares strpool/project_types above: the instance's live-id
-    // remap and its DataDefs' type_id memos are bound to them.
-    std::map<std::pair<uint32_t, uint32_t>,
+    // S3: ONE bound forest instance per dialect — keyed (profile role,
+    // producer-config word, -D defines hash): the role the discovery walk
+    // takes and the pair the probe's config gate matches — so sibling TUs
+    // adopt it instead of re-opening and re-materializing the same
+    // container. Valid ONLY because the group also shares
+    // strpool/project_types above: the instance's live-id remap and its
+    // DataDefs' type_id memos are bound to them.
+    std::map<std::tuple<uint32_t, uint32_t, uint32_t>,
 	     std::shared_ptr<CirFrozenForest> > bind_forests;
     // R4-full: exact post-preprocessor token images for pure embedded
     // auto-include fragments. The cache owns immutable TokenRec-based images;
@@ -3302,12 +3508,19 @@ struct MadcCompileGroup
 // Immutable; safe to read from any thread.
 struct FormatIntrinsic {
     const char *name;
-    const char *builtin_kind;
+    BuiltinKind builtin_kind;
     bool yields_text;
 };
 // The table (its row count in `count`), and its row for `name` or NULL.
 const FormatIntrinsic *format_intrinsic_table(size_t &count);
 const FormatIntrinsic *find_format_intrinsic(const char *name);
+
+// The madc dialect's stdio streams (stdin / stdout / stderr, hard-coded as
+// println is): the stream `name` names, None for any other name. ONE table:
+// the --std=madc registration (Program::add_stdio_streams), the stand-in
+// (Program::stdio_stream_stand_in) and the REPL's completion words read it.
+// Immutable; safe to read from any thread.
+StdioStream find_stdio_stream(const char *name);
 
 // program class, keep things somewhat contained
 // One parsed template-parameter-list (`template < ... >`), the shape
@@ -3414,6 +3627,11 @@ public:
 	bool enable_ruby_namespace = true;
 	bool enable_js_namespace = true;
 	bool enable_rust_namespace = true;
+	// May the madc dialect register from the generated table (R4c: the
+	// dialect is builtin)? ON is the default. The dialect's own text parse
+	// (the table's generator, a module table's, the R1 differential) turns
+	// it off: there the fragments ARE the source, parsed as text.
+	bool enable_dialect_table = true;
 	bool restrict_headers_to_allowlist = false;
 	bool restrict_dlfcn_symbols_to_allowlist = false;
 	// Header partition (madc-header-partition-handoff.md): when true, an
@@ -3424,14 +3642,21 @@ public:
 	// This is the incremental shim-retirement lever — bypass system shims while
 	// keeping madc's own headers. Data-driven: see embedded_header_is_system_library_shim().
 	bool bypass_system_library_headers = false;
-	// OWNER LAW (.claude/rules/embedded-headers.md, top section): a binary
-	// built to carry the pack (the product modes' MADC_FOREST_EXPECT_*) reads
-	// the STANDARD CORE system headers from libmadc and never opens, stats or
-	// probes a system include dir for a name libmadc carries; disk serves only
-	// a name it does not carry (an add-on library's header). Set by the CLI's
-	// MADC_FOREST_EXPECT_* block, cleared by --no-embedded-headers, inherited
-	// by runtime-eval children. Read through Program::system_headers_from_libmadc().
-	bool system_headers_from_libmadc = false;
+	// OWNER LAW (.claude/rules/embedded-headers.md, top section): where the
+	// STANDARD CORE system headers come from.
+	//   disk_then_pack — the library/dev default: the system include dirs,
+	//     then a found pack's source arm for a name no dir holds.
+	//   libmadc — a binary built to carry the pack (the product modes'
+	//     MADC_FOREST_EXPECT_*, set by the CLI): never opens, stats or probes
+	//     a system include dir for a name libmadc carries; disk serves only a
+	//     name it does not carry (an add-on library's header).
+	//   disk — --no-embedded-headers: the system include dirs alone; libmadc
+	//     serves no core header (no grove bind, no source arm) unless the
+	//     command line names a container (--forest-bind=FILE).
+	// Inherited by runtime-eval children. Read through
+	// Program::system_headers_from_libmadc() / system_headers_from_disk_only().
+	enum class SystemHeaderSource : unsigned char { disk_then_pack, libmadc, disk };
+	SystemHeaderSource system_header_source = SystemHeaderSource::disk_then_pack;
 	// Win64's native headers omit a narrow POSIX delta. When enabled, a real
 	// system header may be followed by the convention-keyed embedded supplement
 	// `posix/<name>`. POSIX hosts never activate the layer; the CLI opt-out is
@@ -3578,13 +3803,24 @@ protected:
     struct SkippedArmCapture
     {
 	size_t begin = 0;	// raw offset of the arm's first line
-	bool pure = true;	// every significant line is a replayable directive
 	bool closed = false;	// its own #endif (no #else / #elif) ended it
 	std::string text;	// source text of the body, closing #endif excluded
     };
     SkippedArmCapture *skip_arm_capture = NULL;
-    TokenBase *skip_and_capture_arm(const madc::dis::istring &name);
+    TokenBase *skip_capturing_arm(SkippedArmCapture &cap);
+    TokenBase *skip_recorded_arm();
+    // Is the lexer's output so far at DECLARATION scope — outside every ( [ {
+    // but a linkage specification's, after a declaration's end or at the
+    // stream's start? The bind pushes a replayed arm's tokens at the root's
+    // include site, so only such an arm's tokens replay (K2, v76). The scan
+    // resumes where the last call stopped.
+    bool pack_output_at_declaration_scope();
+    std::unique_ptr<DelimDepth> pack_scope_delims;	// complete where Program is built and destroyed (parser.cpp)
+    size_t pack_scope_scanned = 0;
+    std::vector<bool> pack_scope_linkage;	// per open brace: a linkage specification's
     bool evaluateIfCondition();
+    std::string read_if_condition_text();
+    bool evaluate_if_text(const std::string &raw_expr);
     // The clang `__has_*` preprocessor operators, evaluated inside an #if.
     // `pos` enters at the operator's '(' and leaves past its ')'. Every one
     // answers from madc's OWN state and answers TRUTHFULLY: a yes madc cannot
@@ -3607,17 +3843,30 @@ protected:
     // on it).
     // (not const: intern_keyed_map::count() is not const-qualified)
     bool macro_name_defined(const madc::dis::istring &name);
-    // A predefined macro whose text is the current source position —
-    // __FILE__, __FILE_NAME__ (gcc 12+, clang), __LINE__: true, and the
+    // A predefined macro whose text the lexer computes as it expands it — the
+    // source position (__FILE__, __FILE_NAME__ (gcc 12+, clang), __LINE__),
+    // the translation's date and time (__DATE__, __TIME__) and the current
+    // file's modification time (__TIMESTAMP__): true, and the
     // replacement text into *out when given. The ONE list getToken's builtin
     // arm, the #if expander and macro_name_defined read, so a name is never
     // expanded but undefined, or defined but left unexpanded.
-    bool builtin_position_macro(const madc::dis::istring &name, madc::dis::istring *out);
-    void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
+    bool builtin_macro_text(const madc::dis::istring &name, madc::dis::istring *out);
+    // __DATE__ / __TIME__'s replacement texts for this translation unit:
+    // empty until translation_date_time() computes them at the first
+    // expansion, then fixed. Per-context state, like the rest of the lexer's.
+    madc::dis::istring translation_date_text, translation_time_text;
+    void translation_date_time();
+    // SOURCE_DATE_EPOCH, when set: the instant every date macro names, as UTC
+    // broken-down time into `parts` (`known` false when it does not convert);
+    // a malformed value is refused. False when unset.
+    bool source_date_epoch(struct tm &parts, bool &known);
+    // __TIMESTAMP__'s replacement text for the file being read now.
+    madc::dis::istring source_timestamp_text();
+    void popOperator(token_stack_t &, token_stack_t &);
     // The end of an expression (every exit of parseExpression): bind the
     // pending operators, refuse juxtaposed operands, return the one left.
-    TokenBase *finish_expression(std::stack<TokenBase *> &opStack,
-				 std::stack<TokenBase *> &exStack);
+    TokenBase *finish_expression(token_stack_t &opStack,
+				 token_stack_t &exStack);
 //  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
     void _tokenizer_init();
@@ -4787,7 +5036,7 @@ public:
 	std::vector<bool> typeparam_is_pack;
 	std::vector<TokenBase *> decl;
 	madc::dis::istring ns;
-	madc::dis::istring inline_builtin_kind;
+	BuiltinKind inline_builtin_kind;
 	// Owner class for a MEMBER function template being instantiated: pushed
 	// on class_scope_stack during the body parse so the params/body resolve
 	// class-scope members ([basic.scope.class]). NULL for free/namespace fn
@@ -5549,32 +5798,108 @@ public:
     // PE import); madc.cpp appends them to the link line after the parse. The
     // alias form resolves at run time and never lands here.
     std::vector<madc::dis::istring> module_link_libs;
-    // LAZY module rows this TU imported (the interface form): not linked,
-    // not opened at parse — recorded so the object's module list can carry
-    // them as OPTIONAL entries (the loader lifts the guard for a GUI row and
-    // opens what it can without failing).
-    std::vector<madc::dis::istring> module_optional_libs;
-    // The spellings of the modules this Program loaded: -l / #load, then its
-    // imports' optional rows — the walk a session's module commands and a
-    // tool server's module tools both read (madc_module_entry_point).
-    std::vector<madc::dis::istring> loaded_modules() const
-    {
-	std::vector<madc::dis::istring> all(loaded_lib_paths);
-	all.insert(all.end(), module_optional_libs.begin(), module_optional_libs.end());
-	return all;
-    }
-    // A module row flagged MADC_MODULE_GUI was bound by this TU (`import
-    // madcwebview;`): the driver lifts an armed memory guard before running.
+    // A GUI module was imported by this TU (`import ui_web;`: its description's
+    // mdGui): the driver lifts an armed memory guard before running.
     bool bound_gui_module;
-    // LEX-time state: between `#pragma madc module_begin("<spelling>")` and
-    // `module_end` (the import directive's synthetic wrap of a LAZY row's
-    // interface) every emitted token is tagged with the spelling
-    // (_lazy_module_tokens, identity-keyed). parseFunction reads the tag off
-    // a prototype's own `;` token — a token-identity fact, so the auto-
-    // include injector's later reordering of the stream cannot move a
-    // fragment INTO the range (a time-based marker did exactly that).
-    madc::dis::istring lazy_module_spelling;
-    std::unordered_map<const TokenBase *, madc::dis::istring> _lazy_module_tokens;
+    // The madc MODULES this Program imported (madc_module.h): each one's name,
+    // the file the import opened, and its description. An import registers
+    // its module's declarations (once: `registered`); builtin_type asks the
+    // imported tables for a type a builder names; a session's commands and a
+    // tool server's tools come from the descriptions.
+    struct ImportedModule
+    {
+	madc::dis::istring name;
+	madc::dis::istring path;
+	const MadcModuleDescription *desc;
+	bool registered;
+	// What a program records of it — the module's reference
+	// (madc_module_reference): a member call's library, its list entry.
+	madc::dis::istring reference() const;
+    };
+    std::vector<ImportedModule> imported_modules;
+    // --import=NAME (and the configuration's `modules`): imported ahead of the
+    // program's own source, as if it began with `import NAME;`. Kept across
+    // tokenizer resets.
+    std::vector<madc::dis::istring> command_line_imports;
+    // Where `import NAME;` looks for a module before madc's own module
+    // directory (Python's sys.path): the driver's entries — the program's own
+    // directory, then each --module-path. Kept across tokenizer resets.
+    std::vector<std::string> module_search_dirs;
+    // While an import registers a module's declarations: the module the
+    // builders stamp each function as a member of (declare_builtin_function).
+    const ImportedModule *registering_module;
+    std::vector<std::string> module_search_path() const;
+    // `import NAME;` for a madc module found at `path`: open it, read its
+    // description, check its ABI, record it. False + err: the import failed
+    // (the caller words the import error).
+    bool import_madc_module(const madc::dis::istring &name, const std::string &path,
+			    std::string &err);
+    // THE import of a madc module by name (the directive's, --import's): found
+    // on module_search_path() and imported, or not_found, or refused. `err` is
+    // the import error's text after "import: " for both failures.
+    enum class ModuleImport : unsigned char { imported, not_found, refused };
+    ModuleImport import_module(const madc::dis::istring &name, std::string &err);
+    // The command_line_imports, after a tokenizer reset: false = one failed,
+    // recorded as a lexer diagnostic.
+    bool import_command_line_modules();
+    // Each imported module not yet registered: its declarations, in table
+    // order, each function stamped as the module's member.
+    void register_imported_modules();
+    // The dialect is builtin (R4c, docs/plans/2026-10-17-dialect-builtin-
+    // registration.md): under --std=madc the dialect's names register from the
+    // generated table (madc_builtin_registry.h), per name, when a lookup first
+    // names them. A fragment's TEXT is served only to a program whose first
+    // dialect fragment met <string> already — its std::string interop
+    // declarations exist only as text. Decided once per program, at that
+    // first fragment (dialect_fragment_from_table); the two never mix.
+    // Thread contract: every member below is this Program's own, read and
+    // written on its thread; the table is constant code and data.
+    enum class DialectServing : unsigned char { Undecided, Table, Text };
+    DialectServing dialect_serving = DialectServing::Undecided;
+    bool dialect_from_table() const { return dialect_serving == DialectServing::Table; }
+    // The dialect namespaces the program named — the auto-include scan's
+    // head rows, to closure through the fragments' own mentions: the table
+    // builds only in these, so a bare name never reaches a namespace the
+    // program did not name.
+    std::vector<madc::dis::istring> dialect_named;
+    bool dialect_namespace_named(const madc::dis::istring &ns) const;
+    // The fragments the table serves this program, each one's closure read.
+    std::set<madc::dis::istring> dialect_fragments;
+    // The table entries whose builders ran in this Program (indexed as the
+    // table; empty until the first), and how many (--show-stats).
+    std::vector<unsigned char> dialect_built;
+    size_t dialect_builds = 0;
+    // A dialect fragment the auto-include or a written #include would serve
+    // under --std=madc: true when the table serves it — the namespaces it
+    // heads are recorded as named and no text is served; false = the caller
+    // serves its text (another standard, or a Text program).
+    bool dialect_fragment_from_table(const madc::dis::istring &header);
+    // Each named dialect namespace exists in the namespace map (after
+    // _parser_init's reset; after an interactive entry's lex).
+    void register_dialect_namespaces();
+    // ns::name's first touch by a lookup: the table's builder for it runs,
+    // once per Program, when the program named ns. True when it built.
+    bool dialect_demand(const madc::dis::istring &ns, const madc::dis::istring &name);
+    // A name's first touch at the global scope (a type's bare tag, an
+    // unscoped enumerator, a namespace object — madc_builtin_registry.h's
+    // bare twins): its entry builds in each named namespace that has one.
+    // True when anything built.
+    bool dialect_demand_bare(const madc::dis::istring &name);
+    // `using namespace ns;` imports what the namespace holds: every name the
+    // table holds in ns is demanded.
+    void dialect_demand_namespace(const madc::dis::istring &ns);
+    // Completion: the names the table holds in a named ns, from `prefix`.
+    void dialect_table_names(const madc::dis::istring &ns, const madc::dis::istring &prefix,
+			     const std::function<void(const madc::dis::istring &)> &offer) const;
+    // A bodiless namespace-scope function template, registered as its parse
+    // registers it (the skipped-template registrar: placeholder Variable,
+    // fn_template_decl_map, builtin kind) from its declaration's tokens — the
+    // `template<...>` head's parameters given — inside namespace `ns`.
+    void register_namespace_function_template(const madc::dis::istring &ns,
+	const std::vector<TokenBase *> &decl,
+	const std::vector<madc::dis::istring> &typeparams,
+	const std::vector<bool> &typeparam_is_type,
+	const std::vector<bool> &typeparam_is_pack);
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	struct ReplacementToken {
@@ -5606,7 +5931,15 @@ public:
     std::map<madc::dis::istring, LazyEntry> lazy_map;	// deferred symbol registration
     madc::dis::intern_keyed_map<std::string> define_map;	// #define name value (key = interned spelling-id)
     std::set<madc::dis::istring> disabled_builtin_names;	// -fno-builtin-foo from CLI/tests
-    std::map<madc::dis::istring, std::stack<madc::dis::istring>> _macro_save_stack; // #pragma push_macro / pop_macro
+    // #pragma push_macro / pop_macro: each name's saved definitions, last
+    // pushed on top — object- or function-like, or undefined — as gcc saves
+    // them.
+    struct PushedMacro {
+	enum Kind : unsigned char { absent, object, function } kind = absent;
+	madc::dis::istring value;	// object-like body
+	MacroDef macro;			// function-like definition
+    };
+    std::map<madc::dis::istring, std::stack<PushedMacro>> _macro_save_stack;
     std::vector<madc::dis::istring> include_paths;	// -I include search paths (for #include "file.h")
     std::vector<std::pair<madc::dis::istring,madc::dis::istring>> cli_defines;	// -DNAME[=VALUE] command-line defines (applied after builtins)
     // Selected C++ standard library flavor (-stdlib=), NULL = the build's
@@ -5616,8 +5949,9 @@ public:
     const madc_stdlib_flavor *stdlib_flavor = NULL;
     mutable std::vector<madc::dis::istring> _canon_prefixes;		// cache: see sys_include_prefixes_canonical()
     mutable const madc_stdlib_flavor *_canon_prefix_flavor = NULL;
-    mutable std::vector<const char *> _toolchain_paths;		// cache: see sys_include_paths() (enable_sysroot_includes == false)
-    mutable const madc_stdlib_flavor *_toolchain_paths_flavor = NULL;
+    mutable const char *const *_canon_prefix_view = NULL;			// the sys_include_paths() view it was built from
+    mutable std::vector<const char *> _search_view_paths[4];	// cache per kind: see search_view() (cuts of the flavor's table)
+    mutable const madc_stdlib_flavor *_search_view_flavor[4] = { NULL, NULL, NULL, NULL };
     void add_include_dir(const std::string &dir);	// normalize (trailing '/') + append to include_paths
     void add_cli_define(const std::string &def);	// split NAME[=VALUE] (bare => "1") into cli_defines
     std::map<madc::dis::istring, bool> included_files;	// #include files already tokenized (require_once semantics)
@@ -5651,9 +5985,8 @@ public:
     // consumed by madc_cir_freeze to stage the v2 segments. All hooks are
     // no-ops when the flag is off, so default lexing/parsing is unchanged.
     struct PackMacroEvent {		// one PP-export delta, in directive order
-	// peImport: `import <module>;` on a LAZY row — name is the module; the
-	// replay is adopt_lazy_module_import. It defines no macro.
-	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2, peImport = 3 };
+	// Tag 3 is retired (a LAZY module import's event): never reused.
+	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2 };
 	static bool defines_macro(uint8_t tag) { return tag == peDefine || tag == peDefineFn; }
 	madc::dis::istring name;
 	uint8_t     tag;
@@ -5695,37 +6028,86 @@ public:
     std::set<const char *> pack_units_seen;
     std::map<const char *, std::vector<PackMacroEvent> > pack_pp_exports; // unit -> ordered deltas
     std::map<const char *, std::vector<const char *> > pack_unit_edges;   // includer -> includees, in order
-    std::set<madc::dis::istring> pack_branch_macros;	// names PP conditionals consulted
-    // v40 (task #57): per-unit EXTERNAL branch dependencies — a PP-conditional
-    // consult whose macro state was established OUTSIDE the current top-level
-    // include's closure (an earlier sibling's #define, or undefined). Bind
-    // eligibility compares them to the consumer's live tables; mismatch
-    // declines the root bind to live parse. Same-root state is reproduced by
-    // the post-order replay and is deliberately NOT recorded; predefine/-D
-    // state (defined, no recorded origin root) is pinned by the v27 config
-    // word and skipped too.
-    struct PackBranchDep {
-	madc::dis::istring name;
-	bool defined;			// state observed at the consult
-	bool has_value;			// object-like body captured below
-	std::string value;
-	const char *definer;		// unit that established the state (NULL = none)
-    };
+    // Where each macro's state was established while freezing: a conditional's
+    // consult is EXTERNAL (pack_note_branch_consult) when that was outside the
+    // consulting unit's own subtree, or the macro is undefined with no origin.
     struct PackMacroOrigin {
 	const char *unit;		// innermost unit whose parse defined it
 	bool defined;			// false after #undef
     };
     std::map<madc::dis::istring, PackMacroOrigin> pack_macro_origin;
-    std::map<const char *, std::vector<PackBranchDep> > pack_unit_branch_deps;
-    // v55: per-unit skipped directive-only `#ifndef name` arms whose name an
-    // EXTERNAL sibling defined first (mingw stdio.h's NULL arm). Frozen as
-    // CIR_BRANCH_DEP_PP_ARM tuples; the bind replays one when name is undefined.
-    struct PackSkippedArm {
-	madc::dis::istring name;
-	std::string text;		// arm body source text, not a name
+    // v68 (docs/plans/2026-10-18-verified-cxx-bind.md, K2): a conditional a
+    // unit evaluated over an EXTERNAL macro, placed in the unit's item order —
+    // its PP events, include edges and conditionals as the freeze met them —
+    // so the bind re-evaluates it in the consumer's positional state.
+    struct PackCondRecord {
+	CondDirective kind;		// If / Ifdef / Ifndef / Elif
+	std::string text;		// the condition, or the #ifdef / #ifndef macro name
+	bool outcome = false;
+	uint32_t ev_begin = 0, ed_begin = 0;	// the unit's events / edges ahead of the directive
+	uint32_t ev_end = 0, ed_end = 0;	// ... ahead of the arm's end (#elif, #else, #endif)
+	bool single_arm = false;	// the group's #endif ended the arm, no #elif / #else in it
+	bool arm_captured = false;	// a skipped single arm's body is in `arm`
+	bool arm_decl_scope = false;	// v76: ... and it sits at declaration scope
+	std::string arm;
+	uint32_t rec_end = 0;		// v69: the unit's record count at the arm's end
+	std::string arm_state;		// v69: the arm's written macros as the freeze held them (forest_macro_state_spelling)
+	std::vector<madc::dis::istring> arm_writes;	// v71: ... and their names (the forest keeps their expansion points)
+	// v72 (K2d): the arm's tokens — the stream's size at the directive, and
+	// the first and last token lexed in the arm (pointers survive the
+	// stream's later reordering); the writer turns them unit-local.
+	size_t tok_open = 0;
+	TokenBase *tok_first = NULL, *tok_last = NULL;
+	// v69: an #if / #elif's consulted macros and their state hashes at the
+	// evaluation — the bind takes the frozen outcome when every one matches.
+	std::vector<std::pair<madc::dis::istring, uint64_t> > consults;
     };
-    std::map<const char *, std::vector<PackSkippedArm> > pack_unit_skipped_arms;
-    std::map<const char *, std::set<madc::dis::istring> > pack_unit_branch_dep_seen;
+    // v69: the macros the #if / #elif being evaluated consults (freezing only;
+    // pack_note_branch_consult collects while pack_if_collect is set).
+    bool pack_if_collect = false;
+    std::vector<madc::dis::istring> pack_if_consulted;
+    // v71 (K2c): an EXPANSION POINT — a macro the freeze expanded into the
+    // token stream, at its first expansion since the last point EPOCH: every
+    // include edge, recorded conditional, recorded arm's end and inclusion end
+    // starts one, so between two points of a name in a unit inclusion the
+    // bind's walk replays the same events the freeze read. Where it expanded
+    // (the unit inclusion, and the unit's events, edges and records ahead of
+    // it) and the state it held (forest_macro_state_spelling, interned). The
+    // bind checks a name a run arm left unlike the freeze's at each one; the
+    // forest keeps the points of names a captured arm writes.
+    struct PackExpansionPoint {
+	uint32_t sid, inclusion, ev, ed, rec;
+	madc::dis::istring state;
+    };
+    std::map<const char *, std::vector<PackExpansionPoint> > pack_unit_points;
+    uint32_t pack_point_epoch = 1;
+    std::unordered_map<uint32_t, uint32_t> pack_point_seen;	// spelling id -> its last point's epoch
+    void pack_note_expansion(uint32_t sid);
+    std::map<const char *, std::vector<PackCondRecord> > pack_unit_conds;
+    std::map<const char *, std::vector<uint32_t> > pack_unit_edge_events;	// v68: per edge, the unit's events ahead of it
+    // v75: a unit's inclusions in enter order (cir_forest_incl_field words):
+    // its event, edge and condition-record counts as the include was read
+    // (pack_unit_enter) and as it returned (pack_unit_leave). A nested
+    // re-entry's range lies inside the open inclusion's; per unit, the open
+    // inclusions' indices, innermost last.
+    std::map<const char *, std::vector<uint32_t> > pack_unit_inclusions;
+    std::map<const char *, std::vector<uint32_t> > pack_unit_open_inclusions;
+    void pack_unit_enter(const char *unit);
+    void pack_unit_leave(const char *unit);
+    // One open conditional group, parallel to cond_groups while freezing.
+    struct PackCondFrame {
+	const char *unit;
+	int pending = -1;		// the record whose arm is open, or -1
+	bool branched = false;		// an #elif / #else came
+    };
+    std::vector<PackCondFrame> pack_cond_stack;
+    size_t pack_external_consults = 0;	// v68: every external branch consult bumps it
+    void pack_cond_open(CondDirective kind, const std::string &text, bool outcome,
+			size_t consults_before);
+    void pack_cond_elif(const std::string &text, bool outcome, size_t consults_before);
+    void pack_cond_branch();
+    void pack_cond_close();
+    PackCondRecord *pack_cond_pending();
     // v41: exact pre-preprocessor source text for every packed unit. A
     // compiler-less target whose consumer config cannot bind the producer's
     // semantic grove (another --std=, -D set, or POSIX posture) tokenizes this
@@ -5761,20 +6143,39 @@ public:
     void pack_record_define(const madc::dis::istring &name, const std::string &value);
     void pack_record_define_fn(const madc::dis::istring &name, const MacroDef &m);
     void pack_record_undef(const madc::dis::istring &name);
-    void pack_record_import(const madc::dis::istring &module);
     void pack_record_edge(const madc::dis::istring &includee);	// includer = current source
     // A dedup-SKIPPED include still needs its bytes in the corpus — see the
     // definition. Freeze-time only, at most one read per unit. False when the
     // file cannot be read.
     bool pack_record_skipped_source(const madc::dis::istring &path);
-    // --freeze-sources=LIST: every file LIST names joins the container as a
-    // source-only unit (the pack's source arm). False, said, when the list or
-    // a file it names cannot be read.
-    bool pack_record_source_list(const std::string &list_path);
-    // True when an EXTERNAL definition (an earlier sibling's #define) gates
-    // this consult — the condition a skipped `#ifndef` arm is missing content.
-    bool pack_record_branch_macro(const std::string &name,	// interned only when recording
-				  bool include_probe = false);
+    // --freeze-sources=LIST, read BEFORE the parse: the source arm a freeze
+    // packs is libmadc's, so the translation unit being frozen resolves, tests
+    // (__has_include) and reads it as every consumer of the pack will. Unit
+    // name -> the build host's file, in list order. False, said, when the list
+    // cannot be read.
+    std::vector<std::pair<madc::dis::istring, std::string>> staged_sources;
+    std::unordered_map<madc::dis::istring, size_t> staged_source_at;
+    bool pack_stage_source_list(const std::string &list_path);
+    // The staged unit a spelling names — forest_source_unit's order: the exact
+    // name, then (allow_tail) under a build include root, then the path tail.
+    // -1: none.
+    long staged_source_unit(const madc::dis::istring &spelling, bool allow_tail) const;
+    bool staged_source_text(size_t i, std::string &text) const;
+    // After the parse: every staged file joins the container as a source-only
+    // unit (the pack's source arm); a unit the freeze tokenized keeps that
+    // record. False, said, when a file cannot be read.
+    bool pack_record_staged_sources();
+    // A conditional consulted `name` while freezing: the #if / #elif's consult
+    // record takes it, and an EXTERNAL consult counts (pack_external_consults),
+    // so the open conditional is recorded for the bind's walk. Inline: a
+    // compile that freezes nothing never makes the call (every identifier of
+    // every #if asks).
+    void pack_note_branch_consult(const std::string &name)
+    {
+	if ( pack_recording )
+	    pack_note_recorded_consult(name);
+    }
+    void pack_note_recorded_consult(const std::string &name);	// interned only when recording
     const char *pack_current_unit();	// interned current source file (NULL off)
     void dump_macros(FILE *out);	// -dM: effective macro table, sorted
     void pack_open_toplevel_decl();	// loop-top: push a decl frame
@@ -6225,6 +6626,9 @@ public:
     // name, e.g. `int` -> "int32_t", making a name compare unreliable).
     registration_set<madc::dis::istring> user_typedef_names;
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
+    // Numbers each named class handler's hidden pointer (`__madc_caught_<n>`,
+    // TokenTRY::parse): unique within the translation unit.
+    unsigned catch_bind_serial = 0;
     std::vector<TokenSWITCH *> switch_stack; // active switch parse contexts for nested case/default hoisting
     std::vector<TokenCASE *> switch_case_stack; // current active case/default while parsing each switch
     size_t switch_label_seq = 0;	// unique suffix for nested-case in-place labels
@@ -6253,7 +6657,6 @@ public:
     // machinery. Empty in lean/batch mode (zero cost there).
     std::vector<std::pair<std::string, std::string>> fidelity_include_directives;
     bool _include_iostream;		// #include <iostream> was seen during tokenization
-    bool _include_stdio;		// #include <stdio.h> was seen during tokenization
     bool _include_string;		// #include <string> was seen during tokenization
     bool _include_ns_madc;		// #include <ns_madc> was seen — main gets the __madc_sys_init injection
     bool _value_stream_operator_injected; // bits/value_stream fragment served (one-shot; see maybe_inject_value_stream_operator)
@@ -6511,6 +6914,11 @@ public:
     // Range-for arrived in C++11; the madc dialect also provides it.
     bool range_for_enabled() const
     { return language_std == STD_MADC || (is_cpp_mode() && language_std >= STD_CPP11); }
+    // An rvalue reference to a non-volatile object is an implicitly movable
+    // entity ([class.copy.elision]/3) from C++20 (P1825R0) — g++ moves
+    // through one from -std=c++20 on; the madc dialect too.
+    bool rvalue_reference_implicitly_movable() const
+    { return language_std == STD_MADC || (is_cpp_mode() && language_std >= STD_CPP20); }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
     // Trigraphs (C11 5.2.1.1; C++ until C++17 removed them) are replaced in
     // the ISO dialects only — gcc's -std=c89 … c17 and c++98 … c++14. A GNU
@@ -6556,7 +6964,15 @@ public:
     // the REAL glibc/libstdc++ headers configure their C++ surface. Only
     // explicit C standards present as plain gcc.
     bool presents_as_cpp() const { return language_std == STD_MADC || is_cpp_mode(); }
-    bool auto_includes_enabled() const { return language_std == STD_MADC; }
+    // THE one answer to "is the madc dialect surface on" (owner 2026-10-17:
+    // "the dialect builtin registration is gated on --std=madc"; "the
+    // entire madc:: namespace is gated to --std=madc"): the auto-include
+    // scan, the dialect namespaces' registration (is_namespace_registration_
+    // enabled — an embedder's per-namespace switches sit UNDER it), the
+    // built-in streams and intrinsics, the default preference. Read from
+    // the LanguageStd enum, never a string. Gate:
+    // scripts/check-dialect-std-gated.sh.
+    bool dialect_surface_enabled() const { return language_std == STD_MADC; }
     // C++ SYMBOL MANGLING, phase 1 (free functions) — design:
     // docs/plans/2026-09-16-free-function-overloading-linkage.md, scope (c).
     // In every C++-presenting mode a FILE-SCOPE function of C++ linkage is a
@@ -6672,7 +7088,9 @@ public:
 	return cplusplus_value_for(is_cpp_mode() ? language_std : default_cpp_std);
     }
     bool set_language_standard(const madc::dis::istring &standard);
-    bool set_language_standard_option(const madc::dis::istring &arg);
+    // A main source's `#!.../madc --std=NAME` line: its standard, adopted
+    // before the tokenizer seeds the standard's keywords and macros.
+    void adopt_shebang_standard(const std::string &text);
     // The ONE reader of a `--std=` spelling (without the prefix): the
     // standard it names and whether it is the GNU dialect (gnu17 is C17 +
     // GNU extensions, as gcc reads it), no Program changed. False for a word
@@ -6748,6 +7166,48 @@ public:
     bool skip_includes;		// --emit-function: lex without processing #include
     std::set<madc::dis::istring> pending_auto_include_headers;
     std::set<madc::dis::istring> pending_auto_include_identifiers;
+    // B198 — the prelude's once-only state follows PARSE order. The prelude
+    // is lexed after the unit but parsed ahead of it, so a header the unit
+    // first includes AFTER the prelude's position, and the prelude includes
+    // too, was a once-only skip in the prelude while its tokens stayed behind
+    // the prelude's uses. include_serving is the stack of #include directives
+    // in flight (IncludeServingScope, lexer.cpp): each records its start, the
+    // once-only key its serving was gated on (should_tokenize_include, the
+    // named arm) and its end at completion (include_completed_token). A served
+    // first inclusion lexed in the unit's own pass keeps its token range in
+    // include_first_ranges (its key's first row), for the unit's lex. While the prelude lexes
+    // (prelude_relocation.active, inject_pending_auto_includes), a skip of a
+    // header whose first range lies in [insert_at, main_end) MOVES that range
+    // to the prelude's tail — where lexing in parse order puts it
+    // (relocate_include_for_prelude). Per Program, single-threaded as the lex.
+    struct IncludeServing {
+	size_t start;
+	size_t end;
+	madc::dis::istring key;
+	bool served;
+    };
+    std::vector<IncludeServing> include_serving;
+    // In serving order; a key's FIRST row is its first inclusion (a
+    // guard-less header served twice has two). Appended, never searched,
+    // until a relocation is armed.
+    struct IncludeRange {
+	madc::dis::istring key;
+	size_t start;
+	size_t end;
+    };
+    std::vector<IncludeRange> include_first_ranges;
+    madc::dis::istring include_once_key;	// the last should_tokenize_include key
+    struct PreludeRelocation {
+	bool active;
+	size_t insert_at;	// the prelude's position in the unit's tokens
+	size_t main_end;	// the unit's own tokens end here (the prelude follows)
+	size_t moved;		// tokens moved to the tail so far
+    };
+    PreludeRelocation prelude_relocation = { false, 0, 0, 0 };
+    void end_include_serving();
+    madc::dis::istring note_include_once_key(const madc::dis::istring &path);
+    void note_bound_include_key(const char *unit_name, const madc::dis::istring &incfile);
+    bool relocate_include_for_prelude(const madc::dis::istring &key);
     // Identifiers this TU declares in a declarator position (after a type
     // or a struct/class/enum tag keyword): the auto-include scan never
     // answers for them again — the TU provides the name itself.
@@ -6853,7 +7313,8 @@ public:
     void add_globals();
     void add_host_callbacks();	// declares host_callback_regs prototypes (libmadc register_function)
     void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
-    void add_stdio();		// placeholder for #include <stdio.h> registration
+    void add_stdio_streams();	// the madc dialect's stdin/stdout/stderr: lazy_map entries, no header (println's twin)
+    Variable *stdio_stream_stand_in(const madc::dis::istring &name);	// lazy_resolve's stream arm
     struct PendingForestFunc;
     Variable *lazy_resolve(const madc::dis::istring &name);	// on-demand variable/function registration
     DataDef  *lazy_resolve_type(const madc::dis::istring &name);	// on-demand type/struct registration
@@ -6894,13 +7355,30 @@ public:
     // builtin spelling (a copy emitting as X). NULL when X is not adopted.
     Variable *register_builtin_twin_alias(const madc::dis::istring &fname,
 					  const madc::dis::istring &twin);
-    void activate_forest_function_family(const madc::dis::istring &ns,
+    // The first touch of `ns::name` by a lookup: the deferred derived
+    // functions of that family register, and so does the dialect name
+    // (dialect_demand) — the owner every namespace-member lookup calls before
+    // it reads the registries.
+    void activate_forest_member(const madc::dis::istring &ns,
 	const madc::dis::istring &display_name);
+    // One restored using-declaration import: namespace_map[ns][name] -> the
+    // function registered as key, joined to ns::name's overload set when
+    // ov_member. False: key names no function yet.
+    bool bind_forest_ns_import(const madc::dis::istring &ns, const madc::dis::istring &name,
+	const madc::dis::istring &key, bool ov_member);
+    // A free operator's lookup: the same, for every namespace.
     void activate_forest_function_display(const madc::dis::istring &display_name);
     // Phase 6 (forest = serialized Tree-1): RECONSTRUCT symbol tables from a
     // loaded forest's typed decl records — never re-parse. Slice 1b: file-scope
     // typedefs. (Declared with an incomplete CirFrozenForest — pointer/ref only.)
+    struct ForestSide;	// the bound forest's bind state (below)
+    // The bound forest, against its chain and registration state; and a
+    // DIRECT restore of a forest the side did not bind (an empty closure: the
+    // whole container — unit tests, non-include consumers), registered as the
+    // system side's.
+    void forest_restore_decls(ForestSide &s);
     void forest_restore_decls(class CirFrozenForest &forest);
+    void forest_restore_side(ForestSide &s, class CirFrozenForest &forest);
     // Phase 6 slice 2 — parse-time grove binding (opt-in --forest-bind). A
     // system #include naming a frozen grove unit BINDS instead of tokenizing:
     // its PP-export delta installs along the include DAG, then the forest's
@@ -6922,36 +7400,31 @@ public:
     {
 	return f && *f && !forest_root_file.empty() && forest_root_file == f;
     }
-    CirFrozenForest *bind_forest = NULL;	// lazily opened on first system include
-    // S3 (R4-lite): ownership of bind_forest. A private probe result and a
-    // group-shared instance both live here; ~Program releases the holder
-    // (never a raw delete), so N sibling TUs can hold ONE instance.
-    std::shared_ptr<CirFrozenForest> _bind_forest_holder;
+    // The bound forest and its bind state: forest_system (ForestSide, below).
     // Every pack reader this compile opened, ONE per (image, profile): the
     // grove bind, the header-text lookup and the AOT ledger share it, so the
     // directory is read once and the pool/arena only when a role needs them
     // (complete_open, memoized). Released with the Program.
     std::vector<std::shared_ptr<CirFrozenForest> > _forest_readers;
+    // Profiles a walk skipped by role (lexer.cpp's forest_profile_skipped):
+    // never opened, so no reader holds their role; one entry per (image,
+    // profile length).
+    struct ForestSkippedProfile { const void *image; size_t len; uint32_t role; size_t below; };
+    std::vector<ForestSkippedProfile> _forest_skipped_profiles;
     // S3: the compile group this Program is a sibling of (NULL = standalone).
     // Set by the ctor; the group outlives nothing — Programs hold shared_ptr
     // copies of everything they adopt from it, except this backpointer, which
     // is only consulted during compile (the group is alive for all of it).
     MadcCompileGroup *compile_group = NULL;
-    bool bind_forest_tried = false;	// one-shot full-open attempt (success or fail)
-    // The bind carrier opened to its directory (bind_forest_directory): the
-    // lookups' reader; bind_forest is the same instance once a bind completes
-    // it. NULL = no exact-config container.
-    CirFrozenForest *_bind_directory = NULL;
-    bool bind_directory_tried = false;	// one-shot discovery (success or fail)
     // AOT ledger carrier (forest-carriers S5): the container the emit lane
     // reads its C-lane runtime modules from under -static-libmadc. Usually
-    // bind_forest itself; a SEPARATE open when the grove bind never happened
+    // the system bind's forest itself; a SEPARATE open when the grove bind never happened
     // (a source with no system include) or fell through the v27 producer-
     // config gate — the ledger is madc's own runtime, target-specific but
     // dialect-agnostic, so a --std=c99 compile must still link it.
     CirFrozenForest *ledger_forest = NULL;
     bool ledger_forest_tried = false;	// one-shot open attempt (success or fail)
-    // Raw-source view of the same carrier. Unlike bind_forest, this ignores
+    // Raw-source view of the same carrier. Unlike the system bind, this ignores
     // producer-config identity: the stored bytes are re-preprocessed under
     // this Program's live config. It is consulted only after the ordinary
     // filesystem search misses, so development hosts keep their normal path
@@ -7065,26 +7538,106 @@ public:
     // admit the namespace one); a global, function or template record is
     // registered or not.
     enum : unsigned char { FOREST_TYPE_FLAT = 1, FOREST_TYPE_NS = 2 };
-    std::vector<unsigned char> forest_type_registered;
-    std::vector<bool> forest_global_registered;
-    std::vector<bool> forest_func_registered;
-    std::vector<bool> forest_tmpl_registered;
-    size_t forest_restored_chain_size = 0;	// forest_chain's size at the last restore
+    // (The per-record state lives on each bound forest's ForestSide below.)
     // The bind's progress as an interactive entry's transaction saves it
     // (EntryTransaction): a rolled-back entry — a failed one, or a trial
     // parse — loses the registrations its binds' restore made (the
     // registration journal), so the binds and restore runs go with them and
     // the next #include of the header binds and registers again.
     struct ForestBindMark {
-	size_t chain_size = 0;
-	size_t restored_chain_size = 0;
-	std::set<uint32_t> live_present, husk_live_pending;
-	std::vector<unsigned char> type_registered;
-	std::vector<bool> global_registered, func_registered, tmpl_registered;
+	// One bound forest's progress (ForestSide).
+	struct Side {
+	    size_t chain_size = 0;
+	    size_t restored_chain_size = 0;
+	    std::set<uint32_t> live_present;
+	    std::set<uint32_t> macro_differs;
+	    size_t withdrawn_arms = 0;
+	    bool bind_stopped = false;
+	    std::vector<unsigned char> type_registered;
+	    std::vector<bool> global_registered, func_registered, tmpl_registered;
+	};
+	Side system;			// forest_system
 	size_t overload_recaptures = 0;
     };
     ForestBindMark forest_bind_mark() const;
     void forest_bind_rewind(const ForestBindMark &mark);
+    // The frozen forest this Program binds: the system-header pack
+    // (forest_system). Unit ids, record ids and restored-list indices are the
+    // forest's own (container-local), so everything keyed by them is kept
+    // with it: the discovery, the bound chain and its walk state, the
+    // per-record registration state and the restore's filter.
+    // Thread contract: per Program, on its thread; `forest` is the compile
+    // group's shared instance when the Program has a group (its mutation is
+    // MadcCompileGroup's single-threaded group mutation), else its own; the
+    // forest's bytes are immutable mapped data.
+    struct ForestSide
+    {
+	explicit ForestSide(uint32_t r) : role(r) {}
+	uint32_t role;			// CirForestRole: the profiles its walk takes
+	// The carrier's profile of this role (and the compile's exact config),
+	// opened to its directory — forest_directory: discovery, or a sibling
+	// TU's shared instance. NULL = none. `forest` is the same instance once
+	// a bind completes it (forest_bound).
+	CirFrozenForest *directory = NULL;
+	bool directory_tried = false;	// one-shot discovery (success or fail)
+	CirFrozenForest *forest = NULL;
+	bool tried = false;		// one-shot full-open attempt (success or fail)
+	// S3 (R4-lite): ownership. A private probe result and a group-shared
+	// instance both live here; ~Program releases the holder (never a raw
+	// delete), so N sibling TUs can hold ONE instance.
+	std::shared_ptr<CirFrozenForest> holder;
+	std::vector<uint32_t> chain;		// bound units, include order (bind-order record)
+	std::set<uint32_t> chain_set;		// membership + DAG-walk prune
+	std::set<uint32_t> live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
+	// K2c: the macros (spelling ids) a walk's run arm left unlike the
+	// freeze's (its root bound, or declined and parsed live) — every later
+	// walk checks them at the expansion points.
+	std::set<uint32_t> macro_differs;
+	// K2d: a taken frozen arm a committed walk skipped — the unit and the
+	// arm's unit-local tokens [tok_begin, tok_end): the restore withdraws
+	// the declarations made there (CirMaterializeFilter::withdrawn).
+	struct WithdrawnArm { uint32_t unit, tok_begin, tok_end; };
+	std::vector<WithdrawnArm> withdrawn_arms;
+	// K1a (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ / madc TU's
+	// system content is all-bound or all-live — a decline with nothing bound
+	// yet stops every later bind, so the TU parses live from there; K1b: so
+	// does a later decline whose live closure redeclares a bound name.
+	bool bind_stopped = false;
+	// B211: the #define / #undef writes the program's own text made (never
+	// a walk's replay or the freeze) — the spelling id, the file it was read
+	// from, the name's state before — noted until the next root walk reads
+	// them; each name's state before the program's first write; then per
+	// unit the first such name it spells (0: none).
+	struct ProgramMacroWrite { uint32_t sid; madc::dis::istring file; uint64_t before; };
+	std::vector<ProgramMacroWrite> program_macro_writes;
+	std::unordered_map<uint32_t, uint64_t> program_macro_before;
+	std::vector<uint32_t> unit_program_macro;
+	size_t restored_chain_size = 0;	// chain's size at the last restore
+	// The restore's per-record state, index-aligned with the forest's
+	// restored lists (FOREST_TYPE_* above).
+	std::vector<unsigned char> type_registered;
+	std::vector<bool> global_registered;
+	std::vector<bool> func_registered;
+	std::vector<bool> tmpl_registered;
+	// The demand filter the last restore built (the bound units).
+	std::shared_ptr<CirMaterializeFilter> restore_filter;
+    };
+    ForestSide forest_system{0u};	// the system-header pack (CIR_FOREST_ROLE_SYSTEM)
+    // Has the forest bound a unit (a loaded body may need emitting)?
+    bool forest_any_bound() const
+    {
+	return forest_system.forest && !forest_system.chain.empty();
+    }
+    // The bound forest's extern declaration of `sym` (B3): a loaded body
+    // names what it calls or takes the address of by symbol. False when the
+    // forest indexes none; `node` is the declaration (NULL when its record
+    // does not materialize).
+    bool forest_extern_node(const madc::dis::istring &sym, cir_node *&node);
+    // A restored function's loaded body, and the name of its unit, read from
+    // the forest that restored it (FuncDef::forest_body_src, B3). NULL when
+    // it carries none.
+    cir_node *forest_body_node(const FuncDef *fd);
+    const char *forest_body_unit_name(const FuncDef *fd) const;
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
     // (which live in tkProgram->variables + dkGlobalVar top_decls) are staged here
@@ -7104,22 +7657,27 @@ public:
 	const char *ctor_file;
 	bool system;		// declared by a system-header forest unit (TopDecl.forest_system for the flushed decl)
 	// v66 (CIR_GLOBALF_FROZEN_DEF): the frozen storage declaration and
-	// init-group statements, as bound-forest (unit, idx).
+	// init-group statements, as (unit, idx) in def_forest — the forest
+	// that restored the record.
 	uint32_t def_unit, def_idx;
 	std::vector<std::pair<uint32_t, uint32_t> > init_locs;
+	CirFrozenForest *def_forest;
 	PendingForestGlobal() : type(NULL), flags(0), gflags(0), init_value(0),
 				ctor_bytes(NULL), ctor_len(0), ctor_count(0),
 				ctor_file(NULL), system(false), def_unit(0),
-				def_idx(0) {}
+				def_idx(0), def_forest(NULL) {}
     };
     std::vector<PendingForestGlobal> forest_pending_globals;
-    // v66: a restored FROZEN_DEF global's lowered nodes in the bound forest —
-    // the producer's storage declaration and its __madc_global_init group,
-    // which the CIR builder emits verbatim in place of lowering the global
-    // (LOADED == parsed). Keyed by the restored Variable.
+    // v66: a restored FROZEN_DEF global's lowered nodes in the forest that
+    // restored it (B3) — the producer's storage declaration and its
+    // __madc_global_init group, which the CIR builder emits verbatim in place
+    // of lowering the global (LOADED == parsed). Keyed by the restored
+    // Variable.
     struct ForestFrozenGlobalDef {
+	CirFrozenForest *forest;
 	uint32_t def_unit, def_idx;
 	std::vector<std::pair<uint32_t, uint32_t> > init_locs;
+	ForestFrozenGlobalDef() : forest(NULL), def_unit(0), def_idx(0) {}
     };
     std::map<const Variable *, ForestFrozenGlobalDef> forest_frozen_global_defs;
     const ForestFrozenGlobalDef *forest_frozen_global_def(const Variable *v) const
@@ -7171,13 +7729,23 @@ public:
     // declaration — never at bind for a function the closure filter dropped
     // or deferred, whose defaults may name referents this TU never declared.
     // forest_registered_funcs: the restored FuncDefs registered so far;
-    // forest_unsettled_defaults: each unregistered one's index into the bound
-    // forest's restored_param_defaults(), rebuilt by
+    // forest_unsettled_defaults: each unregistered one's forest and index into
+    // that forest's restored_param_defaults(), rebuilt by
     // forest_settle_param_defaults when the function registers.
     std::set<const FuncDef *> forest_registered_funcs;
-    std::map<const FuncDef *, size_t> forest_unsettled_defaults;
+    std::map<const FuncDef *, std::pair<CirFrozenForest *, size_t> > forest_unsettled_defaults;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> >
 	forest_deferred_func_families;
+    // K2d: a restored using-declaration import (`namespace std { using
+    // ::abort; }`) whose target no function names when the bind flushes — a
+    // live arm the walk ran declares it later in the token stream — keyed
+    // "ns::name"; activate_forest_member binds it at the member's first lookup.
+    struct ForestDeferredNsImport
+    {
+	madc::dis::istring ns, name, key;
+	bool ov_member;
+    };
+    std::map<madc::dis::istring, std::vector<ForestDeferredNsImport> > forest_deferred_ns_imports;
     unsigned long long _forest_funcs_eager = 0;
     unsigned long long _forest_funcs_deferred = 0;
     unsigned long long _forest_funcs_activated = 0;
@@ -7228,29 +7796,43 @@ public:
     // restored placeholder FuncDefs point at entries (deque: stable addresses).
     std::deque<CirFrozenMemberTmpl> forest_frozen_member_tmpls;
     void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram); also registers pending free functions
-    std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
-    std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
-    std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)
+    // The flush's two halves: the decl-record restore when a unit bound since
+    // the last one, and the registration of what a restore staged — every
+    // restored namespace-surface and default-argument record.
+    void forest_restore_if_grown();
+    void forest_apply_pending();
     enum ForestConfigMatch {
 	forestMatchExact,
 	forestMatchStdlibFlavor,
-	forestMatchAny
+	forestMatchAny,
+	forestMatchLedger	// any config, a profile that carries the AOT ledger
     };
     // The ordered carrier discovery chain (explicit → self-image → library
     // image → sidecars → $MADC_FOREST). Within each carrier, newest-to-
     // oldest appended profiles are searched under `config_match`: exact for
-    // semantic grove bind, same stdlib flavor for live-tokenized source, any
-    // for the dialect-independent AOT ledger. Sets config_mismatch when an
+    // semantic grove bind, same stdlib flavor for live-tokenized source, the
+    // first profile carrying the AOT ledger for the dialect-independent
+    // runtime (the C layer carries none: it sits below the C++ profile that
+    // does, docs/plans/2026-10-18-c-pack-layer.md). Sets config_mismatch when an
     // exact-match candidate was rejected for config alone. header_only stops
     // at the container directory —
     // enough for the container-global segments (the AOT ledger), and it does
     // NOT need a live string pool, which a no-parse lane has no reason to own.
+    // `role` (a CirForestRole code; 0 = SYSTEM) filters the profiles: the
+    // walk takes only that role's, and skips another role's from its footer
+    // and segment table, never opening its forest directory.
     // Implemented in lexer.cpp.
     CirFrozenForest *probe_forest_chain(ForestConfigMatch config_match,
 					bool &config_mismatch,
-					bool header_only = false);
-    CirFrozenForest *bind_forest_directory();	// the exact-config carrier, directory only; NULL if none
-    CirFrozenForest *ensure_bind_forest();	// that carrier fully opened, for a bind; NULL if unavailable
+					bool header_only = false,
+					uint32_t role = 0);
+    // The side's carrier, opened to its directory (the exact config; a
+    // sibling TU's shared instance first) — discovery once per Program — and
+    // fully opened for a bind, under the missing-container policy.
+    CirFrozenForest *forest_directory(ForestSide &s);
+    CirFrozenForest *forest_bound(ForestSide &s);
+    CirFrozenForest *bind_forest_directory() { return forest_directory(forest_system); }	// the exact-config system carrier, directory only; NULL if none
+    CirFrozenForest *ensure_bind_forest() { return forest_bound(forest_system); }	// that carrier fully opened, for a bind; NULL if unavailable
     // The container the AOT ledger is read from (-static-libmadc, S5): the
     // already-bound one when it opened, else the SAME discovery chain walked
     // with the producer-config gate off and stopping at the directory (the
@@ -7258,47 +7840,62 @@ public:
     CirFrozenForest *ensure_ledger_forest();
     CirFrozenForest *ensure_source_forest();
     // This compile's reader for (image, profile length): the one already
-    // opened, else a new one through open_header. NULL when the bytes are
+    // opened, else a new one through open_header (adopting `opened`, the
+    // walk's reader on that profile, when given). NULL when the bytes are
     // not a usable container.
-    CirFrozenForest *forest_reader(const void *image, size_t len, bool quiet_missing);
+    CirFrozenForest *forest_reader(const void *image, size_t len, bool quiet_missing,
+				   madc::dis::snapshot_reader *opened = NULL);
     std::shared_ptr<CirFrozenForest> forest_reader_holder(CirFrozenForest *f) const;
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     madc::dis::istring forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
     int forest_unit_for_include(const madc::dis::istring &incfile); // the unit an include BINDS; -1 miss or nothing frozen to bind
     int forest_unit_named_by_include(const madc::dis::istring &incfile); // spelling/path lookup; -1 miss
     int forest_unit_under_build_roots(CirFrozenForest *f, const madc::dis::istring &incfile); // spelling under a build include root; -1 none
+    void build_include_roots(std::vector<madc::dis::istring> &roots) const; // each -I dir, then the flavor's whole table
+    int forest_source_unit(CirFrozenForest *f, const madc::dis::istring &spelling,
+			   bool allow_tail);	// the source arm's unit for a spelling; -1 none
+    bool path_outside_language_view(const char *path) const;	// B199: in a table dir this compile's language view leaves out
     bool forest_source_path(const std::string &candidate,
 			    bool allow_tail, madc::dis::istring &resolved);
     bool forest_source_text(const madc::dis::istring &path, std::string &text);
     // A __need_* request macro is live: the next include is a protocol
     // visit (re-tokenize the protocol text; no once-only/PCH/forest).
     bool need_protocol_macro_live();
-    void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
-    std::set<uint32_t> forest_live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
-    std::set<uint32_t> forest_husk_live_pending;	// task #57: missing-content closure units selected for exact live tokenization; never enter forest_chain_set
+    // The bind walk (K2), over one bound forest (ForestSide): its units, chain
+    // and walk state are that forest's own.
+    bool forest_walk_root(ForestSide &s, uint32_t root, bool reinclude);
+    bool forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude);
+    bool forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUnitItems &it,
+			       uint32_t &i_c, uint32_t &i_ev, uint32_t &i_ed);
+    int forest_condition_now(CirFrozenForest *f, const ForestUnitItems &it,
+			     const uint32_t *cond);	// 1 taken, 0 skipped, -1 not readable here
+    bool forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems &it,
+				 const uint32_t *cond, std::vector<madc::dis::istring> &differing);
+    void forest_arm_note_differs(const char *frozen, const std::vector<madc::dis::istring> &writes,
+				 ForestWalk &w);
+    bool forest_walk_points(ForestWalk &w, uint32_t unit, const ForestUnitItems &it, uint32_t inc,
+			    size_t &i_p, uint32_t i_ev, uint32_t i_ed, uint32_t i_c);
+    bool forest_state_holds(const std::string &entry, const madc::dis::istring &name);
+    bool forest_object_states_lex_alike(const std::string &frozen, const std::string &now);
+    bool run_frozen_arm(const char *unit_name, const std::string &text,
+			std::vector<TokenBase *> &out, std::vector<madc::dis::istring> &writes);
+    ForestMacroUndo *forest_macro_undo = NULL;	// the walk in flight's undo log (set_macro notes into it)
+    // K2d: the walk whose frozen arm is running (run_frozen_arm) — an
+    // #include in the arm is an edge of that walk (forest_arm_include).
+    ForestWalk *forest_arm_walk = NULL;
+    void forest_arm_include(const madc::dis::istring &incfile, bool bindable);
+    madc::dis::istring forest_include_bind_name(const madc::dis::istring &incfile,
+						bool is_include_next);
+    // B211: the #define / #undef handlers note a program write before it
+    // happens; the next root walk reads the notes into ForestSide's per-unit
+    // marks, and a marked unit declines its root.
+    void forest_note_program_macro(const char *name);
+    void forest_read_program_macros(ForestSide &s);
     std::set<madc::dis::istring> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
     bool live_tokenize_record(const madc::dis::istring &canonical, bool tok);	// one recording owner for the set above
-    bool forest_unit_file_live_tokenized(uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
-    bool forest_bind_env_ok(uint32_t unit);	// v40: closure branch-dep env check (task #57)
-    bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
-    // The dialect surface binds DIRECTLY (pack-slices design §7): a fragment's
-    // frozen unit, under --std=madc, no #include; false = serve its text.
-    bool forest_bind_dialect_fragment(const madc::dis::istring &name);
-    void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);
-    bool forest_unit_defines_macro(uint32_t unit, const char *nm);	// v40: include-once prune helper
-    void forest_unit_defined_macros(uint32_t unit, std::set<madc::dis::istring> &out);
-    bool forest_unit_is_standalone_husk(uint32_t unit,
-					const std::vector<uint32_t> &deps);	// task #57: empty decl surface + own file guard, safe for exact live include
-    // task #57 masked-bind: unit -> its guarded-fallback macros whose guard is
-    // live-defined; forest_install_pp skips those define events (live-order
-    // parity — the live arm skipped them). Rebuilt per env check of the unit.
-    std::map<uint32_t, std::set<madc::dis::istring> > forest_pp_install_mask;
-    // v55: unit -> its skipped directive-only arms, [name_id, text_id] pool
-    // ids, collected by forest_bind_env_ok; forest_replay_pp_arms replays one
-    // whose name is undefined once the unit's own delta is installed.
-    std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > > forest_pp_arms;
-    void forest_replay_pp_arms(uint32_t unit);
-    void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
+    bool forest_unit_file_live_tokenized(ForestSide &s, uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
+    bool forest_unit_reinclude_skipped(ForestSide &s, uint32_t unit);	// would a live re-include of its FILE be skipped now?
+    bool forest_bind_include_root(uint32_t unit);	// an #include's bind (false: live-parse); a re-read guard-less root rebinds
     void add_namespaces();
     // --std=madc: declares std::format / print / println itself — madc's
     // always-included intrinsics (owner law 2026-08-10), never a header or
@@ -7310,26 +7907,17 @@ public:
     bool is_namespace_registration_enabled(const madc::dis::istring &name) const;
     bool is_dynamic_library_loading_enabled() const;
     bool is_auto_library_loading_enabled() const;
-    // import (alias form): mark a freshly registered namespace member as a
-    // dynamic-module member (FuncDef::dyn_module_library/member) so the CIR
-    // builder lowers its calls to the runtime-resolved shape.
-    void stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name,
-				     DataDefCLASS *owner_class,
-				     const TokenBase *proto_end);
-    void stamp_lazy_module_member(FuncDef *fd, const madc::dis::istring &spelling,
-				  const madc::dis::istring &name);
-    // The bound half: a bound unit never re-lexes its `import`, so the replay
-    // of its peImport event records the row's interface unit's functions
-    // (forest_note_lazy_module_interface: name -> spelling) and
-    // register_forest_func stamps each as it is restored. A LIVE import whose
-    // interface include binds from the pack records the bound unit's the same
-    // way (forest_bind_include, between the module markers).
-    std::map<madc::dis::istring, madc::dis::istring> forest_lazy_module_protos;
-    void forest_note_lazy_module_interface(const madc::dis::istring &module);
-    void forest_note_lazy_unit_prototypes(uint32_t unit, const madc::dis::istring &spelling);
-    void forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name);
+    // A function that lives in a module (FuncDef::dyn_module_library/member):
+    // the CIR builder lowers its calls to the runtime-resolved slot. A madc
+    // module's (its reference, its member's symbol) and the alias form's
+    // (stamp_dynamic_module_member: the library's spelling, the member).
+    void stamp_module_member(FuncDef *fd, const madc::dis::istring &library,
+			     const madc::dis::istring &name);
     void stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
 				     const madc::dis::istring &member);
+    // A module member declared by the export's REAL prototype (`proto`, the
+    // pack's): a copy registered under `func_id`.
+    Variable *typed_module_member(const madc::dis::istring &func_id, Variable *proto);
     bool is_dynamic_symbol_fallback_enabled() const;
     bool is_runtime_eval_source_scope_access_enabled() const;
     bool is_runtime_eval_expression_scope_access_enabled() const;
@@ -7411,7 +7999,12 @@ public:
     // owner law on RegistrationPolicy::system_headers_from_libmadc). Every
     // include lookup asks it before any system include dir is touched.
     bool system_headers_from_libmadc() const
-	{ return registration_policy.system_headers_from_libmadc; }
+	{ return registration_policy.system_header_source
+		 == RegistrationPolicy::SystemHeaderSource::libmadc; }
+    // --no-embedded-headers: no core header comes from libmadc at all.
+    bool system_headers_from_disk_only() const
+	{ return registration_policy.system_header_source
+		 == RegistrationPolicy::SystemHeaderSource::disk; }
     // A path inside a system include dir while the core headers come from
     // libmadc: nothing may touch the disk for it — no existence probe, no
     // sidecar probe, no canonicalization (its spelling is libmadc's own).
@@ -7439,6 +8032,10 @@ public:
     // search order in one place. Both fall back when the build host had no
     // compiler to probe.
     const char *const *sys_include_paths() const;
+    // The ONE cut of the selected flavor's table at its compiler-owned dir:
+    // the C view (from that dir on) and/or the toolchain-only view (up to and
+    // including it). sys_include_paths() is this compile's live view.
+    const char *const *search_view(bool c_view, bool toolchain_only) const;
     const char *compiler_owned_include_dir() const;
     // realpath'd copy of the above, cached per flavor — a compiler's reported
     // search list is not always canonical (clang: `.../bin/../include/c++/v1`).
@@ -7446,7 +8043,7 @@ public:
     // -stdlib=<name>: true when consumed. An unknown/unbuilt flavor is NOT
     // consumed, so the caller reports it (available flavors are a build-host
     // property, so the diagnostic has to name what this binary actually has).
-    bool set_stdlib_flavor_option(const madc::dis::istring &arg);
+    bool set_stdlib_flavor(const madc::dis::istring &name);	// false: unknown, or not built here
     madc::dis::istring stdlib_flavor_names() const;	// ", "-joined, for that diagnostic
     // The flavor names this binary was built with (the generated table's
     // named entries, in table order) — the diagnostic and the capability
@@ -7457,7 +8054,7 @@ public:
     // Push the std ABI inline namespace into the mangler when `name` is one of
     // the stdlib config macros (_LIBCPP_ABI_NAMESPACE / _GLIBCXX_USE_CXX11_ABI).
     // Called at every define_map write site: directive, forest replay, CLI -D.
-    void note_std_abi_define(const madc::dis::istring &name, const std::string &value);
+    void note_std_abi_define(const char *name, const std::string &value);
     std::string expandIfMacros(const std::string &raw);
     // Macro-replace what remains of the current Source and return its
     // spelling, whitespace kept (a macro argument's pre-expansion).
@@ -7491,14 +8088,6 @@ public:
 	TokenBase *tokenize_import_directive();
 	bool bind_module_namespace(const madc::dis::istring &ns, const madc::dis::istring &spelling,
 				   bool link_form, std::string &err);
-	// A module row's flags (module-map DATA): a GUI row lifts the memory
-	// guard at run start (bound_gui_module).
-	void adopt_module_flags(const madc::dis::istring &module);
-	// The program state `import <module>;` leaves for a LAZY row (the
-	// interface form): the row's flags and its spelling as an OPTIONAL entry
-	// of the object's manifest (module_optional_libs). The directive and a
-	// bound unit's replay of it (forest_install_pp, the peImport event) share it.
-	void adopt_lazy_module_import(const madc::dis::istring &module);
 	void tokenize_embedded_header_text(const madc::dis::istring &name,
 					 const std::string &text,
 					 bool protocol_visit);
@@ -7533,8 +8122,12 @@ public:
 	std::string include_probe_path;
 	madc::dis::istring include_guard_watch_key;
     void expand_pending_auto_include_macros(size_t original_start);
-    std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
-							  const TokenBase *origin);
+    // A text run lexed into tokens (no auto-include scan, the live source
+    // untouched): an auto-include define's replacement, stamped at `origin`;
+    // a builtin builder's declaration, its tokens' file `fname`.
+    std::vector<TokenBase *> tokenize_text_run(const std::string &value,
+					       const TokenBase *origin,
+					       const char *fname = NULL);
     void mark_embedded_include_flag(const madc::dis::istring &incfile);
     // Every include-serving arm's completion return (lexer.cpp): fires the
     // include-completion side effects, then continues the outer scan.
@@ -7630,6 +8223,12 @@ public:
     void push_token_with_literal_concat(TokenBase *tb);
     void pin_pending_pack_ops(TokenBase *tb);
     void queue_fragment_prerequisites(std::set<madc::dis::istring> &batch);
+    // The dialect's roots: every dialect fragment the auto-include provider
+    // table names, with its prerequisite closure, in the auto-include order —
+    // what a dialect compile's auto-include would include, through the same
+    // two owners. False (and `out` empty) outside the madc dialect. The
+    // builtin-registry generator's root list.
+    bool dialect_image_roots(std::vector<madc::dis::istring> &out);
 
     // for debugging
     void printt(TokenBase *);
@@ -7782,7 +8381,7 @@ public:
     // ends one (token_ends_operand), unless it is a step still waiting on the
     // operator stack — a PREFIX `++`/`--`. Two bounds ask it: a cast-
     // expression's (parseCastExpression) and a juxtaposed operand's.
-    inline bool operand_completed(const std::stack<TokenBase *> &opStack)
+    inline bool operand_completed(const token_stack_t &opStack)
     {
 	if ( !token_ends_operand(_cur_token) )
 	    return false;
@@ -8495,8 +9094,12 @@ public:
     // materializes, registers and throws). The visibility rule lives here:
     // a namespace's member only when its namespace is reachable, no
     // instantiation's product; the name's shape is the caller's rule.
+    // `word`: the start the caller's names must have — an index the walk
+    // reads (the dialect table's, dialect_table_names) skips the rest; a
+    // registry is walked whole.
     void visit_top_level_names(CompletionContext ctx,
-			       const std::function<void(const TopLevelName &)> &visit);
+			       const std::function<void(const TopLevelName &)> &visit,
+			       const madc::dis::istring &word);
     // The names visible at the top level that start with `word`.
     void completion_names(const madc::dis::istring &word, CompletionContext ctx,
 			  std::vector<madc::dis::istring> &out);
@@ -8807,6 +9410,7 @@ public:
     bool nested_declarator_opens(DeclaratorMode mode, size_t at = 0);
     void drop_redundant_declarator_parens(DeclaratorMode mode);
     bool paren_starts_parameter_list();
+    bool ptr_operator_group_ahead(size_t at);
     bool declarator_id_token(TokenBase *tb, DeclaratorMode mode);
     bool parse_member_signature_qualifiers();
 private:
@@ -8945,15 +9549,15 @@ public:
     // variable, functional-cast, ns-qualified callee, or an inline declaration).
     // `tb` is in/out so a Redo can hand back a rewritten token.
     ExprStep parseExpr_dataTypeArm(TokenBase *&tb,
-				   std::stack<TokenBase *> &exStack,
-				   std::stack<TokenBase *> &opStack,
+				   token_stack_t &exStack,
+				   token_stack_t &opStack,
 				   TokenCpnd *code);
     // ttSymbol switch-arm of parseExpression: statement/expression terminators
     // and the C comma operator (`;` ends; `,` either builds a comma-expression
     // node inside parens or ends the expression). Read-only `brackets`.
     ExprStep parseExpr_symbolArm(TokenBase *tb,
-				 std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack,
+				 token_stack_t &exStack,
+				 token_stack_t &opStack,
 				 int brackets, bool push_back_comma);
     // ttIdentifier switch-arm of parseExpression: the largest arm — identifier
     // resolution in expression context (variables, function/method calls,
@@ -8962,8 +9566,8 @@ public:
     // ttKeyword falls through into this for keywords that are contextual
     // identifiers.
     ExprStep parseExpr_identifierArm(TokenBase *&tb,
-				     std::stack<TokenBase *> &exStack,
-				     std::stack<TokenBase *> &opStack,
+				     token_stack_t &exStack,
+				     token_stack_t &opStack,
 				     TokenCpnd *code);
     // UFCS (--std=madc): re-form `receiver.f(args)` / `receiver->f(args)` as
     // the ordinary call `f(receiver, args)` when the receiver has no member
@@ -8980,8 +9584,8 @@ public:
     bool ufcs_attempts_here(bool operator_id);
     bool ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 			      bool operator_id,
-			      std::stack<TokenBase *> &exStack,
-			      std::stack<TokenBase *> &opStack,
+			      token_stack_t &exStack,
+			      token_stack_t &opStack,
 			      TokenBase *&tb, bool &done);
     // UFCS (--std=madc), the other direction: re-form `f(x, args)` as
     // `x.f(args)` when no free `f` is declared and x's type has an
@@ -8989,7 +9593,7 @@ public:
     // C89 implicit int) — a member of the argument's own type beats a blind
     // guess at a libc symbol of the same name.
     bool ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
-			    std::stack<TokenBase *> &opStack,
+			    token_stack_t &opStack,
 			    TokenBase *&tb, bool &done, TokenCpnd *code);
     // ttMultiOp/ttOperator switch-arm of parseExpression: the operator
     // shunting-yard core (precedence climbing, unary/binary disambiguation,
@@ -8998,8 +9602,8 @@ public:
     // `result` carries the value for an ExprStep::Return exit (an early
     // return from parseExpression that bypasses the operator-stack drain).
     ExprStep parseExpr_operatorArm(TokenBase *&tb,
-				   std::stack<TokenBase *> &exStack,
-				   std::stack<TokenBase *> &opStack,
+				   token_stack_t &exStack,
+				   token_stack_t &opStack,
 				   int &brackets, TokenCpnd *code,
 				   bool conditional, bool ternary_branch,
 				   bool stop_on_closing_paren,
@@ -9448,6 +10052,22 @@ public:
     // types over one storage (wchar_t / int, char16_t / unsigned short,
     // char / signed char) come back distinct. Defined in parser.cpp.
     static DataDef *proven_scalar_identity(const DataDef *dd);
+    // Do two types denote ONE type ([basic.types], `__is_same`)? Composed
+    // from the identity owners — cv at every level, the reference kind,
+    // proven_scalar_identity, denotes_same_type, the function spelling.
+    // Defined in parser.cpp.
+    static bool proven_same_type(const DataDef *a, const DataDef *b);
+    // [temp.dep.expr]: is this expression type-dependent (its type, a
+    // call's argument or explicit template argument names a template
+    // parameter, or a pack expansion)? The parser's one test (gcc's
+    // type_dependent_expression_p); the CIR builder asks it whether a
+    // pattern may pick a constructor. Defined in parser.cpp.
+    static bool type_dependent_expression(TokenBase *expr);
+    // Whether each argument is an lvalue as forwarding-reference deduction
+    // reads it ([temp.deduct.call]/3), one entry per argument. A member
+    // constructor template's instance identity and its
+    // FuncDef::deduced_arg_lvalues. Defined in parser.cpp.
+    std::vector<bool> forwarding_arg_lvalues(const std::vector<TokenBase *> &args);
     // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
     // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in
     // every strict C/C++ mode. Instance method on purpose — these names
@@ -9471,6 +10091,10 @@ public:
 				     const madc::dis::istring &type_spelling,
 				     DataDef *base_dd, TokenBase *name_tok);
     DataDef *resolve_current_class_type_alias(const madc::dis::istring &name);
+    // The type an UNQUALIFIED identifier names where a cast's type-id may
+    // start (`(u32)x`): the live scope's typedef / class name, else the
+    // class being defined's member type; NULL for an ordinary name.
+    DataDef *unqualified_type_name_datadef(const madc::dis::istring &name);
     bool resolve_current_class_static_member_const_value(const madc::dis::istring &name, int64_t &out);
     bool fold_constant_qualified_member(TokenBase *first, madc_wide_int &out);
     bool fold_constant_qualified_member_walk(TokenBase *first,
@@ -9699,6 +10323,13 @@ public:
     // Set by consume_gnu_attributes on optimize("-fno-strict-aliasing") in any
     // position; consumed (and cleared) by the function-declaration parse.
     bool pending_no_strict_aliasing;
+    // Set by consume_gnu_attributes on `noinline` in any position; consumed
+    // (and cleared) by the function-declaration parse, and reset with the
+    // weak flag at each declaration's head (an object's never reaches a
+    // function).
+    bool pending_noinline = false;
+    // `no_instrument_function`, the same way (tests/testnoinstrumentlead).
+    bool pending_no_instrument_function = false;
     // Set by consume_gnu_attributes on cleanup(f): the function f names, for
     // the declaration whose attribute groups are being read; taken (and
     // cleared) by parse_declaration_body for its declarators, and dropped by
@@ -9712,6 +10343,15 @@ public:
     // declarator's: push_declarator_list_tail carries it past the statement
     // reset to the list's tail, as specifier_cleanup carries cleanup(f).
     bool pending_specifier_weak = false;
+    // The function attributes pending above (no_instrument_function,
+    // no_strict_aliasing, weak, noinline), from any position of the
+    // declaration being read, become `func`'s; clear drops them. The
+    // function-declaration parse applies them at a prototype's `;` or `,` (a
+    // leading group is all a prototype may carry; at a `,` they stay for the
+    // list's next declarator) and after a declarator's trailing groups; a
+    // declaration's head clears them (tests/testprotoleadattrs).
+    void apply_pending_function_attributes(FuncDef *func);
+    void clear_pending_function_attributes();
     TokenBase *consume_gnu_asm_label(TokenBase *nt, madc::dis::istring *alias_target);
     // Read a GNU asm STATEMENT and lower it to its operands' observable
     // effect (each operand expression evaluated once; under an empty
@@ -9861,7 +10501,7 @@ public:
     // user-label chain share it); NULL when no switch is active.
     TokenBase *parse_nested_case_label(TokenBase *tb);
     TokenObjTemp *try_parse_functional_ctor(TokenBase *name_tb);
-    bool paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack);
+    bool paren_opens_call_on_receiver(token_stack_t &exStack);
     Variable *resolve_c_identifier(TokenIdent *ident_tb, bool expression_head);
     bool datatype_statement_starts_functional_expr();
     // Can `tb` open a parameter-declaration-clause? False only when it
@@ -9930,6 +10570,10 @@ public:
     // side effects. parseExprStmt collects them into a TokenComma chain
     // whose compile() evaluates left for effects and returns right.
     TokenBase *parseExprStmt(TokenBase *);
+    // An EXPRESSION (C11 6.5.17): operands joined by the comma operator — an
+    // expression statement's, the middle operand of `?:`.
+    TokenBase *parse_comma_expression(TokenBase *tb, bool conditional,
+				      bool ternary_branch);
     // MT-1 contextual statement heads (see go_statement_enabled): tb is the
     // already-consumed `go` / `yield` identifier token.
     TokenBase *parse_go_statement(TokenBase *tb);
@@ -9972,8 +10616,8 @@ public:
     // continue the postfix chain, so an immediately-invoked lambda
     // (`[](int x){ return x + 99; }(1)`) becomes a call and not a value
     // followed by a stray parenthesized expression.
-    ExprStep parseLambdaExprStep(std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack,
+    ExprStep parseLambdaExprStep(token_stack_t &exStack,
+				 token_stack_t &opStack,
 				 bool &done);
     // Is the lambda whose introducer is at the head of the token stream
     // IMMEDIATELY INVOKED? Looks past the balanced introducer / parameter

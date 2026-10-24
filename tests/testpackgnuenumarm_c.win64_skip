@@ -1,0 +1,1 @@
+glibc's bits/socket.h __USE_GNU arms (MSG_TRYHARD, MSG_CMSG_CLOEXEC, struct ucred); winsock has none of them

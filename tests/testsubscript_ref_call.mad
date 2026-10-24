@@ -1,0 +1,35 @@
+// A subscript of a call returning a REFERENCE types its element through the
+// base's VALUE ([expr.sub]; operand_value_type, a reference is its referent):
+// `int *&rp()` subscripts the referenced POINTER, so `rp()[i]` is an int. The
+// reference read as a pointer typed the element `int *` — sizeof 8 and an
+// `auto` deduced as a pointer — while the loads themselves were right.
+// A reference to an ARRAY (`int (&ra())[3]`) denotes the array: `ra()[i]` is
+// its element (a ROW for `int (&rm())[2][3]`), never the whole array
+// (sizeof 12).
+// Oracle: g++ and clang++ (-std=c++11 -O0) print
+//   v=20 direct=30 sizeof=4 auto-sizeof=4 auto=10
+//   arr-v=20 arr-sizeof=4 arr-auto-sizeof=4 row-sizeof=12 row-v=6
+#include <cstdio>
+int arr[3] = {10, 20, 30};
+int *p = arr;
+int *&rp() { return p; }
+int (&ra())[3] { return arr; }
+int grid[2][3] = {{1, 2, 3}, {4, 5, 6}};
+int (&rm())[2][3] { return grid; }
+int main()
+{
+	int v = rp()[1];
+	printf("v=%d\n", v);
+	printf("direct=%d\n", rp()[2]);
+	printf("sizeof=%d\n", (int)sizeof(rp()[0]));
+	auto e = rp()[0];
+	printf("auto-sizeof=%d\n", (int)sizeof(e));
+	printf("auto=%d\n", (int)e);
+	printf("arr-v=%d\n", ra()[1]);
+	printf("arr-sizeof=%d\n", (int)sizeof(ra()[0]));
+	auto ae = ra()[2];
+	printf("arr-auto-sizeof=%d\n", (int)sizeof(ae));
+	printf("row-sizeof=%d\n", (int)sizeof(rm()[1]));
+	printf("row-v=%d\n", rm()[1][2]);
+	return 0;
+}

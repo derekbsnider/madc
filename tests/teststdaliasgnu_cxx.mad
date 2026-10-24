@@ -1,0 +1,13 @@
+// --std=c++ names g++'s default C++ dialect, gnu++17 (owner 2026-10-18: the
+// precompiled standard is the default, and the bare family spelling is it).
+// Oracle: g++ -std=gnu++17 prints "201703"; the old alias meaning,
+// g++ -std=c++11, prints "201103". The gnu/strict split is not probed here:
+// madc's C++ modes present __STRICT_ANSI__ in every dialect (the known
+// divergence at Program::strict_ansi_mode); the gnu bit is pinned by
+// tests/unit/test_repl_session.cpp.
+#include <cstdio>
+int main()
+{
+	std::printf("%ld\n", (long)__cplusplus);
+	return 0;
+}

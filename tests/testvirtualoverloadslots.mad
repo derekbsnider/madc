@@ -1,0 +1,80 @@
+// One vtable slot per virtual SIGNATURE (Itanium 2.5.2; [class.virtual]/2:
+// an override has the same name, parameter-type-list and cv-qualifier).
+// madc keyed slots by NAME: overloads shared one slot and an override of
+// one overload took over all of them (20 20 3 50 50 / 10 10 / 60 60 /
+// 70 10 30 30). A library class's vtable is the library's, so the slot
+// INDEX must be Itanium's too (libc++ ctype<wchar_t>::widen -> do_widen).
+// Oracles: g++ 13 and clang++ 18 (-std=gnu++17).
+#include <cstdio>
+struct B {
+	virtual int f(int) { return 1; }
+	virtual int f(double) { return 2; }
+	virtual int g() { return 3; }
+	virtual int h() { return 4; }
+	virtual int h() const { return 5; }
+	virtual ~B() {}
+};
+struct D : B {
+	using B::f;
+	int f(double) override { return 20; }
+	int h() const override { return 50; }
+};
+// Name hiding: no using-declaration; the base overload still dispatches.
+struct E : B {
+	int f(int) override { return 10; }
+};
+// Diamond over a virtual base: the final overrider of each signature.
+struct V {
+	virtual int k() { return 6; }
+	virtual int k(int) { return 7; }
+	virtual ~V() {}
+};
+struct L : virtual V { int k() override { return 60; } };
+struct R : virtual V { int k(int) override { return 70; } };
+struct M : L, R {};
+// The same type spelled through a typedef / a template parameter.
+struct Foo { int v; };
+typedef Foo Bar;
+struct TB2 {
+	virtual int f(Bar b) { return b.v; }
+	virtual int f(long) { return 2; }
+	virtual ~TB2() {}
+};
+struct TD2 : TB2 {
+	using TB2::f;
+	int f(Foo b) override { return b.v * 10; }
+};
+template <class T> struct TB {
+	virtual int h(T) { return 3; }
+	virtual int h(const T *) { return 4; }
+	virtual ~TB() {}
+};
+struct TD : TB<int> {
+	int h(int) override { return 30; }
+};
+int main()
+{
+	D d;
+	B &b = d;
+	const B &cb = d;
+	std::printf("%d %d %d %d %d\n", b.f(1), b.f(2.0), b.g(), b.h(), cb.h());
+	E e;
+	B &be = e;
+	std::printf("%d %d\n", be.f(1), be.f(2.0));
+	M m;
+	V &v = m;
+	std::printf("%d %d\n", v.k(), v.k(1));
+	// g's slot follows BOTH f slots (Itanium declaration order).
+	int (B::*pg)() = &B::g;
+	std::printf("pg %d\n", (b.*pg)());
+	TD2 t2;
+	TB2 &tb2 = t2;
+	Foo x = { 7 };
+	TD t;
+	TB<int> &tb = t;
+	int i = 0;
+	std::printf("%d %d %d %d\n", tb2.f(x), tb2.f(1L), tb.h(1), tb.h(&i));
+	B *heap = new D;
+	delete heap;
+	return 0;
+}

@@ -1,0 +1,14 @@
+// A SOURCE_DATE_EPOCH that is not a non-negative decimal integer no greater
+// than 253402300799 (9999-12-31 23:59:59 UTC) is an error once __DATE__ or
+// __TIME__ needs it — gcc's diagnostic, the compile refused.
+// Oracle: gcc 13, -std=gnu17, SOURCE_DATE_EPOCH=-1:
+//   error: environment variable 'SOURCE_DATE_EPOCH' must expand to a
+//   non-negative integer less than or equal to 253402300799
+// madc before the fix: compiled, printing its own build date.
+#include <stdio.h>
+
+int main(void)
+{
+	printf("%s\n", __DATE__);
+	return 0;
+}

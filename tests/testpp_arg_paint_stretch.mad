@@ -1,0 +1,38 @@
+/* One macro argument can be read across differently painted text: a
+ * replacement passes an inner macro an argument made of an outer ARGUMENT
+ * (already macro-replaced, C11 6.10.3.1p1) beside the replacement's own
+ * BODY text. A name the outer argument expanded is hidden only for the
+ * tokens that came from it (6.10.3.4p2); the body's own spelling of the same
+ * name still expands. SQLite under SQLITE_DEBUG: sqlite3ResolveNotValid
+ * (P,N,M,X,E,R) asserts `((X)&~(NC_IsCheck|NC_PartIdx|NC_IdxExpr|NC_GenCol))
+ * ==0` and is called with X = NC_IdxExpr|NC_GenCol.
+ * Pins: CHECK's body NC_A expands though its argument expanded NC_A; OUTER's
+ * argument `tab` (self-referential, already expanded to ctx->tab) does not
+ * expand twice while the body's `+ tab` beside it does.
+ * Before: "use of undeclared identifier 'NC_A'" -- the argument's paint was
+ * one union over the whole inner argument.
+ * Oracle: gcc 13 and clang 18 -O0 -std=c17 print "hits=1 v=10". */
+#include <stdio.h>
+#include <assert.h>
+
+#define NC_A 0x20
+#define NC_B 0x08
+#define CHECK(X) \
+  assert( ((X)&~(NC_A|NC_B))==0 ); \
+  if( ((X)&NC_A)!=0 ) hits++;
+
+struct context { int tab; } c = { 5 }, *ctx = &c;
+#define tab ctx->tab
+#define PLUS(e) ((e) + 0)
+#define OUTER(x) PLUS((x) + tab)
+
+int hits;
+
+int main(void)
+{
+	CHECK(NC_A|NC_B);
+	CHECK(NC_B);
+	int v = OUTER(tab);
+	printf("hits=%d v=%d\n", hits, v);
+	return 0;
+}

@@ -1,0 +1,5 @@
+unattached open -> 0
+client upgraded -> 1
+client frame -> [madcApply([])]
+served -> open yes;level web;eval sent;
+event text hi;ended;

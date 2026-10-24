@@ -2414,7 +2414,7 @@ bool project::sources(const std::vector<source> *&out, std::string &why)
 {
     if ( !_sources_loaded )
     {
-	const std::string user = cfg::config_file::user_config_dir("madc");
+	const std::string user = cfg::user_config_dir("madc");
 	if ( !user.empty() && !load_sources(user + "/mcp", why) )
 	    return false;
 	_sources_loaded = true;

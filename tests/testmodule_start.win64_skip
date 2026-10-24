@@ -1,0 +1,1 @@
+the test module (tests/modules/greet) is built by the Linux host build only (src/madc_modules.mk); the shipping modules carry the win64 arm (testmarkdown, testgit)

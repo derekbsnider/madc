@@ -1,0 +1,31 @@
+// import (alias form): a member of a module namespace is declared as the same
+// name's undeclared bare call is — the pack's real prototype, else the libc
+// return types and <math.h> parameter shapes (dynamic_symbol_fallback_signature)
+// — and its slot is called through a pointer of that declared type. It was
+// called as `long (*)()`: math::sqrt(2.0) printed 1, a float argument was
+// promoted to double (fmodf read garbage), a signed int result read as an
+// unsigned 32-bit value.
+// Oracle: the same calls in C (gcc and clang -O0, -lm; doubles printed with
+// %.17g, the shortest round trip println prints) give
+//   sqrt=1.4142135623730951 pow=1024 floor=-3 ilogb=-3 lround=-3
+//   floorf=3 fmodf=3 atan2=0.78539816339744828 strcmp<0 llabs=123456789012
+import m as math;
+import c as libc;
+
+int main()
+{
+    println("sqrt={}", math::sqrt(2.0));
+    println("pow={}", math::pow(2.0, 10.0));
+    println("floor={}", math::floor(-2.5));
+    println("ilogb={}", math::ilogb(0.125));
+    println("lround={}", math::lround(-2.5));
+    println("floorf={}", math::floorf(3.9f));
+    println("fmodf={}", math::fmodf(7.0f, 4.0f));
+    println("atan2={}", math::atan2(1.0, 1.0));
+    double d = math::sqrt(2.0);
+    println("held={}", d);
+    long sign = libc::strcmp("a", "b") < 0 ? -1 : 1;
+    println("strcmp-sign={}", sign);
+    println("llabs={}", libc::llabs(-123456789012));
+    return 0;
+}

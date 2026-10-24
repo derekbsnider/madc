@@ -122,6 +122,10 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `check-one-library-spelling.sh`), and a library a program names (`import`,
    `#load`, `"libs"`, `-l`) opens through `madc_module_open()` beside it —
    madc's own lib directory first (gated by `check-one-library-opener.sh`);
+   a command line is read by ONE reader, `madc::cli::parse`
+   (`include/libmadc/cli_options.h`), over a table of rows — madc's own is
+   `src/madc_cli.cpp` — and its help, `--help=json` and completions are written
+   from the same rows (gated by `check-one-option-parser.sh`);
    a parse over its own token run — an
    isolated sub-stream or a run injected ahead of the live stream — is
    `Program::NestedTokenStream`, which also returns the outer read context
@@ -315,6 +319,13 @@ rediscovering, and every family that gets consolidated leaves a gate in
 `fulltest` so it cannot regrow. Non-Claude tools: read the command file and
 follow its steps directly.
 
+Stopping new copies is not enough: **every release reduces existing
+duplication** (owner law 2026-10-16). Each release arc runs a whole-subsystem
+sweep, consolidates at least one EXISTING family in its own commits before the
+seam battery, and names it in the release's CHANGELOG section
+(`Consolidated: <DupFamily> — gate scripts/check-<name>.sh`);
+`scripts/check-release-consolidation.sh` fails a release without one.
+
 ## Session hand-off
 
 Cross-agent work in this repo uses
@@ -374,7 +385,7 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [branching.md](.claude/rules/branching.md)       |    37 | Feature branches off `develop`, agent-owned `-claude` / `-codex` WIP branches, stable `develop`; lane-freshness push gate; OWNER LAW: every platform lane's FULL suite green before master (`check --release`) |
+| [branching.md](.claude/rules/branching.md)       |    58 | Feature branches off `develop`, agent-owned `-claude` / `-codex` WIP branches, stable `develop`; lane-freshness push gate; OWNER LAW: every platform lane's FULL suite green before master (`check --release`); OWNER LAW: every release consolidates an EXISTING duplicate family (`check-release-consolidation.sh`); OWNER LAW: every release raises a C23 or C++20 count and lowers none (`check-release-conformance.sh`); every release since v0.102.1 carries its callgrind map (`release_bins.sh check`) |
 | [feature-guards.md](.claude/rules/feature-guards.md) |   9 | `#ifdef FEATURE_NAME` for in-progress code; never `git checkout` over uncommitted work |
 | [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) |   20 | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` — never duplicate content |
 | [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
@@ -432,7 +443,7 @@ editing — don't try to memorize all of them.
 | [lowering-vs-raising.md](.claude/rules/lowering-vs-raising.md) | 39 | Where a missing feature gets fixed: Tier 1 lower/resolve in madc (default) · Tier 2 raise c2mir for semantic primitives · Tier 3 raise MIR for floor gaps (SIMD). Verify c2mir's real surface — stmt-exprs/_Generic/_Complex are supported |
 | [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 44 | Compare with `gcc -S -fverbose-asm` first, fix at deepest layer, operator self-determination |
 | [clang-methodology.md](.claude/rules/clang-methodology.md) | 46 | Same methodology against clang, the co-equal canon; cross-check lowering with both gcc and clang |
-| [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
+| [debug.md](.claude/rules/debug.md)               |    21 | `DBG(x)` macro usage and rules; ONE definition in `include/datadef.h`, one writer `madc_set_verbose` (gated by `check-one-dbg-macro.sh`) |
 | [c11-transpiler.md](.claude/rules/c11-transpiler.md) | 70 | `--emit=c11` lowers every C++ feature to strict C11; c2mir limits, lowering patterns, emission hygiene |
 | [embedded-headers.md](.claude/rules/embedded-headers.md) | 103 | **OWNER LAW: the release madc reads the standard core system headers from libmadc, never /usr/include** (only `--no-embedded-headers` sends them to disk; gated by `check-system-headers-from-libmadc.sh`); `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns), a fragment's namespace-scope variables `inline` (gated) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
@@ -441,10 +452,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **37 rules, 1339 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~487 lines** — loaded by Claude via
+- **37 rules, 1366 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~506 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1841 lines.**
+- **Grand total loaded by Claude Code per turn: ~1880 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

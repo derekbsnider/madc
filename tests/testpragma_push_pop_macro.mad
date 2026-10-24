@@ -1,0 +1,52 @@
+/* #pragma push_macro / pop_macro save and restore a macro's whole definition:
+ * a function-like one comes back function-like, a name undefined at the push
+ * is undefined again after the pop, pushes nest (last in, first out), and a
+ * pop with nothing pushed changes nothing. madc saved only an object-like
+ * body, so a function-like macro kept its replacement after the pop.
+ * Oracle: gcc 13 and clang 18 (-std=gnu17): the lines below. */
+#include <stdio.h>
+
+#define SQ(x) ((x) * (x))
+#pragma push_macro("SQ")
+#undef SQ
+#define SQ(x) (x)
+#pragma pop_macro("SQ")
+
+#pragma push_macro("GONE")
+#define GONE 1
+#pragma pop_macro("GONE")
+
+#define OBJ 7
+#pragma push_macro("OBJ")
+#undef OBJ
+#define OBJ 8
+#pragma push_macro("OBJ")
+#undef OBJ
+#define OBJ 9
+#pragma pop_macro("OBJ")
+static const int obj_inner = OBJ;
+#pragma pop_macro("OBJ")
+static const int obj_outer = OBJ;
+
+#define FN(a) ((a) + 100)
+#pragma push_macro("FN")
+#undef FN
+#define FN 4
+#pragma pop_macro ("FN")
+
+#define STAY 3
+#pragma pop_macro("STAY")
+
+int main(void)
+{
+	printf("function-like restored: %d\n", SQ(3));
+#ifdef GONE
+	printf("undefined restored: 0\n");
+#else
+	printf("undefined restored: 1\n");
+#endif
+	printf("nested: %d %d\n", obj_inner, obj_outer);
+	printf("function over object: %d\n", FN(1));
+	printf("unpaired pop: %d\n", STAY);
+	return 0;
+}

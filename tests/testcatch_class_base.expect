@@ -1,0 +1,9 @@
+D as B 1
+D as C 2
+D as D 1 2 3
+private base skipped 5
+ambiguous base skipped 1
+virtual base 6
+VD as V2 8 6
+pointer adjusted 2 1
+null pointer 1

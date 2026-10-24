@@ -1,0 +1,46 @@
+/* A struct MEMBER that is a pointer to a function pointer keeps its
+ * function-pointer pointee: `void (**aExt)(void)` (SQLite's
+ * sqlite3AutoExtList), an array of them, and one through a typedef. It was
+ * declared `long long *aExt`, so `aExt[i] == xInit` compared an integer
+ * with a pointer and `aExt[1]()` was refused: "called object is not a
+ * function or function pointer".
+ * Oracle: gcc and clang -O0 print "n=2 same=1 calls=3 tab=21 alias=8". */
+#include <stdio.h>
+#include <stdlib.h>
+typedef int (*fp)(int);
+static struct AE { unsigned nExt; void (**aExt)(void); } ae = { 0, 0 };
+static int calls;
+static void a1(void) { calls += 1; }
+static void a2(void) { calls += 2; }
+static int add(void (*xInit)(void))
+{
+	unsigned i;
+	for ( i = 0; i < ae.nExt; i++ )
+		if ( ae.aExt[i] == xInit )
+			break;
+	if ( i == ae.nExt ) {
+		void (**aNew)(void);
+		aNew = realloc(ae.aExt, (ae.nExt + 1) * sizeof(ae.aExt[0]));
+		ae.aExt = aNew;
+		ae.aExt[ae.nExt] = xInit;
+		ae.nExt++;
+	}
+	return (int)ae.nExt;
+}
+static int twice(int a) { return 2 * a; }
+static int plus(int a) { return a + 10; }
+static fp g_twice = twice, g_plus = plus;
+struct T { int (**tab[2])(int); fp *alias; };
+int main(void)
+{
+	add(a1);
+	add(a2);
+	add(a1);
+	for ( unsigned i = 0; i < ae.nExt; i++ )
+		ae.aExt[i]();
+	struct T t = { { &g_twice, &g_plus }, &g_twice };
+	printf("n=%u same=%d calls=%d tab=%d alias=%d\n", ae.nExt, ae.aExt[0] == a1,
+	       calls, (*t.tab[0])(4) + (*t.tab[1])(3), (**t.alias)(4));
+	free(ae.aExt);
+	return 0;
+}

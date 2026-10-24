@@ -18,6 +18,9 @@
 #   2. positive control: the same words in ungated positions MUST show
 #      them — proves the detector detects (a lex-phase change that stops
 #      -dM from seeing auto-includes would otherwise pass side 1 forever).
+#   3. tests/testdialectstdiostreams.mad (stdin/stdout/stderr, no include)
+#      must NOT show a stdio.h guard — the dialect hard-codes its streams;
+#      its positive control (the program's own #include <stdio.h>) must.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -47,5 +50,31 @@ if ! echo "$posmacros" | grep -qE "$GUARDS"; then
 	exit 1
 fi
 
-echo "check-autoinclude-position: OK (gated positions lean; positive control pulls)"
+# The madc dialect's stdio streams are hard-coded, as println is (owner
+# 2026-10-17, Program::add_stdio_streams): naming stdin / stdout / stderr
+# pulls no <stdio.h>. A pulled stdio.h shows in -dM as its include guard
+# (glibc _STDIO_H, darwin _STDIO_H_, mingw _INC_STDIO). Positive control: the
+# same streams with the program's own #include <stdio.h> show it.
+STDIO_GUARDS='^#define (_STDIO_H|_STDIO_H_|_INC_STDIO)( |$)'
+smacros=$("$MADC_BIN" -dM tests/testdialectstdiostreams.mad 2>/dev/null)
+sbad=$(echo "$smacros" | grep -E "$STDIO_GUARDS")
+if [ -n "$sbad" ]; then
+	echo "check-autoinclude-position: the dialect's stdio streams PULLED <stdio.h>:"
+	echo "$sbad"
+	echo ""
+	echo "tests/testdialectstdiostreams.mad names stdin/stdout/stderr and"
+	echo "includes nothing; the dialect hard-codes them (no provider row)."
+	echo "Owner: Program::add_stdio_streams (src/parser.cpp)."
+	exit 1
+fi
+sctl=tmp/check_autoinc_stdio_positive.mad
+printf '#include <stdio.h>\nint main() { println(stderr, "x"); return 0; }\n' > "$sctl"
+if ! "$MADC_BIN" -dM "$sctl" 2>/dev/null | grep -qE "$STDIO_GUARDS"; then
+	echo "check-autoinclude-position: POSITIVE CONTROL FAILED —"
+	echo "a program including <stdio.h> shows no stdio guard under -dM,"
+	echo "so the stdio leg proves nothing. Fix the control or the guard list."
+	exit 1
+fi
+
+echo "check-autoinclude-position: OK (gated positions lean; dialect streams pull no stdio.h; positive controls pull)"
 exit 0

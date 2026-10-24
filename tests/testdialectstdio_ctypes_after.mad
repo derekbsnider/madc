@@ -1,0 +1,36 @@
+// A program that includes <stdio.h> and a dialect body see ONE stderr and
+// ONE FILE, whichever comes first (owner 2026-10-17: the dialect hard-codes
+// its stdio streams, as println; it needs no header of its own). This order:
+// the first dialect use (ui_ws::open, whose body writes its refusal to
+// stderr — libmadc's body since the ws host moved to src/ui_ws.cpp) comes
+// BEFORE the program
+// includes <stdio.h>. Until a declaration
+// arrives, stderr is the dialect's own stream; the header's `extern FILE
+// *stderr;` then declares that same object — one stderr, of the header's
+// type. The program hands its FILE * to the dialect's println.
+// testdialectstdio_ctypes.mad holds the other order. `--emit=c11` defines
+// `struct _IO_FILE` once.
+// Oracle (g++ 13 and clang++ 18, -std=c++17, the dialect side written as a
+// C++ namespace + an fputs println ahead of main), stdout:
+//   dialect first: refused 1
+//   program FILE * into the dialect after its first use: ok
+//   one stderr: 1
+int report(void *h);
+
+int main()
+{
+	void *h = ui_ws::open("t", "", 0);
+	println("dialect first: refused {}", h == 0 ? 1 : 0);
+	return report(h);
+}
+
+#include <stdio.h>
+
+int report(void *h)
+{
+	FILE *fp = stdout;
+	println(fp, "program FILE * into the dialect after its first use: ok");
+	FILE *e = stderr;
+	fprintf(fp, "one stderr: %d\n", e == stderr);
+	return h == 0 ? 0 : 1;
+}

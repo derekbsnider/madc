@@ -1,0 +1,2 @@
+local: a=1 b=0 c=1 d=1 calls=0
+extern: a=1 b=0 c=1 calls=0

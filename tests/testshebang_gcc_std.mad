@@ -1,0 +1,11 @@
+#!/usr/bin/madc -std=c17
+// gcc's -std= spelling on madc's shebang line reads as the command line
+// reads it: C17, where a character constant is an int. Oracle: gcc -std=c17
+// and clang -std=c17 on this file without its first line print "char: 4".
+int printf(const char *, ...);
+
+int main(void)
+{
+	printf("char: %d\n", (int)sizeof('a'));
+	return 0;
+}

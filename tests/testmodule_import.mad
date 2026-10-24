@@ -1,0 +1,20 @@
+// `import greet;` — a madc MODULE (include/madc_module.h): a library found by
+// name on the module path (here obj/test-modules, the .flags fixture's
+// --module-path), describing itself. Nothing about it lives in the core: the
+// import opens tests/modules/greet's library, checks its ABI and registers
+// the declarations its build generated from its face (greet.madi) — a scoped
+// enum of its own and two functions, one returning text, one filling the
+// value carrier. Each call reaches the module's C++ through its own symbol.
+// Oracle: the C++ analogue (greet.cpp's definitions called from a g++ 13 /
+// clang++ 18 main with greet::tone::loud and n = 4) prints the same lines.
+import greet;
+
+int main()
+{
+	println("{}", greet::hello("module", greet::tone::plain));
+	println("{}", greet::hello("module", greet::tone::loud));
+	var sq;
+	greet::squares(sq, 4);
+	println("squares: {} {} {} {} ({})", sq[0], sq[1], sq[2], sq[3], sq.size());
+	return 0;
+}

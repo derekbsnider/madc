@@ -114,9 +114,9 @@ UMB_TMP="$OUTDIR/.umbrella.$$"
 # prelude text is a function of the pinned headers alone. It also aligns the
 # served C surface with the linux and win64 worlds, neither of which is
 # fortified (glibc needs _FORTIFY_SOURCE + optimization; mingw has none).
-if ! $CLANG -target "$TARGET" --sysroot "$SYSROOT" -x c -std=c11 -fno-blocks \
-        -D_Nullable= -D_Nonnull= -D_Null_unspecified= -D_FORTIFY_SOURCE=0 \
-        -E -dD "$UMB_TMP.c" -o "$UMB_TMP.lm"; then
+FLATTEN=($CLANG -target "$TARGET" --sysroot "$SYSROOT" -x c -std=c11 -fno-blocks
+         -D_Nullable= -D_Nonnull= -D_Null_unspecified= -D_FORTIFY_SOURCE=0)
+if ! "${FLATTEN[@]}" -E -dD "$UMB_TMP.c" -o "$UMB_TMP.lm"; then
     rm -f "$UMB_TMP.c" "$UMB_TMP.lm"
     echo "Error: $CLANG preprocess of the darwin prelude failed" >&2
     exit 1
@@ -155,6 +155,24 @@ rm -f "$UMB_TMP.raw"
 # text divergence in the C library surface (madc's own embedded stddef.h
 # carries the same guard, as gcc's and clang's do).
 awk '/^typedef .* wchar_t;$/ { print "#ifndef __cplusplus"; print; print "#endif"; next } { print }' \
+    "$UMB_TMP.flt" > "$UMB_TMP.grd"
+mv "$UMB_TMP.grd" "$UMB_TMP.flt"
+# <assert.h> is the one standard header whose effect depends on NDEBUG where
+# it is included (C11 7.1.2p4, 7.2p1). The flatten resolved its `#ifdef
+# NDEBUG` with NDEBUG undefined, so the umbrella's assert stayed live under
+# -DNDEBUG or a #define NDEBUG ahead of the first include. Flatten <assert.h>
+# once more WITH NDEBUG and restore the choice around the umbrella's
+# definition: both arms are the SDK's own text. (A re-include under a changed
+# NDEBUG is still the umbrella's once-only reading -- KG Gap
+# darwin_umbrella_prelude_whole_set_visibility.)
+NDEBUG_ASSERT=$(printf '#include <assert.h>\n' \
+    | "${FLATTEN[@]}" -DNDEBUG -E -dD - | grep -m1 '^#define assert(' || true)
+if [ -z "$NDEBUG_ASSERT" ] || ! grep -q '^#define assert(' "$UMB_TMP.flt"; then
+    rm -f "$UMB_TMP.flt"
+    echo "Error: <assert.h> no longer defines assert in both NDEBUG arms — SDK shape changed?" >&2
+    exit 1
+fi
+ND="$NDEBUG_ASSERT" awk '/^#define assert\(/ { print "#ifdef NDEBUG"; print ENVIRON["ND"]; print "#else"; print; print "#endif"; next } { print }' \
     "$UMB_TMP.flt" > "$UMB_TMP.grd"
 mv "$UMB_TMP.grd" "$UMB_TMP.flt"
 # The marker verify_macho_release.sh greps out of shipped binaries: the

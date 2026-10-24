@@ -1,0 +1,33 @@
+/* The middle operand of `?:` is a whole EXPRESSION, commas included, up to
+ * the matching `:` (C11 6.5.15: logical-OR-expression ? expression :
+ * conditional-expression) -- SQLite's getVarint32 is
+ * `(*(A) < 0x80) ? ((B) = *(A)), 1 : slow(A, &B)`. It was refused ("Expecting
+ * : in ternary expression"): the middle operand stopped at the first `,`.
+ * Inside a call the whole conditional is ONE argument; a comma after the
+ * false branch is the comma operator over the conditional.
+ * Oracle: gcc and clang -O0 print
+ *   3 1 5 2 1200
+ *   6 4 8 5 */
+#include <stdio.h>
+typedef unsigned int u32;
+typedef unsigned char u8;
+static int slow(const unsigned char *p, u32 *v) { *v = p[0] + 1000; return 2; }
+static int one(int a) { return a; }
+#define getVarint32(A,B)  \
+  (u8)((*(A)<(u8)0x80)?((B)=(u32)*(A)),1:slow((A),(u32 *)&(B)))
+
+int main(void)
+{
+	unsigned char a[2] = { 5, 0 }, b[2] = { 200, 0 };
+	u32 v = 0, w = 0;
+	int x = 1, t = 0;
+	int r = x ? (v = 7), 3 : 4;
+	int n1 = getVarint32(a, v);
+	int n2 = getVarint32(b, w);
+	printf("%d %d %u %d %u\n", r, n1, v, n2, w);
+	int s1 = one(x ? (t = 4), 6 : 9);
+	int s2 = x ? 0 ? 1 : 2, 8 : 9;
+	int s3 = (x ? 1 : 2, 5);
+	printf("%d %d %d %d\n", s1, t, s2, s3);
+	return 0;
+}

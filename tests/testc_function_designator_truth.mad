@@ -1,0 +1,38 @@
+/* A function designator not followed by `(` is the function's address
+ * (C11 6.3.2.1p4), never a call, in every context: the operand of `!`, the
+ * condition of `?:` (also inside a call's argument list or parentheses),
+ * `&&`, `if`, `==`.
+ * Before: madc called the function -- `!f` became `!f()` (b=1, calls=1) and
+ * `show(abs ? 1 : 0)` became `show(abs() ? 1 : 0)`.
+ * Oracle: gcc 13 and clang 18 -O0 -std=c17 print the lines in the .expect. */
+#include <stdio.h>
+#include <stdlib.h>
+
+static int calls;
+
+int f(void)
+{
+	calls++;
+	return 0;
+}
+
+static int show(int v)
+{
+	return v;
+}
+
+int main(void)
+{
+	int a = f ? 1 : 0;
+	int b = !f;
+	int c = f && 1;
+	int d = 0;
+	if (f)
+		d = 1;
+	printf("local: a=%d b=%d c=%d d=%d calls=%d\n", a, b, c, d, calls);
+	a = show(abs ? 1 : 0);
+	b = show(!abs);
+	c = (abs ? 1 : 0) + show(abs == 0);
+	printf("extern: a=%d b=%d c=%d calls=%d\n", a, b, c, calls);
+	return 0;
+}

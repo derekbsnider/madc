@@ -1,0 +1,39 @@
+// A range-for whose range is a CALL returning a class container by
+// reference (`std::vector<int> &vec()`), or by value: the receiver is the
+// referent's address, and the range expression is evaluated ONCE
+// ([stmt.ranged]/1 binds `auto &&__range` before the loop) — never once per
+// size() test and per element fetch.
+// Oracle: g++ and clang++ (-std=c++11 -O0) both print
+//   vec-ref: s=6 calls=1
+//   map-ref: s=30 calls=2
+//   vec-val: s=9 calls=3
+//   param-ref: s=6 calls=3
+#include <vector>
+#include <map>
+#include <cstdio>
+long calls = 0;
+std::vector<int> g = {1, 2, 3};
+std::map<int, int> gm = {{1, 10}, {2, 20}};
+std::vector<int> &vec() { calls++; return g; }
+std::map<int, int> &mp() { calls++; return gm; }
+std::vector<int> make() { calls++; return std::vector<int>{4, 5}; }
+long sum_of(std::vector<int> &v)
+{
+	long s = 0;
+	for (int x : v) s += x;
+	return s;
+}
+int main()
+{
+	long s = 0;
+	for (int x : vec()) s += x;
+	printf("vec-ref: s=%ld calls=%ld\n", s, calls);
+	s = 0;
+	for (auto &kv : mp()) s += kv.second;
+	printf("map-ref: s=%ld calls=%ld\n", s, calls);
+	s = 0;
+	for (int x : make()) s += x;
+	printf("vec-val: s=%ld calls=%ld\n", s, calls);
+	printf("param-ref: s=%ld calls=%ld\n", sum_of(g), calls);
+	return 0;
+}

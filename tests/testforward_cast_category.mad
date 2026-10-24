@@ -1,0 +1,28 @@
+// A forwarding reference deduces from the argument's value category
+// ([temp.deduct.call]/3), read by the one reader,
+// Program::argument_value_category: a cast to an lvalue reference is an
+// lvalue (`static_cast<int &>(x)`, `(int &)x`), a cast to an rvalue
+// reference an xvalue, a string literal an lvalue (B144: every cast deduced
+// as an rvalue, so std::forward picked f(int &&)).
+// Oracle (g++ 13, clang++ 18, -std=gnu++17):
+//   L R L
+//   lit=L var=L tmp=R
+#include <cstdio>
+#include <utility>
+#include <type_traits>
+void f(int &) { std::printf("L"); }
+void f(int &&) { std::printf("R"); }
+template<class T> void g(T &&t) { f(std::forward<T>(t)); }
+template<class T> const char *kind(T &&) { return std::is_lvalue_reference<T>::value ? "L" : "R"; }
+int main()
+{
+	int x = 1;
+	g(static_cast<int &>(x));
+	std::printf(" ");
+	g(static_cast<int &&>(x));
+	std::printf(" ");
+	g((int &)x);
+	std::printf("\n");
+	std::printf("lit=%s var=%s tmp=%s\n", kind("abc"), kind(x), kind(x + 1));
+	return 0;
+}

@@ -8,6 +8,7 @@
 // it once, before any output); colour_reaches reads that, the environment
 // and the descriptor's terminal state, and is safe to call concurrently.
 
+#include <cstddef>
 #include <iosfwd>
 
 namespace madc {
@@ -31,6 +32,11 @@ inline const char *sgr(bool colour, const char *seq)
 {
     return colour ? seq : "";
 }
+
+// The width laid-out text wraps to (a diagnostic's source echo, the help):
+// $COLUMNS when it holds a positive number, else 80. The one rule; the TUI's
+// full-screen grid asks the terminal itself (ui_term.cpp).
+size_t terminal_columns();
 
 } // namespace madc
 

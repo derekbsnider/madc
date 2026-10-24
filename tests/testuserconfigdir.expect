@@ -1,0 +1,6 @@
+xdg: [/x/probeapp]
+xdg-empty-windows: [/a/probeapp]
+posix-home: [/h/.config/probeapp]
+windows-no-appdata: [/h/.config/probeapp]
+none: []
+live: [/tmp/madc_ucd_probe/probeapp]

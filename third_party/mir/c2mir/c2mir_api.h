@@ -35,6 +35,11 @@ typedef struct c2mir_pos {
 
 c2m_ctx_t c2mir_init_compile (MIR_context_t ctx, struct c2mir_options *ops);
 void c2mir_finish_compile (c2m_ctx_t c2m_ctx);
+/* The unwind options (c2mir_options.unwind_regions_p, unwind_personality) for
+   the context's next c2mir_compile_tree: one context compiles trees of
+   different languages (a project's C and C++ units), as gcc takes
+   -fexceptions per translation unit. */
+void c2mir_set_unwind (c2m_ctx_t c2m_ctx, int unwind_regions_p, const char *personality);
 
 /* ---- Node creation ---- */
 
@@ -86,6 +91,15 @@ node_t c2mir_node_next_op (node_t op);
 /* Initialize the DLIST ops field of an externally-allocated node.
    Must be called before appending children. */
 void c2mir_init_node_ops (node_t n);
+
+/* ---- Target type layout ---- */
+
+/* The target's long double size and alignment as c2mir lays TP_LDOUBLE out
+   (sizeof (mir_ldouble), MIR_LDOUBLE_ALIGN): an external front end folding
+   sizeof / _Alignof and struct layout reads them, so the two agree on a
+   target whose long double differs from the host's (arm64-macos: double). */
+int c2mir_ldouble_size (void);
+int c2mir_ldouble_align (void);
 
 /* ---- Compilation from external AST ---- */
 

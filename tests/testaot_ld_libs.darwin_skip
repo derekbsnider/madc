@@ -1,0 +1,1 @@
+ELF and glibc only: the ld search over the toolchain directories, linker scripts and glibc stub archives (-lpthread / -ldl)

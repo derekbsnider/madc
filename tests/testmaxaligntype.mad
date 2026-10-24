@@ -1,0 +1,18 @@
+// max_align_t is the platform's own type: gcc's { long long; long double; }
+// on Linux and Windows (32 bytes, aligned as long double), clang's
+// `long double` on Apple. Read through madc's pre-registered max_align_t (every
+// use of the name binds to it) it was { int64; double } -- 16 bytes, aligned 8
+// -- on every target, whatever <stddef.h> declared. Including <wchar.h> after
+// <stddef.h> brings the darwin prelude's own typedef in on Apple.
+// Oracle: gcc 13 and clang 18 on Linux print "struct" / "aligned 1"; Apple
+// clang (macOS 14, arm64 and x86_64) prints "long double" / "aligned 1".
+#include <stddef.h>
+#include <wchar.h>
+#include <stdio.h>
+
+int main(void)
+{
+	printf("%s\n", sizeof(max_align_t) == sizeof(long double) ? "long double" : "struct");
+	printf("aligned %d\n", _Alignof(max_align_t) == _Alignof(long double));
+	return 0;
+}

@@ -58,7 +58,9 @@
 #include <chrono>
 #include "madcdis/istring.h"	// names are interned (madc::dis::istring)
 #include <cstdint>
+#include <cstring>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -88,7 +90,8 @@ enum : uint32_t
 	SNAP_KIND_CIR_DECL_INDEX    = madc::dis::SNAP_KIND_CONSUMER + 7,  // cir_forest_decl_entry[]
 	SNAP_KIND_CIR_PP_EXPORTS    = madc::dis::SNAP_KIND_CONSUMER + 8,  // uint32 event stream (cir_forest_pp_event + params)
 	SNAP_KIND_CIR_UNIT_EDGES    = madc::dis::SNAP_KIND_CONSUMER + 9,  // uint32[] directory unit indices, include order
-	SNAP_KIND_CIR_BRANCH_MACROS = madc::dis::SNAP_KIND_CONSUMER + 10, // container-global: uint32 name ids, sorted
+	// SNAP_KIND_CONSUMER + 10 RETIRED (v2-v69: the container-global branch
+	// macro names; read by nothing since K2, deleted at v70). Never reuse it.
 	SNAP_KIND_CIR_CANON_ORDER   = madc::dis::SNAP_KIND_CONSUMER + 11, // container-global: uint32 unit indices, canonical order
 	// --- Phase 6: complete type-table serialization (2026-06-12 type-table
 	// design §6.4 "forest type-refs serialize as ids + table segments") ---
@@ -122,20 +125,9 @@ enum : uint32_t
 	// produced image. OPTIONAL segment: absent = no ledger (the flag then
 	// refuses loudly). See cir_forest_ledger_header. ---
 	SNAP_KIND_CIR_LEDGER           = madc::dis::SNAP_KIND_CONSUMER + 22, // container-global: cir_forest_ledger_header + entries + payload
-	// --- v40: per-unit EXTERNAL branch dependencies (task #57) — the flat
-	// u32 stream is [name_id, flags, value_id, definer_unit]... with flags
-	// bit0 = defined-at-freeze, bit1 = value_id valid (object-like body),
-	// definer_unit = directory index of the unit that established the
-	// state (0xffffffff = none). Bind eligibility skips deps whose definer
-	// is inside the closure being bound (replay-internal) and compares the
-	// rest against the consumer's live macro tables; a mismatch declines
-	// the whole root bind to live parse (or prunes an already-live unit
-	// via its own guard). v55: a tuple with flags bit2 (CIR_BRANCH_DEP_PP_ARM)
-	// is not a dependency but a skipped arm — [name_id, PP_ARM, text_id,
-	// 0xffffffff]: the body of an `#ifndef name` arm the producer skipped
-	// (an external sibling had defined name) that holds only define / undef /
-	// conditional directives; the bind replays it when name is undefined. ---
-	SNAP_KIND_CIR_BRANCH_DEPS      = madc::dis::SNAP_KIND_CONSUMER + 23, // per-unit: uint32 [name_id, flags, value_id, definer_unit] tuples
+	// --- SNAP_KIND_CONSUMER + 23 RETIRED (v40-v69: per-unit branch
+	// dependencies; v70 deletes them — the condition records
+	// (SNAP_KIND_CIR_UNIT_CONDS) replaced them). Never reuse it. ---
 	// v41: exact source bytes before preprocessing. A config-mismatched
 	// consumer may re-tokenize these without binding producer semantic state.
 	SNAP_KIND_CIR_UNIT_SOURCE      = madc::dis::SNAP_KIND_CONSUMER + 24,
@@ -157,7 +149,74 @@ enum : uint32_t
 	SNAP_KIND_CIR_SEEDS            = madc::dis::SNAP_KIND_CONSUMER + 28,
 	SNAP_KIND_CIR_RECORDABLE       = madc::dis::SNAP_KIND_CONSUMER + 29,
 	// v60: the arena records' layout — uint32 position per slot (raw).
-	SNAP_KIND_CIR_ARENA_DEF_POS    = madc::dis::SNAP_KIND_CONSUMER + 30
+	SNAP_KIND_CIR_ARENA_DEF_POS    = madc::dis::SNAP_KIND_CONSUMER + 30,
+	// The profile's ROLE: one uint32 role code
+	// (CirForestRole). OPTIONAL segment, like the ledger: absent = the
+	// system-header profile, so no format bump.
+	SNAP_KIND_CIR_ROLE             = madc::dis::SNAP_KIND_CONSUMER + 31,
+	// v68 (docs/plans/2026-10-18-verified-cxx-bind.md, K2): per-unit uint32
+	// words — the edge count, then each edge's place among the unit's PP
+	// events; the condition count, then CIR_COND_WORDS words per condition
+	// (cir_forest_cond_field); v69: the inclusion count, then per inclusion
+	// (v75: in enter order) its begin and end (cir_forest_incl_field); then the
+	// consult word count and the #if / #elif consults (CIR_CONSULT_WORDS each);
+	// v71: the expansion point count, then CIR_POINT_WORDS words per point.
+	SNAP_KIND_CIR_UNIT_CONDS       = madc::dis::SNAP_KIND_CONSUMER + 32,
+	// B1 (docs/plans/2026-10-20-front-end-speed-plan.md): every name a
+	// frozen unit spells, with its units (ForestDeclNames layout).
+	// OPTIONAL segment: absent = a -D consumer declines, as before.
+	SNAP_KIND_CIR_SPELLED_NAMES    = madc::dis::SNAP_KIND_CONSUMER + 33,
+	// B2: DECL_NAMES's hash index (ForestDeclNames::build_hash). OPTIONAL:
+	// absent = the binary search, as before.
+	SNAP_KIND_CIR_DECL_NAMES_HASH  = madc::dis::SNAP_KIND_CONSUMER + 34
+};
+
+// B211: a SPELLED_NAMES unit word with this bit spells the name only in a
+// directive's word, condition, header-name or #define / #undef name — never
+// where a macro expands (source_spelled_names' `content`). A table without the
+// bits (frozen before B211) reads as every spelling content.
+static const uint32_t CIR_SPELLED_DIRECTIVE_ONLY = 0x80000000u;
+
+// v68: one frozen condition record's words (SNAP_KIND_CIR_UNIT_CONDS).
+enum cir_forest_cond_field : uint32_t {
+	CIR_COND_KIND = 0,	// Program::CondDirective (If / Ifdef / Ifndef / Elif)
+	CIR_COND_TEXT,		// pool id: the condition, or the #ifdef / #ifndef macro
+	CIR_COND_FLAGS,		// CIR_COND_F_* below
+	CIR_COND_EV_BEGIN, CIR_COND_ED_BEGIN, CIR_COND_EV_END, CIR_COND_ED_END,
+	CIR_COND_ARM,		// pool id of a skipped single arm's body (0 = none)
+	CIR_COND_REC_END,	// v69: the unit's record count at the arm's end (nested records)
+	CIR_COND_ARM_STATE,	// v69: pool id of the freeze's state of the captured arm's writes (0 = none)
+	CIR_COND_CONSULT_AT,	// v69: an #if / #elif's first consulted macro in the unit's consult words
+	CIR_COND_CONSULT_N,	// v69: ... and how many (CIR_CONSULT_WORDS each)
+	CIR_COND_TOK_BEGIN,	// v72 (K2d): the arm's own tokens, unit-local [begin, end) — the
+	CIR_COND_TOK_END,	// decl index's coordinate (a skipped arm withdraws its declarations)
+	CIR_COND_WORDS
+};
+// v75: one inclusion of a unit, in enter order: where it begins and ends in
+// the unit's events, edges and condition records. A nested inclusion's range
+// lies inside its outer one's.
+enum cir_forest_incl_field : uint32_t {
+	CIR_INCL_EV_BEGIN = 0, CIR_INCL_ED_BEGIN, CIR_INCL_REC_BEGIN,
+	CIR_INCL_EV_END, CIR_INCL_ED_END, CIR_INCL_REC_END,
+	CIR_INCL_WORDS
+};
+// v69: one macro an #if / #elif consulted: its name (pool id) and the freeze's
+// state hash (forest_macro_state_hash, low then high 32 bits).
+enum : uint32_t { CIR_CONSULT_WORDS = 3 };
+// v71 (K2c): one expansion point of a macro a captured arm writes — where the
+// freeze expanded it (Program::PackExpansionPoint) and the state it held.
+enum cir_forest_point_field : uint32_t {
+	CIR_POINT_NAME = 0,	// pool id: the macro
+	CIR_POINT_INCLUSION,	// the unit inclusion it expanded in
+	CIR_POINT_EV, CIR_POINT_ED, CIR_POINT_REC,	// the unit's events, edges, records ahead of it
+	CIR_POINT_STATE,	// pool id: its state there (forest_macro_state_spelling)
+	CIR_POINT_WORDS
+};
+enum : uint32_t {
+	CIR_COND_F_OUTCOME    = 1u,	// the arm was taken at freeze
+	CIR_COND_F_SINGLE_ARM = 2u,	// the group's #endif ended it (no #elif / #else)
+	CIR_COND_F_WATCHED    = 4u,	// v73: the forest keeps the expansion points of the arm's writes
+	CIR_COND_F_DECL_SCOPE = 8u	// v76: a captured arm sits at declaration scope
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -663,13 +722,58 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // storage declaration and its __madc_global_init group, and a bind emits
 // those nodes verbatim. The freeze places each group statement in its
 // global's declaring unit.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 66 };
-// Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
-enum : uint32_t {
-	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
-	CIR_BRANCH_DEP_HAS_VALUE = 2u,	// value_id holds its object-like body
-	CIR_BRANCH_DEP_PP_ARM    = 4u	// v55: [name, flags, arm text, none] — not a dep
-};
+//
+// v67: a name's branch dependency carries one tuple per recorded definer (the
+// first consult's and each open ancestor's of a later one — ANY in the closure
+// makes it replay-internal), and CIR_BRANCH_DEP_ARM_REPLAYS marks a consult
+// that IS the unit's skipped directive-only arm, which the bind evaluates.
+//
+// v68: per-unit CONDITIONS (slot +10; SEGS_PER_UNIT 10 -> 11) — each edge's
+// place among the unit's PP events, and each conditional the unit evaluated
+// over an external macro (its text, outcome, place and a skipped single arm's
+// body): the unit's item order, for the bind's positional walk (K2 of
+// docs/plans/2026-10-18-verified-cxx-bind.md).
+//
+// v69: each condition record carries CIR_COND_REC_END (the records nested in
+// its arm) and CIR_COND_ARM_STATE (the frozen state of every macro a captured
+// arm writes), and the conditions slot ends with the unit's INCLUSIONS — where
+// each of its includes by the freeze TU ended, so the walk reads a guard-less
+// unit's Nth inclusion at the Nth edge to it.
+//
+// v70: what the bind's walk (K2 step 3) replaced is gone — the per-unit
+// branch dependencies (slot +8, the v55 PP_ARM and v67 ARM_REPLAYS tuples
+// with them), the container-global branch macro names (seg 6), and a
+// condition record's token positions and arm-purity flag (dump-only).
+//
+// v71: the conditions slot ends with the unit's EXPANSION POINTS of every
+// macro a captured arm writes (CIR_POINT_WORDS each) — K2c's checks — and a
+// captured arm's CIR_COND_ARM_STATE is the plain state again (no v69 "?" /
+// K2b "^" marks).
+//
+// v72 (K2d): a condition record carries its arm's own tokens, unit-local
+// (CIR_COND_TOK_BEGIN / END — the decl index's slice coordinate): a taken arm
+// the bind walk skips withdraws the declarations it made.
+//
+// v73 (K2e): the expansion points also cover every macro a maskable taken
+// arm writes (its condition spells a name it defines): a bind that skips the
+// arm checks a write it leaves unlike the freeze's where frozen content
+// expands it, instead of declining. A v72 container lacks those points.
+//
+// v74: a class's vslot run holds per-SIGNATURE slot keys
+// (FuncDef::virtual_slot_key: "f(i)", "h()K"); a v73 pack's run holds one
+// display name per overload set.
+//
+// v75 (B222): a unit's inclusions are recorded in ENTER order, each with its
+// begin and end (cir_forest_incl_field) — a nested re-entry (mingw's
+// <_mingw.h> read again by <vadefs.h> while it is open) lies inside the outer
+// inclusion's range; a v74 pack holds the ends only, in leave order. An
+// expansion point names the innermost open inclusion of its unit.
+//
+// v76: a captured arm at declaration scope carries CIR_COND_F_DECL_SCOPE — the
+// bind replays an arm's tokens at the root's include site, so an arm with
+// tokens inside an enum body, a class, a namespace or a parameter list
+// (glibc bits/socket.h's __USE_GNU enumerators) declines instead.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 76 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies
@@ -686,8 +790,8 @@ enum : uint32_t
 	CIR_FOREST_SEG_STR_BYTES     = 2,	// SNAP_KIND_INTERN_BYTES
 	CIR_FOREST_SEG_STR_OFFSETS   = 3,	// SNAP_KIND_INTERN_OFFSETS (v59; 4 is retired)
 	// seg ids 5 and 8 are RETIRED (the v6 type records / payload, deleted at the
-	// v18 flip) — never reuse them for a new segment kind.
-	CIR_FOREST_SEG_BRANCH_MACROS = 6,	// v2 (absent = zero-length)
+	// v18 flip), and 6 (the branch macro names, v2-v69) — never reuse them for
+	// a new segment kind.
 	CIR_FOREST_SEG_CANON_ORDER   = 7,	// v2 (absent = zero-length)
 	CIR_FOREST_SEG_GLOBALS       = 9,	// v13 (absent = zero-length): file-scope global var defs
 	// B3: the DefArena dump (10-14) — THE type-graph serialization since v18.
@@ -711,12 +815,17 @@ enum : uint32_t
 	CIR_FOREST_SEG_SEEDS            = 25,	// v58: per-unit seed lists (ForestSeeds)
 	CIR_FOREST_SEG_RECORDABLE       = 26,	// v58: arena recordability bits (ForestRecordableBits)
 	CIR_FOREST_SEG_ARENA_DEF_POS    = 27,	// v60: slot -> record position (absent = slot order)
-	// 28-31 reserved.
+	CIR_FOREST_SEG_ROLE             = 28,	// the profile's role (optional; absent = system)
+	CIR_FOREST_SEG_SPELLED_NAMES    = 29,	// B1: name -> the frozen units spelling it (optional)
+	CIR_FOREST_SEG_DECL_NAMES_HASH  = 30,	// B2: DECL_NAMES's hash index (optional)
+	// 31 reserved.
 	CIR_FOREST_SEG_UNIT_BASE     = 32,
-	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
+	CIR_FOREST_SEGS_PER_UNIT     = 11	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
-						// +6 pp exports, +7 edges, +8 branch deps
-						// +9 raw source (v41; slots may be zero-length)
+						// +6 pp exports, +7 edges, +8 RETIRED
+						// (branch deps, v40-v69), +9 raw source
+						// (v41; slots may be zero-length)
+						// +10 conditions (v68)
 };
 
 // Directory payload (CIR_FOREST_SEG_DIR, codec None): the header, the unit
@@ -745,6 +854,37 @@ struct cir_forest_shared_config
 {
 	uint32_t language_std;	// madc_forest_config_word of the other config
 	uint32_t defines_hash;	// madc_forest_defines_hash of the other config
+};
+
+// A profile's ROLE (CIR_FOREST_SEG_ROLE): which consumer it serves. A carrier stacks profiles (placement 2) and the
+// discovery chain walks them newest first; the role is what that walk can
+// filter by (B2). The segment holds one code. Absent = the system-header
+// profile — every container frozen before B1 — so the segment is optional and
+// a reader that does not know it ignores it. A new role is a new code and a
+// new row below, never a format change; a code a reader has no row for is
+// carried through as a number.
+enum CirForestRole : uint32_t
+{
+	CIR_FOREST_ROLE_SYSTEM  = 0	// the system-header pack (no ROLE segment)
+};
+
+// One role: its code and its spelling (the --dump-forest field).
+struct cir_forest_role_row
+{
+	CirForestRole role;
+	const char   *name;
+};
+
+// The row of a role code; NULL for a code this reader has no row for.
+const cir_forest_role_row *cir_forest_role_info(uint32_t role);
+
+// One profile of a carrier's stack (cir_forest_profiles).
+struct cir_forest_profile
+{
+	uint32_t role;		// CirForestRole code (SYSTEM when the segment is absent)
+	size_t   offset;	// where the container starts in the carrier image
+	size_t   bytes;		// its bytes
+	size_t   compressed;	// segments stored with a codec (0 = read in place)
 };
 
 // MIR module cache segment header (precedes the raw MIR_write_module bytes).
@@ -791,8 +931,9 @@ struct cir_forest_ledger_entry
 {
 	uint32_t name_bytes;	// module name (the ledger source path)
 	uint32_t sym_bytes;	// NUL-separated defined-symbol names
-	uint32_t mir_bytes;	// MIR_write_module bytes
-	uint32_t _pad;
+	uint32_t mir_bytes;	// MIR_write_module bytes, or a native object's
+	uint32_t form;		// CirLedgerForm: what those bytes are (0, the
+				// old pad's value, is a MIR module)
 };
 
 struct cir_forest_dir_unit
@@ -838,18 +979,66 @@ struct cir_forest_decl_entry
 //   [N+2 .. 2N+2]       unit-run word offsets into the unit words (u[N] = total)
 //   unit words          the declaring units of name i at [u[i], u[i+1])
 //   name bytes          NUL-terminated names
+// B2 (docs/plans/2026-10-20-front-end-speed-plan.md): an optional HASH index
+// beside it (u32 words) — [0] B slots (a power of two above N), then B slots,
+// each a name index + 1 (0 = empty), placed at intern_table::hash_bytes(name)
+// & (B - 1) and probed linearly. Bound, a lookup hashes the name once and
+// compares one or two names; absent, units_of binary-searches (~13 strcmps).
 class ForestDeclNames
 {
 public:
 	ForestDeclNames() : _n(0), _off(0), _uoff(0), _units(0), _nunits(0),
-			    _bytes(0), _nbytes(0) {}
+			    _bytes(0), _nbytes(0), _slots(0), _mask(0) {}
 	// Binds the layout in place (validated: the header, both offset tails, the
 	// section sizes); false = malformed, the view stays empty.
 	bool bind(const uint8_t *p, size_t len);
+	// Binds the HASH index, after bind (validated: B a power of two above N,
+	// the size); false = malformed or absent, lookups binary-search.
+	bool bind_hash(const uint32_t *w, size_t words);
 	bool empty() const { return _n == 0; }
 	uint32_t size() const { return _n; }
+	// The bound HASH index's slot count (0: none bound).
+	uint32_t hash_slots() const { return _slots ? _mask + 1 : 0; }
 	// The units declaring `name` (n = 0: none).
-	const uint32_t *units_of(const char *name, uint32_t &n) const;
+	const uint32_t *units_of(const char *name, uint32_t &n) const
+	{
+		n = 0;
+		if (!_slots || !name)
+			return units_of_sorted(name, n);
+		const uint32_t len = (uint32_t)strlen(name);
+		return probe(madc::dis::intern_table::hash_bytes(name, len), NULL, 0, name, len, n);
+	}
+	// The units declaring "ns::name" — with the index bound, hashed and
+	// compared in pieces, never built as one spelling.
+	const uint32_t *units_of_qualified(const char *ns, const char *name, uint32_t &n) const;
+	// The names starting with `stem`: the table is sorted by strcmp, so
+	// they are one run [begin, end) — a binary search to its start, a walk
+	// while the stem matches. begin == end: none ("" is every name).
+	// Each is read in place with name_at / units_at.
+	void for_prefix(const char *stem, uint32_t &begin, uint32_t &end) const;
+	// Name i and its declaring units; bounds-checked like every probe (an
+	// index or offset out of range answers NULL / n = 0). for_prefix's run
+	// reads them; units_of, the hot probe, keeps its own reads. Defined here
+	// so they inline: an exported member defined out of line in the -fPIC
+	// libmadc is interposable, and gcc does not inline it even in its own
+	// file (measured on units_of: +3.4M Ir on cxx_stl.forest).
+	const char *name_at(uint32_t i) const
+	{
+		if (i >= _n || _off[i] >= _nbytes)
+			return NULL;
+		return _bytes + _off[i];
+	}
+	const uint32_t *units_at(uint32_t i, uint32_t &n) const
+	{
+		n = 0;
+		if (i >= _n)
+			return NULL;
+		const uint32_t b = _uoff[i], e = _uoff[i + 1];
+		if (b > e || e > _nunits)
+			return NULL;
+		n = e - b;
+		return _units + b;
+	}
 	// A verdict SURFACE — the bind's qualified-then-bare discipline: the units
 	// declaring "ns::name" when any unit declares it, else those declaring name.
 	const uint32_t *surface(const char *name, const char *ns, uint32_t &n) const;
@@ -859,7 +1048,35 @@ public:
 	// Builds the layout from (name -> sorted unique units).
 	static void build(const std::map<madc::dis::istring, std::vector<uint32_t> > &names,
 			  std::vector<uint8_t> &out);
+	// Builds the HASH index of a bound layout.
+	static void build_hash(const ForestDeclNames &dn, std::vector<uint32_t> &out);
 private:
+	const uint32_t *units_of_sorted(const char *name, uint32_t &n) const;
+	// The slot run from hash h: the name equal to ns "::" (ns_len bytes; none
+	// when ns is NULL) followed by the name's len bytes.
+	const uint32_t *probe(uint32_t h, const char *ns, uint32_t ns_len,
+			      const char *name, uint32_t len, uint32_t &n) const
+	{
+		for (uint32_t b = h & _mask, step = 0; step <= _mask; b = (b + 1) & _mask, ++step) {
+			const uint32_t s = _slots[b];
+			if (!s)
+				return NULL;
+			const uint32_t i = s - 1;
+			if (i >= _n || _off[i] >= _nbytes)
+				return NULL;
+			const char *p = _bytes + _off[i];
+			// strncmp stops at the stored name's NUL: a shorter name never
+			// reads past its own bytes.
+			if (ns) {
+				if (strncmp(p, ns, ns_len) != 0 || p[ns_len] != ':' || p[ns_len + 1] != ':')
+					continue;
+				p += ns_len + 2;
+			}
+			if (strncmp(p, name, len) == 0 && p[len] == '\0')
+				return units_at(i, n);
+		}
+		return NULL;
+	}
 	uint32_t        _n;
 	const uint32_t *_off;
 	const uint32_t *_uoff;
@@ -867,6 +1084,8 @@ private:
 	uint32_t        _nunits;
 	const char     *_bytes;
 	uint32_t        _nbytes;
+	const uint32_t *_slots;		// B2: the HASH index (NULL: binary search)
+	uint32_t        _mask;		// its B - 1
 };
 
 // SEEDS: per bound unit, what a bind of it visits. L lists = unit_count + 1;
@@ -889,6 +1108,9 @@ private:
 // from the owner (admitted by seed or by pull), never from a list.
 enum : uint32_t { CIR_SEED_DEP_ARENA = 0u, CIR_SEED_DEP_TEMPLATE = 1u,
 		  CIR_SEED_DEP_GLOBAL = 2u };
+// A tagged item's kind and index — a SEEDS dependent, a decl entry's record_id.
+inline uint32_t cir_seed_item_kind(uint32_t item) { return item >> 30; }
+inline uint32_t cir_seed_item_index(uint32_t item) { return item & 0x3fffffffu; }
 class ForestSeeds
 {
 public:
@@ -1164,7 +1386,7 @@ struct cir_forest_template_record
 	uint32_t key_id;	// the map key (bare name, or "ns::name" for fn/var/concept maps)
 	uint32_t name_id;	// TemplateDef::class_name / TemplateAliasDef::alias_name (0 = n/a)
 	uint32_t ns_id;		// defining_namespace / FnTemplateDef::ns (0 = global)
-	uint32_t extra_id;	// FnTemplateDef::inline_builtin_kind (0 = none)
+	uint32_t extra_id;	// FnTemplateDef::inline_builtin_kind's spelling (0 = none)
 	uint32_t owner_type_id;	// owner_class as a serialized type-id (0 = none)
 	uint32_t flags;		// CIR_TMPLF_*
 	uint32_t param_begin;	// u32 word offset of cir_forest_template_param[param_count]
@@ -1213,12 +1435,8 @@ struct cir_forest_unit
 	std::vector<cir_forest_decl_entry> decl_index;
 	std::vector<uint32_t>       pp_events;	// cir_forest_pp_event stream
 	std::vector<uint32_t>       edges;	// directory unit indices, include order
-	// v40: external branch dependencies — [name_id, flags, value_id,
-	// definer_unit] tuples (flags bit0 = defined at freeze, bit1 =
-	// value_id valid; definer_unit 0xffffffff = none). v55: bit2 marks a
-	// skipped directive-only arm tuple (CIR_BRANCH_DEP_PP_ARM).
-	std::vector<uint32_t>       branch_deps;
 	std::vector<uint8_t>        source_payload;	// v41: pre-PP source bytes
+	std::vector<uint32_t>       conditions;	// v68: SNAP_KIND_CIR_UNIT_CONDS words
 };
 
 // A whole frozen forest in memory (the multi-unit sibling of cir_frozen_blob).
@@ -1231,9 +1449,11 @@ struct cir_frozen_forest
 	// madc_forest_defines_hash) — bind requires an exact consumer match.
 	uint32_t                     language_std = 0;
 	uint32_t                     defines_hash = 0;
+	// B1: the profile's role (CirForestRole) — written as the ROLE segment
+	// unless SYSTEM (absent = system).
+	uint32_t                     role = CIR_FOREST_ROLE_SYSTEM;
 	std::vector<madc::dis::istring>     libs;	// dlopen closure (#load / -l paths)
 	// --- grove payload v2 (B4a; container-global) ---
-	std::vector<uint32_t>        branch_macros;	// pool name ids, sorted
 	std::vector<uint32_t>        canon_order;	// unit indices, canonical include order
 	// --- v13 (container-global): file-scope global VARIABLE definitions ---
 	std::vector<cir_forest_global_record> globals;
@@ -1290,6 +1510,7 @@ struct cir_frozen_forest
 	std::vector<requirement>        requirements;
 	// Built by cir_forest_build_seeds; written as DECL_NAMES / SEEDS / RECORDABLE.
 	std::vector<uint8_t>  decl_names;
+	std::vector<uint32_t> decl_names_hash;	// B2: written as DECL_NAMES_HASH
 	std::vector<uint32_t> seeds;
 	std::vector<uint32_t> recordable;
 };
@@ -1322,16 +1543,50 @@ class Program;
 uint32_t madc_forest_config_word(const Program *prog);
 uint32_t madc_forest_defines_hash(const Program *prog);
 
+// The two packs (owner 2026-10-18): a C-family profile (the C layer) serves C
+// alone; the mixed C/C++ profile serves C++ and the madc dialect, and a C
+// compile may read its header text and AOT ledger too (C pack plan, ruling J3).
+// True iff a consumer of `consumer_config` may read a profile frozen under
+// `producer_config` at all — every probe mode asks it first, so a C++ or madc
+// compile never reads the C layer whatever the stack's order. The family is
+// the config word's language standard (madc::file_kind_family).
+bool cir_forest_profile_serves_family(uint32_t producer_config,
+				      uint32_t consumer_config);
+// Is the config word's language standard a C one (madc::file_kind_family)?
+bool cir_forest_config_is_c(uint32_t config);
+
 // The frozen CONTENT of the last container in `image`, one digest per
 // segment id: every segment's decoded bytes, the directory with its producer
 // config fields zeroed, less the segments that are not parse output (the
 // MIR module cache and the AOT ledger are derived / dialect-agnostic; the
-// shared-config labels are labels). --dump-forest prints their fold as its
-// `content` line: two freezes of one corpus under configs that parse it
-// alike print the same line (a freeze is reproducible). False when the
-// image holds no readable container.
+// shared-config labels and the role are labels). --dump-forest prints their
+// fold as its `content` line: two freezes of one corpus under configs that
+// parse it alike print the same line (a freeze is reproducible). False when
+// the image holds no readable container.
 bool cir_forest_content_digests(const void *image, size_t len,
 				std::map<uint32_t, uint64_t> &out);
+
+// An opened container's role: the ROLE segment's code, SYSTEM when it is
+// absent. False when the segment is malformed (a wrong kind or size). The one
+// reader of the segment — CirFrozenForest::open_header and the profile walk
+// below both read through it.
+bool cir_forest_read_role(const madc::dis::snapshot_reader &r, uint32_t &role);
+
+// A carrier's profile stack, newest first (the order the discovery chain
+// walks it): each container's role, place, size and compressed segment count.
+// False (and `out` empty) when the image's end holds no container. Backs
+// --dump-forest's `profile` lines.
+bool cir_forest_profiles(const void *image, size_t len,
+			 std::vector<cir_forest_profile> &out);
+
+// One profile's role, read from its footer and segment table alone — never
+// its forest directory — and, when `previous` is given, the length of the
+// carrier image below it (0: none). The discovery walk's role filter: a walk
+// skips a profile of another role without opening it. False when
+// the image's end holds no container (the walk then opens it as before, so a
+// foreign blob keeps its notice).
+bool cir_forest_profile_role(const void *image, size_t len, uint32_t &role,
+			     size_t *previous = NULL);
 
 // The release pack's zstd level (the appended pack pays compression once per
 // release build; see the selection comment at madc_cir.cpp's freeze). The
@@ -1650,7 +1905,7 @@ struct CirRestoredTemplate
 	const char *key;		// the map key
 	const char *name;		// class_name / alias_name (NULL = n/a)
 	const char *ns;			// defining namespace (NULL/"" = global)
-	const char *extra;		// FnTemplateDef::inline_builtin_kind (NULL = none)
+	const char *extra;		// FnTemplateDef::inline_builtin_kind's spelling (NULL = none)
 	DataDefCLASS *owner;		// swizzled owner class (NULL = none)
 	uint32_t    flags;		// CIR_TMPLF_*
 	std::vector<std::pair<const char *, uint32_t> > params;	// (name, CIR_TMPLP_*)
@@ -1743,6 +1998,30 @@ struct CirMaterializeFilter
 	std::set<uint32_t> system_units;
 	// Names asked for by name, kept whatever declares them.
 	std::set<madc::dis::istring> extra_names;
+	// K2d: per bound unit, the names every declaration of which the unit made
+	// in a frozen arm the bind walk skipped, so the unit does not declare
+	// them here (decl-index names: the exported, qualified form). Few — a
+	// scan, compared in place (withdraws).
+	std::map<uint32_t, std::vector<madc::dis::istring> > withdrawn;
+	// The closure binds `unit`.
+	bool binds(uint32_t unit) const
+	{
+		return bound_units.count(unit) != 0;
+	}
+	// ... and `unit` declares ns::nm (nm when ns is NULL or empty) here.
+	bool declares(uint32_t unit, const char *ns, const char *nm) const
+	{
+		if (!binds(unit))
+			return false;
+		if (withdrawn.empty())
+			return true;
+		std::map<uint32_t, std::vector<madc::dis::istring> >::const_iterator it =
+			withdrawn.find(unit);
+		return it == withdrawn.end() || !withdraws(it->second, ns, nm);
+	}
+	// `names` (one unit's withdrawn) holds ns::nm.
+	static bool withdraws(const std::vector<madc::dis::istring> &names, const char *ns,
+			      const char *nm);
 };
 
 // --show-stats (task #25 slice D): ONE depth-guarded forest-work clock, the
@@ -1815,9 +2094,13 @@ class CirFrozenForest
 	mutable ForestSeeds _seeds;
 	mutable ForestRecordableBits _recordable_bits;
 	void bind_seed_index() const;
+	// B1 SPELLED_NAMES, bound on the first spelled_names() (a -D consumer).
+	mutable bool _spelled_names_bound = false;
+	mutable ForestDeclNames _spelled_names;
 	uint32_t _root_unit, _root_idx;
 	uint32_t _language_std = 0, _defines_hash = 0;	// v27 producer config (dir header)
 	std::vector<cir_forest_shared_config> _shared_configs;	// more configs this profile serves
+	uint32_t _role = CIR_FOREST_ROLE_SYSTEM;	// B1: the ROLE segment's code (absent = system)
 
 	// The container's own string pool (A1 frozen view over the three
 	// blocks: in place when codec is None, else over the process-level
@@ -1825,7 +2108,7 @@ class CirFrozenForest
 	madc::dis::frozen_intern_table _pool;
 	// v2 container-global payloads (loaded at open; empty on v2-less
 	// module containers).
-	std::vector<uint32_t> _branch_macros, _canon_order;
+	std::vector<uint32_t> _canon_order;
 	// The DataDef objects materialize lazily at bind (materialize_from_arena),
 	// swizzling arena id refs back to pointers. The forest owns the
 	// materialized objects and frees them in ~CirFrozenForest.
@@ -1996,8 +2279,11 @@ public:
 	// BEFORE paying the pool/arena binds; a mismatch then costs ~nothing.
 	// complete_open() finishes the job (memoized; needs the live string
 	// pool). open() remains the one-call composition of both.
+	// `opened`: a reader already open on (image, len) — the discovery
+	// walk's role read — adopted (snapshot_reader::adopt), not re-opened.
 	bool open_header(const void *image, size_t len,
-			 bool quiet_missing = false);
+			 bool quiet_missing = false,
+			 madc::dis::snapshot_reader *opened = NULL);
 	bool complete_open(c2m_ctx_t c2m);
 	bool previous_image_len(size_t &len) const
 		{ return _reader.previous_image_len(len); }
@@ -2052,6 +2338,11 @@ public:
 	double _stat_unitload_secs = 0.0;	// unit_segment(): node-record decode + validate
 	unsigned long long _stat_unitload_count = 0;
 	double _stat_mat_secs = 0.0;	// materialize_from_arena(): DataDef rebuild
+	// materialize_pass generations run, and the records the LAST one's Pass 0
+	// visited (seed-list, whole-walk and asked entries; pulls and an admitted
+	// class's dependents excluded).
+	unsigned long long _stat_mat_generations = 0;
+	unsigned long long _stat_mat_visited = 0;
 	// task #25 slice D: the owning Program's depth-guarded forest-work clock
 	// (Program::_forest_work_seconds / _forest_work_depth), installed by
 	// ensure_bind_forest so forest-side entries share ONE clock with the
@@ -2079,9 +2370,25 @@ public:
 	uint32_t defines_hash() const { return _defines_hash; }
 	// The other configs the pack proved this profile serves (shared labels).
 	const std::vector<cir_forest_shared_config> &shared_configs() const { return _shared_configs; }
+	// B1: the profile's role (CirForestRole code; SYSTEM when the container
+	// carries no ROLE segment). Directory-level like the configs: read by
+	// open_header, so a profile walk can judge it before complete_open.
+	uint32_t role() const { return _role; }
 	// The bind gate: this profile was frozen under (config, defines) — its
 	// own header's pair or one of its shared labels.
 	bool serves_config(uint32_t config, uint32_t defines) const;
+	// THE exact-match verdict for a consumer: serves_config on its own pair,
+	// or (B1) its -D defines change nothing the profile holds — the profile
+	// was frozen with none under the consumer's config, and no frozen unit
+	// spells any -D name (SPELLED_NAMES; GCC's PCH rule). A profile without
+	// the table serves a -D consumer only by its pair.
+	bool serves_consumer(uint32_t config, uint32_t defines,
+			     const std::vector<std::pair<madc::dis::istring,
+							 madc::dis::istring> > &cli_defines) const;
+	// B1: every name the frozen units spell, with its units, bound on first
+	// use (directory-level: the exact-match verdict reads it). Empty on a
+	// container without the table.
+	const ForestDeclNames &spelled_names() const;
 	// The required libraries, spelled through the container pool on first
 	// use (valid after complete_open).
 	const std::vector<madc::dis::istring> &libs();
@@ -2108,10 +2415,10 @@ public:
 		{ bind_seed_index(); return _recordable_bits; }
 	// THE closure verdict (pack slices design §6) — materialization,
 	// registration and rung 3 all ask here, each against the filter it
-	// holds. +1 a name some BOUND unit declares (or one the filter names),
-	// -1 declared only by unbound units, 0 declared by no unit (a derived
-	// entity; -1 under an exact filter). Qualified ns::name first, then the
-	// bare name. Inactive filter: +1.
+	// holds. +1 a name some unit the filter binds() declares (or one the
+	// filter names), -1 declared only by units it does not bind, 0
+	// declared by no unit (a derived entity; -1 under an exact filter).
+	// Qualified ns::name first, then the bare name. Inactive filter: +1.
 	int name_verdict(const char *nm, const char *ns,
 			 const CirMaterializeFilter &f) const;
 	// A template-id product judged by its canonical spelling's HEAD
@@ -2123,10 +2430,13 @@ public:
 	// The mapped image and length this reader was opened on.
 	bool opened_from(const void *image, size_t len) const
 		{ return _header_opened && image == _image && len == _image_len; }
-	// Machine-portable fallback: the unit whose path-name ends in
-	// "/<incfile>" (see the .cpp comment — consumers on machines without
-	// the producer's header tree cannot spell full-path unit names).
-	int find_unit_path_tail(const madc::dis::istring &incfile) const;
+	// Machine-portable fallback: the first unit whose path-name ends in
+	// "/<incfile>" and that accept (when given) takes (see the .cpp comment —
+	// consumers on machines without the producer's header tree cannot spell
+	// full-path unit names).
+	int find_unit_path_tail(const madc::dis::istring &incfile,
+				const std::function<bool(const char *)> &accept =
+					std::function<bool(const char *)>()) const;
 	const char *type_name_for(uint32_t type_id) const;  // NULL if unknown
 
 	// --- grove payload v2 readers (B4a observability, B4b bind) ---
@@ -2140,11 +2450,10 @@ public:
 			     std::vector<cir_forest_decl_entry> &out);
 	bool unit_pp_events(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
-	bool unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out);	// v40
+	bool unit_conditions(uint32_t unit, std::vector<uint32_t> &out);	// v68
 	bool unit_has_source(uint32_t unit) const;	// v41 directory/segment probe
 	bool unit_has_frozen_surface(uint32_t unit) const;	// tokens, PP exports or edges: anything an #include binds
 	bool unit_source(uint32_t unit, std::string &out) const;	// v41 raw source fallback
-	const std::vector<uint32_t> &branch_macros() const { return _branch_macros; }
 	const std::vector<uint32_t> &canon_order() const { return _canon_order; }
 	// MIR module cache: the container's compiled-module blob (raw
 	// MIR_write_module bytes, stamp header validated and stripped). False =
@@ -2159,6 +2468,9 @@ public:
 	// deliberately NOT gated on the producer-config match — the ledger is
 	// madc's own runtime, not dialect-dependent parse state.
 	bool ledger_modules(std::vector<cir_ledger_module> &out) const;
+	// Does this profile carry the AOT ledger segment? A directory probe:
+	// nothing is decoded (the discovery walk's ledger match).
+	bool has_ledger() const;
 	// B3 (v18): reconstruct the type graph from the dumped DefArena (idempotent;
 	// lazy — allocates on the first call). Reads defrec/memberrec/baserec/
 	// methodrec/anonrec/paramrec, applying at LOAD time the same selection rules
@@ -2185,6 +2497,9 @@ public:
 	// alongside the types, reusing the same arena-id -> DataDef* map).
 	const std::vector<CirRestoredGlobal> &restored_globals() const
 	{ return _restored_globals; }
+	// The restored types so far (materialize_for's answer).
+	const std::vector<CirRestoredType> &restored_types() const
+	{ return _restored; }
 	const std::vector<CirRestoredNsLink> &restored_nslinks() const
 	{ return _restored_nslinks; }		// v25
 	const std::vector<CirRestoredNsBind> &restored_nsbinds() const

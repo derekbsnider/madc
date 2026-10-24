@@ -1,4 +1,0 @@
-[
-  {"directory":"tests","file":"testuiwebtwounits_a.mad","command":"madc -c testuiwebtwounits_a.mad"},
-  {"directory":"tests","file":"testuiwebtwounits_b.mad","command":"madc -c testuiwebtwounits_b.mad"}
-]

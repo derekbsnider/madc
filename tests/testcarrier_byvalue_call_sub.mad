@@ -1,0 +1,41 @@
+// A subscript of a call returning a carrier BY VALUE (`make(2)["rows"]`) is a
+// carrier slot of the returned temporary, as `fill(a)["rows"]` is of a
+// reference's referent. It was refused at parse ("Expecting a name in lambda
+// capture list"): the generic subscript arm admitted a pointer, a vector or an
+// operator[] class base, never a carrier VALUE.
+// The range-for keeps the temporary alive to the loop's end — C++23's rule
+// ([stmt.ranged]/5, P2718R0); gcc 13 and clang 18 predate it (their loop over
+// `make(4)["rows"]` dangles), so the oracle spells that lifetime as
+// `Obj t = make(4); for (long c : t["rows"])`.
+// Oracle: the same shapes in C++ over std::map<std::string,
+// std::vector<long>> returned by value — g++ and clang++ (-std=c++11 -O0)
+// both print
+//   copy: 2
+//   count: 3
+//   loop: k=4 sum=60
+//   chain: 20
+var make(long n)
+{
+    var rows = {};
+    for ( long i = 0; i < n; i = i + 1 )
+        rows.push(i * 10);
+    var o = { "rows": rows };
+    return o;
+}
+
+int main()
+{
+    var y = make(2)["rows"];
+    println("copy: {}", php::count(y));
+    println("count: {}", php::count(make(3)["rows"]));
+    long k = 0;
+    long sum = 0;
+    for ( var c : make(4)["rows"] )
+    {
+        k = k + 1;
+        sum = sum + c.as_integer();
+    }
+    println("loop: k={} sum={}", k, sum);
+    println("chain: {}", make(3)["rows"][2]);
+    return 0;
+}

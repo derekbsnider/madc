@@ -10,20 +10,22 @@
 #
 # Each workload compiles with MADC_SEED_PARITY_PROBE=1, which prints, after
 # each materialize generation, one `SEEDPAR <kind> <name> v=<verdict> <via>`
-# line per record restored so far; the gate reads the last block. <via> is
-# how the bind reached the record: `listed` — in a visited seed list (a bound
-# unit's: what its decl index declares, its parse created or its
-# instantiations required; or the always list), `carried` — a reference pull,
-# a function-local class admitted by structure, an admitted owner's
-# dependent, or `unreached`. PASS requires:
+# line per record restored so far, under a `SEEDPAR-GEN <forest role>`
+# header; the gate reads each forest's last block. <via> is how the bind
+# reached the record: `listed` — in a visited seed list (a bound unit's: what its decl index declares, its parse
+# created or its instantiations required; or the always list), `carried` — a
+# reference pull, a function-local class admitted by structure, an admitted
+# owner's dependent, or `unreached`. PASS requires:
 #   1. no `unreached` line: every restored record's declaring, creating or
 #      requiring unit is bound, or a bound record carried it (design §4,
 #      "Pulls"). A v=-1 line (a name only unbound units declare) is reported,
 #      not failed: an instantiation's static member rides the units requiring
 #      its product (design §4);
-#   2. NEGATIVE CONTROL — each workload printed SEEDPAR lines (a run that bound
-#      nothing would pass 1 vacuously); only a program with no #include may
-#      bind nothing; and the check itself flags a synthetic unreached line.
+#   2. a workload with a <name>.restored file beside it restores at most that
+#      many records — a number that may only fall (lower it when it does);
+#   3. NEGATIVE CONTROLS — each workload printed SEEDPAR lines (a run that
+#      bound nothing would pass 1 vacuously; only a program with no #include
+#      may bind nothing); the check flags a synthetic unreached line.
 # The workloads: the parse-cost ladder that binds the pack (scripts/parse_cost/
 # *.cpp, *.mad) and one TU per single-header rung of the design's targets.
 set -u
@@ -37,17 +39,31 @@ if [ ! -x "$BIN" ]; then
 	exit 1
 fi
 
-# The invariant's one reader: the lines of a sorted last block that break it.
+# The invariants' readers: the lines of a sorted last block that break them.
 unreached() { grep -a ' unreached$' "$1" || true; }
+
+# probe <program> <out.seed> [madc args...] — the last generation's block:
+# every record restored, judged by the final filter.
+probe() {
+	local p="$1" seed="$2"
+	shift 2
+	MADC_SEED_PARITY_PROBE=1 timeout 300 "$BIN" --no-config "${EXTRA[@]}" "$@" "$p" \
+		>/dev/null 2>"$seed.err"
+	awk '/^SEEDPAR-GEN/ { k = NF > 1 ? $2 : "system"; n[k] = 0; next }
+		/^SEEDPAR / { L[k, ++n[k]] = $0 }
+		END { for (f in n) for (i = 1; i <= n[f]; ++i) print L[f, i] }' \
+		"$seed.err" | LC_ALL=C sort > "$seed"
+}
 
 W=tmp/seed_parity
 rm -rf "$W"
 mkdir -p "$W"
 
 printf '%s\n' 'SEEDPAR tag ok v=1 listed' 'SEEDPAR nsbind std::pulled v=-1 carried' \
-	'SEEDPAR global std::p_int__id v=-1 listed' 'SEEDPAR tag std::stray v=0 unreached' > "$W/control"
+	'SEEDPAR global std::p_int__id v=-1 listed' 'SEEDPAR tag std::stray v=0 unreached' \
+	> "$W/control"
 if [ "$(unreached "$W/control")" != 'SEEDPAR tag std::stray v=0 unreached' ]; then
-	echo "check-pack-seed-parity: FAIL — the negative control was not flagged exactly" >&2
+	echo "check-pack-seed-parity: FAIL — the negative control's unreached line was not flagged exactly" >&2
 	exit 1
 fi
 
@@ -62,13 +78,7 @@ done
 fail=0
 for p in "${progs[@]}"; do
 	b=$(basename "$p")
-	MADC_SEED_PARITY_PROBE=1 timeout 300 "$BIN" --no-config "${EXTRA[@]}" "$p" \
-		>/dev/null 2>"$W/$b.err"
-	# The last generation's block: every record restored, judged by the
-	# final filter.
-	awk '/^SEEDPAR-GEN$/ { n = 0; delete L; next }
-		/^SEEDPAR / { L[++n] = $0 } END { for (i = 1; i <= n; ++i) print L[i] }' \
-		"$W/$b.err" | LC_ALL=C sort > "$W/$b.seed"
+	probe "$p" "$W/$b.seed"
 	n=$(wc -l < "$W/$b.seed")
 	if [ "$n" -eq 0 ] && ! grep -q '^[[:space:]]*#[[:space:]]*include' "$p"; then
 		# A zero-include dialect program binds no unit until the prelude
@@ -92,8 +102,19 @@ for p in "${progs[@]}"; do
 		printf '%s\n' "$bad" | head -10 >&2
 		fail=1
 	fi
+	cap="${p%.*}.restored"
+	if [ -f "$cap" ]; then
+		c=$(cat "$cap")
+		if [ "$n" -gt "$c" ]; then
+			echo "check-pack-seed-parity: FAIL — $b restored $n records, more than $cap's $c (it may only fall)" >&2
+			fail=1
+		elif [ "$n" -lt "$c" ]; then
+			echo "check-pack-seed-parity: $b restored $n records, fewer than $cap's $c — lower it to $n to keep the gain"
+		fi
+	fi
 	echo "check-pack-seed-parity: $b restored=$n listed=$(grep -ac ' listed$' "$W/$b.seed")" \
-		"carried=$(grep -ac ' carried$' "$W/$b.seed") outside-closure=$(grep -ac ' v=-1 ' "$W/$b.seed")"
+		"carried=$(grep -ac ' carried$' "$W/$b.seed")" \
+		"outside-closure=$(grep -ac ' v=-1 ' "$W/$b.seed")"
 done
 if [ "$fail" -ne 0 ]; then
 	echo "check-pack-seed-parity: FAIL (work files in $W)" >&2

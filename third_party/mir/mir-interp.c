@@ -1125,6 +1125,7 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
     REP6 (LAB_EL, MIR_BO, MIR_UBO, MIR_BNO, MIR_UBNO, MIR_LADDR, MIR_JMPI);
     REP6 (LAB_EL, MIR_CALL, MIR_INLINE, MIR_JCALL, MIR_SWITCH, MIR_RET, MIR_JRET);
     REP3 (LAB_EL, MIR_ALLOCA, MIR_BSTART, MIR_BEND);
+    REP2 (LAB_EL, MIR_FRAME_ADDR, MIR_RET_ADDR);
     REP4 (LAB_EL, MIR_VA_ARG, MIR_VA_BLOCK_ARG, MIR_VA_START, MIR_VA_END);
     REP8 (LAB_EL, IC_LDI8, IC_LDU8, IC_LDI16, IC_LDU16, IC_LDI32, IC_LDU32, IC_LDI64, IC_LDF);
     REP8 (LAB_EL, IC_LDD, IC_LDLD, IC_LDV128, IC_STI8, IC_STU8, IC_STI16, IC_STU16, IC_STI32);
@@ -2249,6 +2250,10 @@ common_addr:;
     END_INSN;
   }
   SCASE (MIR_BEND, 1, bend_builtin (*get_aop (bp, ops)));
+  /* An interpreted function has no machine frame: its frame address is its
+     interpreter frame's, its return address the manual's unspecified 0. */
+  SCASE (MIR_FRAME_ADDR, 1, *get_aop (bp, ops) = (void *) bp);
+  SCASE (MIR_RET_ADDR, 1, *get_aop (bp, ops) = NULL);
   CASE (MIR_VA_ARG, 3) {
     int64_t *r, va, tp;
 

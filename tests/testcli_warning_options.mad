@@ -1,0 +1,32 @@
+// gcc's warning selection (-Wall, -Wextra, -Wno-<name>, -W<name>=<value>)
+// chooses which diagnostics gcc reports; madc reports one fixed set, so it
+// accepts a selection on every lane and builds the same thing. -Werror turns
+// warnings into errors -- refused, never dropped.
+// Before: "-Wall:0:0: error: Failed to open file" (SQLite's All-Debug
+// testfixture and fuzzcheck builds pass -Wall).
+// Oracle: gcc 13 / clang 18 -- `cc -Wall -Wextra -Wno-unused-parameter
+// -Wformat=2 main.c` builds and runs (prints 42); gcc's -Werror is accepted
+// (madc refuses it, the one divergence).
+int main()
+{
+	var dir = "tmp/testcli_warning_options";
+	php::mkdir(dir.c_str());
+	const char *cp = madc::compiler_path();
+	var src = format("{}/main.c", dir);
+	php::file_put_contents(src.c_str(),
+		"#include <stdio.h>\nint main(void)\n{\n\tprintf(\"%d\\n\", 42);\n\treturn 0;\n}\n");
+	var sel = "-Wall -Wextra -Wno-unused-parameter -Wformat=2";
+
+	long rc = system(format("{} --no-config {} {}", cp, sel, src));
+	println("run: rc={}", rc);
+	var prog = format("{}/prog", dir);
+	rc = system(format("{} --no-config {} -o {} {} -Wshadow", cp, sel, prog, src));
+	println("link: rc={}", rc);
+	rc = system(prog.c_str());
+	println("its run: rc={}", rc);
+	rc = system(format("{} --no-config -Werror {} 2>/dev/null", cp, src));
+	println("-Werror refused: {}", rc != 0 ? 1 : 0);
+
+	system(format("rm -rf {}", dir));
+	return 0;
+}

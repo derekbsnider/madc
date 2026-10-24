@@ -1,0 +1,26 @@
+/* An extern declared __attribute__((weak)) that nothing defines is an
+ * undefined weak reference: the program links and runs, and its address is
+ * null -- a function's and an object's alike. A weak declaration of a name a
+ * library DOES define resolves to it and calls it.
+ * Before: the JIT refused ("import of undefined item madc_weak_absent_fn"),
+ * and an executable built with -o failed at load ("undefined symbol").
+ * Oracle: gcc 13 and clang 18 -O0 -std=c17 print the lines in the .expect,
+ * as a program and as an executable. */
+#include <stdio.h>
+#include <string.h>
+
+extern int madc_weak_absent_fn(void) __attribute__((weak));
+extern int madc_weak_absent_var __attribute__((weak));
+extern size_t strlen(const char *) __attribute__((weak));
+
+int main(void)
+{
+	int fn_null = madc_weak_absent_fn == 0;
+	int var_null = &madc_weak_absent_var == 0;
+	int called = 0;
+	if (madc_weak_absent_fn)
+		called = madc_weak_absent_fn();
+	printf("absent: fn_null=%d var_null=%d called=%d\n", fn_null, var_null, called);
+	printf("present: bound=%d len=%d\n", strlen != 0, (int)strlen("weak"));
+	return 0;
+}

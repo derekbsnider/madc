@@ -1,0 +1,5 @@
+nested block: live 0
+handler object: live 0
+early return 10
+left frames: live 0
+trace: c2 d2 h3 c4 d4 h5 c1 d1 c20 d20 c21 d21 c40 d40 h41 h6

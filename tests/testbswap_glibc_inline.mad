@@ -1,0 +1,21 @@
+/* glibc defines __bswap_16 / __bswap_32 / __bswap_64 in <bits/byteswap.h> as
+ * static inline functions over __builtin_bswap16/32/64. madc renamed the
+ * glibc names to its runtime helpers too, so the header's definition became
+ * `__madc_bswap32(x) { return __madc_bswap32(x); }` -- a TU-local function
+ * calling itself, shadowing the helper: __builtin_bswap32 and bswap_32 recursed
+ * until SIGSEGV (SQLite's sqlite3Get4byte, on its first query).
+ * Oracle: gcc and clang -O0 print
+ *   "44332211 44332211 2211 8877665544332211 44332211 b2a1". */
+#include <stdio.h>
+#include <stdint.h>
+#include <byteswap.h>
+#include <arpa/inet.h>
+int main(void)
+{
+	uint32_t x = 0x11223344u;
+	printf("%08x %08x %04x %016llx %08x %04x\n", __builtin_bswap32(x), bswap_32(x),
+	       (unsigned)__builtin_bswap16(0x1122),
+	       (unsigned long long)bswap_64(0x1122334455667788ULL),
+	       htonl(x), (unsigned)bswap_16(0xa1b2));
+	return 0;
+}

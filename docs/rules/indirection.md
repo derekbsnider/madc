@@ -377,6 +377,14 @@ yet measured.
   already told `ddINT8` from `ddCHAR`. C++ overloading was already right: it
   ranks by that identity. Reducers `tests/testsignedcharc`, the emitted-C
   spelling `tests/testsignedcharemit`, and the C++ twin `tests/testsignedchar`.
+- ~~B156 `__is_same` by name~~ — fixed 2026-10-19, silent. The trait compared
+  the two types' `dd->name`: a namespace-scope typedef's alias dd
+  (`std::size_t`, `w::i`) never matched its type, and two pointers compared
+  their spellings, so `__is_same(const int *, int *)` was true.
+  `Program::proven_same_type` composes the owners above per level (cv, the
+  reference kind, pointee, array element and bound, then
+  `proven_scalar_identity`, `denotes_same_type` or the function spelling).
+  Reducer `tests/testis_same_typedef`.
 - ~~`c_const_pointee_typedef_cast`~~ — fixed 2026-09-23, silent, found beside
   the signed-char family. A declaration hands its leading `const` to
   `parse_declarator` (`leading_const`), and `consume_declarator_stars` wraps
@@ -515,7 +523,7 @@ yet measured.
   the const campaign's) — and every producer masks with it:
   `consume_declarator_stars`, the nested and parameter-array arms of
   `parse_declarator`, `member_declarator`, the typedef reader's prefix and
-  top-level cv. Reducers `tests/testvolatilepointeeo2cxx` (`--std=c++17 -O2`)
+  top-level cv. Reducers `tests/testvolatilepointeeo2cxx` (`--std=gnu++17 -O2`)
   and `tests/testvolatilepointeeo2` (madc mode, `-O2`). The volatile TYPE in
   C++ then needs its identity — mangling, overload ranking, deduction,
   volatile member functions — each its own step.

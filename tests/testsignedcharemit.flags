@@ -1,1 +1,1 @@
---std=c17 --emit=c11
+--std=gnu17 --emit=c11

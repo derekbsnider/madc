@@ -1,0 +1,38 @@
+// A guard-less system header is read again on EVERY inclusion (gcc's
+// multiple-include rule), whether madc parsed it live or bound it from the
+// pack. <assert.h> is the standing instance: each inclusion re-defines
+// assert() for the NDEBUG in force there. Four inclusions alternate NDEBUG,
+// so only the second and fourth assert() evaluate their operand.
+//
+// On the packed binary the C layer binds <assert.h>: the first inclusion
+// (NDEBUG set) parses live, the second binds — and was pruned as "already
+// present", the third skipped as already bound; both re-includes are re-reads.
+//
+// Oracles: gcc 13 and clang 18 (-std=gnu17, Linux): `evals=1010`. The packed
+// madc before the fix: `evals=0` (two inclusions), `evals=1110` (four).
+#include <stdio.h>
+
+static int evals;
+
+#define NDEBUG 1
+#include <assert.h>
+static void a1(void) { assert((evals++, 1)); }
+#undef NDEBUG
+#include <assert.h>
+static void a2(void) { assert((evals += 10, 1)); }
+#define NDEBUG 1
+#include <assert.h>
+static void a3(void) { assert((evals += 100, 1)); }
+#undef NDEBUG
+#include <assert.h>
+static void a4(void) { assert((evals += 1000, 1)); }
+
+int main(void)
+{
+	a1();
+	a2();
+	a3();
+	a4();
+	printf("evals=%d\n", evals);
+	return 0;
+}

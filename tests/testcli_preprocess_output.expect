@@ -1,0 +1,5 @@
+-E -o first: rc=0 text=1 stdout_empty=1
+-E -o last: rc=0 text=1 stdout_empty=1
+-dM -E -o: rc=0 define=1 source=0
+-E stdout: rc=0 text=1
+-E -o unwritable refused: 1

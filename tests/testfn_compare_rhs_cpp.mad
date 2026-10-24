@@ -1,0 +1,13 @@
+// The C++ half of testfn_compare_rhs (B41): a bare function name on either
+// side of `==` is its address, never a call — `int k = p == g;` called `g`.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): "1 1".
+#include <stdio.h>
+int g(int v) { return v; }
+int main()
+{
+	int (*p)(int) = g;
+	int k = p == g;
+	int j = g == p;
+	printf("%d %d\n", k, j);
+	return 0;
+}

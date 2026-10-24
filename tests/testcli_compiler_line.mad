@@ -1,0 +1,50 @@
+// A C or C++ source with a gcc stage option after it (-o, -c, -E, -shared,
+// -r, -dM) is a compiler line: options and operands permute as gcc's, the
+// source is built and nothing runs. A madc script keeps its argv: what
+// follows a .mad file is the script's (owner, 2026-10-16).
+// Before: everything after the first source was the program's argv, so
+// configure's link probe `cc -O2 conftest.c -o conftest -lfoo` RAN conftest
+// (SQLite's gmtime_r / localtime_r / pthread_mutexattr_init probes crashed,
+// its readline and tgetent probes never saw -lreadline / -lncurses).
+// Oracle: gcc 13 / clang 18 -- `cc -O2 main.c -o prog` and
+// `cc probe.c -o probe -lm` build and print nothing (rc 0; probe would abort
+// if run); `cc main.c -c -o main.o` writes main.o; prog prints "ran argc=1".
+int main()
+{
+	var dir = "tmp/testcli_compiler_line";
+	php::mkdir(dir.c_str());
+	const char *cp = madc::compiler_path();
+	var src = format("{}/main.c", dir);
+	php::file_put_contents(src.c_str(),
+		"#include <stdio.h>\nint main(int argc, char **argv)\n{\n\tprintf(\"ran argc=%d\\n\", argc);\n\treturn 0;\n}\n");
+	var out = format("{}/out.txt", dir);
+
+	var prog = format("{}/prog", dir);
+	long rc = system(format("{} --no-config -O2 {} -o {} > {}", cp, src, prog, out));
+	long quiet = system(format("test ! -s {}", out));
+	println("link: rc={} built={} stdout_empty={}", rc,
+		php::file_exists(prog.c_str()) ? 1 : 0, quiet == 0 ? 1 : 0);
+	rc = system(prog.c_str());
+	println("its run: rc={}", rc);
+
+	var probe = format("{}/probe.c", dir);
+	php::file_put_contents(probe.c_str(),
+		"extern void abort(void);\nextern double cos(double);\nint main(void)\n{\n\tabort();\n\treturn (int)cos(0.0);\n}\n");
+	var probe_exe = format("{}/probe", dir);
+	rc = system(format("{} --no-config -O2 -g {} -o {} -lm", cp, probe, probe_exe));
+	println("probe: rc={} built={}", rc, php::file_exists(probe_exe.c_str()) ? 1 : 0);
+
+	var obj = format("{}/main.o", dir);
+	rc = system(format("{} --no-config {} -c -o {}", cp, src, obj));
+	println("object: rc={} built={}", rc, php::file_exists(obj.c_str()) ? 1 : 0);
+
+	var script = format("{}/tool.mad", dir);
+	php::file_put_contents(script.c_str(),
+		"int main(int argc, char **argv)\n{\n\tprintln(\"script argc={}\", argc);\n\treturn 0;\n}\n");
+	var not_built = format("{}/not_built", dir);
+	rc = system(format("{} --no-config {} -o {}", cp, script, not_built));
+	println("script: rc={} built={}", rc, php::file_exists(not_built.c_str()) ? 1 : 0);
+
+	system(format("rm -rf {}", dir));
+	return 0;
+}

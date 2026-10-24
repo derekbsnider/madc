@@ -1,0 +1,4 @@
+println to stdout: 1
+fputs to stdout
+three streams: 1
+distinct: 1

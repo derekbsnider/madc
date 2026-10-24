@@ -13,7 +13,11 @@ static char aarch64_mirc[]
     "#define __SIZEOF_DOUBLE__ 8\n"
     "#define __SIZEOF_FLOAT__ 4\n"
     "#define __SIZEOF_INT__ 4\n"
+#if MIR_TARGET_APPLE_P /* long double is double on darwin-arm64 (the __LDBL_* below) */
+    "#define __SIZEOF_LONG_DOUBLE__ 8\n"
+#else
     "#define __SIZEOF_LONG_DOUBLE__ 16\n"
+#endif
     "#define __SIZEOF_LONG_LONG__ 8\n"
     "#define __SIZEOF_LONG__ 8\n"
     "#define __SIZEOF_POINTER__ 8\n"
@@ -91,6 +95,16 @@ static char aarch64_mirc[]
     "#define __DBL_MAX__ ((double) 1.79769313486231570814527423731704357e+308L)\n"
     "#define __DBL_MIN__ ((double) 2.22507385850720138309023271733240406e-308L)\n"
     "#define __DBL_EPSILON__ ((double) 2.22044604925031308084726333618164062e-16L)\n"
+    "#define __FLT_RADIX__ 2\n"
+    "#define __FLT_EVAL_METHOD__ 0\n"
+    "#define __FLT_MIN_10_EXP__ (-37)\n"
+    "#define __FLT_MAX_10_EXP__ 38\n"
+    "#define __FLT_DENORM_MIN__ 1.40129846432481707092372958328991613e-45F\n"
+    "#define __FLT_HAS_DENORM__ 1\n"
+    "#define __DBL_MIN_10_EXP__ (-307)\n"
+    "#define __DBL_MAX_10_EXP__ 308\n"
+    "#define __DBL_DENORM_MIN__ ((double) 4.94065645841246544176568792868221372e-324L)\n"
+    "#define __DBL_HAS_DENORM__ 1\n"
     "\n"
 #if MIR_TARGET_APPLE_P /* LDBL == DBL on darwin-arm64 (matches the mir_ldouble typedef) */
     "#define __LDBL_MIN_EXP__ __DBL_MIN_EXP__\n"
@@ -101,6 +115,11 @@ static char aarch64_mirc[]
     "#define __LDBL_MAX__ __DBL_MAX__\n"
     "#define __LDBL_MIN__ __DBL_MIN__\n"
     "#define __LDBL_EPSILON__ __DBL_EPSILON__\n"
+    "#define __LDBL_MIN_10_EXP__ __DBL_MIN_10_EXP__\n"
+    "#define __LDBL_MAX_10_EXP__ __DBL_MAX_10_EXP__\n"
+    "#define __LDBL_DENORM_MIN__ __DBL_DENORM_MIN__\n"
+    "#define __LDBL_HAS_DENORM__ 1\n"
+    "#define __DECIMAL_DIG__ __DBL_DECIMAL_DIG__\n"
 #else
     "#define __LDBL_MIN_EXP__ (-16381)\n"
     "#define __LDBL_MAX_EXP__ 16384\n"
@@ -110,6 +129,11 @@ static char aarch64_mirc[]
     "#define __LDBL_MAX__ 1.18973149535723176508575932662800702e+4932L\n"
     "#define __LDBL_MIN__ 3.36210314311209350626267781732175260e-4932L\n"
     "#define __LDBL_EPSILON__ 1.92592994438723585305597794258492732e-34L\n"
+    "#define __LDBL_MIN_10_EXP__ (-4931)\n"
+    "#define __LDBL_MAX_10_EXP__ 4932\n"
+    "#define __LDBL_DENORM_MIN__ 6.47517511943802511092443895822764655e-4966L\n"
+    "#define __LDBL_HAS_DENORM__ 1\n"
+    "#define __DECIMAL_DIG__ 36\n"
 #endif
     "\n"
     "typedef unsigned short char16_t;\n"

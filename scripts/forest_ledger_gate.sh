@@ -14,7 +14,8 @@
 # discovery chain.
 #
 # Legs:
-#   1  freeze a container WITH the ledger; --dump-forest reports it
+#   1  freeze a container WITH the ledger; --dump-forest reports it, and the
+#      startup members' native objects beside its modules
 #   2  baseline — the same program WITHOUT the flag keeps libmadc.so.0
 #      (so leg 3 is proving the flag, not an accident)
 #   3  try/catch: -static-libmadc drops the dependency, no __madc_* imports
@@ -25,8 +26,16 @@
 #      helpers exist only as host C++ objects) refuses, NAMING symbols
 #   6b the other side — a plain <iostream>/<string> program IS fully coverable:
 #      it emits, keeps no libmadc dependency, and matches its JIT output
+#   6c the same program WITHOUT the flag: its destructors' unwind personality
+#      rides the image like libgcc's, so it needs no libmadc, and its -c
+#      object links with plain g++
+#   6d a g++ throw crossing a madc object's frame runs the frame's destructor
+#      (the object's own personality copy; oracle: g++ alone)
 #   7  no-ledger carrier: a container packed without --freeze-ledger= refuses
 #      with the build-side message, never the Tier-B one
+#   7b the startup object (B231): a -c merges the ledger's pre-generated
+#      personality object, a no-ledger carrier generates it in-process, and
+#      either .o links with plain g++ and runs leg 6d's destructor
 #   8  -static-libmadc -c refuses at the CLI (the runtime merges at the link)
 #   9  the .o LINK lane merges the ledger: two -c objects (one needing
 #      try/catch, one needing VLA scope exit) link runtime-free, produce the
@@ -34,6 +43,12 @@
 #      Also the boundary: objects that kept their __madc_shim_* host-call
 #      adapters refuse (value ABI = Tier B) naming -fno-eval-shims, and -r
 #      still refuses, so the runtime rides the final link only
+#  10  an image names only the libraries its imports reach, gcc's list
+#      exactly (oracle: gcc --as-needed): plain C = libc alone, a sqrt call
+#      adds libm, a >16-byte by-value struct argument or va_arg needs no madc
+#      library (MIR's call helpers ride the image), the .o link lane agrees,
+#      and a C++ image keeps its C++ runtime; the win64 PE of the struct and
+#      va_arg programs imports no mir.* helper either (SKIP without wine)
 set -u
 cd "$(dirname "$0")/.."
 MADC=${MADC_BIN:-bin/madc}
@@ -217,9 +232,18 @@ for src in "${LEDGER_ARGS[@]}"; do
 		fail "ledger carries ${src#--freeze-ledger=}"
 	fi
 done
+if grep -q $'^crtobj\tcrt:' <<<"$dump"; then
+	pass "ledger carries the startup objects"
+else
+	fail "ledger carries the startup objects"
+fi
 
 # --- shared helper: emit + inspect ----------------------------------------
 # $1 = source, $2 = out name, $3.. = extra madc flags. Sets NEEDED/UND/OUT.
+# UND counts the STRONG __madc_* imports: a weak reference pulls no archive
+# member and is null when nothing defines it (ld; oracle: gcc -static-libgcc
+# images keep crtbegin's weak _ITM_* / __gmon_start__ undefined) — the unwind
+# personality's view of the throw side in a program that never throws.
 emit_and_inspect()
 {
 	local src=$1 out=$2; shift 2
@@ -228,7 +252,7 @@ emit_and_inspect()
 	EMIT_RC=$?
 	NEEDED=$(readelf -d "$D/$out" 2>/dev/null | grep -ao 'libmadc[^]]*')
 	UND=$(readelf --dyn-syms -W "$D/$out" 2>/dev/null \
-	      | awk '$7=="UND"{print $8}' | grep -a '^__madc_' | sort -u)
+	      | awk '$7=="UND" && $5!="WEAK"{print $8}' | grep -a '^__madc_' | sort -u)
 }
 
 # --- leg 2: baseline — no flag keeps the dependency -----------------------
@@ -365,6 +389,79 @@ else
 	pass "plain C++ program is fully ledger-coverable"
 fi
 
+# --- leg 6c: the same program WITHOUT the flag needs no madc library -------
+# A C++ frame with a destructor names madc's unwind personality (B205), the
+# role __gxx_personality_v0 plays for g++. It rides every image and object
+# the way libgcc's personality does, so a program whose only runtime need is
+# its destructors' unwinding keeps no libmadc dependency and its -c object
+# links with plain g++ (B229: 0.106.0 shipped needing both).
+emit_and_inspect "$D/cpp.mad" cppdyn
+# The personality's references into the exception runtime are weak: null in
+# a program that never throws (ld's undefined weak), so only a STRONG
+# __madc_* import is a dependency.
+UND=$(readelf --dyn-syms -W "$D/cppdyn" 2>/dev/null \
+      | awk '$7=="UND" && $5!="WEAK"{print $8}' | grep -a '^__madc_' | sort -u)
+cppdyn_aot=$(run "$D/cppdyn" 2>/dev/null)
+run "$MADC" --forest-bind="$D/madc.forest" -c -o "$D/cppdyn.o" "$D/cpp.mad" \
+	> "$D/cppdyn_o.emit" 2>&1
+obj_rc=$?
+g++ -o "$D/cppdyn_gxx" "$D/cppdyn.o" > "$D/cppdyn_gxx.link" 2>&1
+gxx_rc=$?
+cppdyn_gxx=$(run "$D/cppdyn_gxx" 2>/dev/null)
+if [ $EMIT_RC -ne 0 ]; then
+	fail "plain C++ program emits without -static-libmadc (rc=$EMIT_RC)"
+	sed -n '1,10p' "$D/cppdyn.emit"
+elif [ -n "$NEEDED" ]; then
+	fail "plain C++ image without -static-libmadc needs '$NEEDED'"
+elif [ -n "$UND" ]; then
+	fail "plain C++ image without -static-libmadc imports: $(tr '\n' ' ' <<<"$UND")"
+elif [ -z "$cppdyn_aot" ] || [ "$cppdyn_aot" != "$cpp_jit" ]; then
+	fail "plain C++ image output matches the JIT run"
+elif [ $obj_rc -ne 0 ] || [ $gxx_rc -ne 0 ]; then
+	fail "plain C++ -c object links with plain g++ (madc rc=$obj_rc, g++ rc=$gxx_rc)"
+	sed -n '1,6p' "$D/cppdyn_o.emit" "$D/cppdyn_gxx.link"
+elif [ "$cppdyn_gxx" != "$cpp_jit" ]; then
+	fail "plain C++ -c object linked by g++ matches the JIT run"
+else
+	pass "plain C++ program needs no madc library: image and g++-linked object"
+fi
+
+# --- leg 6d: a g++ throw crossing a madc object's frame runs its destructor -
+# The object's own personality copy runs the frame's cleanup for a foreign
+# exception, as g++ destroys a frame's objects for any exception. Oracle: the
+# same two files built by g++ alone.
+cat > "$D/xframe.cpp" <<'EOF'
+#include <cstdio>
+struct D { ~D() { std::puts("dtor"); } };
+void g();
+void f() { D d; g(); std::puts("not reached"); }
+EOF
+cat > "$D/xmain.cpp" <<'EOF'
+#include <cstdio>
+void g() { throw 1; }
+void f();
+int main() { try { f(); } catch (int) { std::puts("caught"); } return 0; }
+EOF
+g++ -c -o "$D/xframe_g.o" "$D/xframe.cpp" && g++ -c -o "$D/xmain.o" "$D/xmain.cpp" \
+	&& g++ -o "$D/xoracle" "$D/xframe_g.o" "$D/xmain.o"
+xoracle=$(run "$D/xoracle" 2>/dev/null)
+run "$MADC" --forest-bind="$D/madc.forest" --std=gnu++17 -c -o "$D/xframe_m.o" \
+	"$D/xframe.cpp" > "$D/xframe.emit" 2>&1
+xobj_rc=$?
+g++ -o "$D/xmixed" "$D/xframe_m.o" "$D/xmain.o" > "$D/xmixed.link" 2>&1
+xlink_rc=$?
+xmixed=$(run "$D/xmixed" 2>/dev/null)
+if [ "$xoracle" != "$(printf 'dtor\ncaught')" ]; then
+	fail "foreign-throw oracle (g++ alone) prints dtor, caught (got '$xoracle')"
+elif [ $xobj_rc -ne 0 ] || [ $xlink_rc -ne 0 ]; then
+	fail "foreign-throw madc object links with plain g++ (madc rc=$xobj_rc, g++ rc=$xlink_rc)"
+	sed -n '1,6p' "$D/xframe.emit" "$D/xmixed.link"
+elif [ "$xmixed" != "$xoracle" ]; then
+	fail "a g++ throw through a madc frame runs its destructor (got '$xmixed')"
+else
+	pass "a g++ throw through a madc object's frame runs its destructor"
+fi
+
 # --- leg 7: a carrier with no ledger gets the BUILD-side message ----------
 run "$MADC" --freeze-append="$D/noledger.forest" "$D/tu.mad" \
 	> /dev/null 2>&1
@@ -382,6 +479,36 @@ elif grep -q 'Tier B' <<<"$nl"; then
 else
 	pass "no-ledger carrier refuses with the build-side message"
 fi
+
+# --- leg 7b: the startup object comes from the ledger, never the text -----
+# A -c of leg 6d's frame with a destructor merges the ledger's pre-generated
+# personality object (B231); a carrier with no ledger generates the same
+# object in-process. Either object links with plain g++ and runs the frame's
+# destructor for the foreign throw (oracle: g++ alone, leg 6d).
+crt_leg()
+{
+	local carrier=$1 out=$2 want=$3
+	run "$MADC" --forest-bind="$carrier" --std=gnu++17 -v -c -o "$D/$out.o" \
+		"$D/xframe.cpp" > "$D/$out.log" 2>&1
+	local mrc=$?
+	g++ -o "$D/$out" "$D/$out.o" "$D/xmain.o" > "$D/$out.link" 2>&1
+	local lrc=$?
+	local got
+	got=$(run "$D/$out" 2>/dev/null)
+	if [ $mrc -ne 0 ] || [ $lrc -ne 0 ]; then
+		fail "startup object ($want): -c and a g++ link (madc rc=$mrc, g++ rc=$lrc)"
+		grep -a -m3 -E 'error|madc:' "$D/$out.log" "$D/$out.link"
+	elif ! tr -d '\0' < "$D/$out.log" | grep -aq "^crt: crt:[a-z_]*: object $want"; then
+		fail "startup object: $want"
+		tr -d '\0' < "$D/$out.log" | grep -a '^crt: ' | head -3
+	elif [ "$got" != "$xoracle" ]; then
+		fail "startup object ($want): g++-linked output matches g++ alone (got '$got')"
+	else
+		pass "startup object: $want, links with g++, runs the destructor"
+	fi
+}
+crt_leg "$D/madc.forest" crt_ledger "from the ledger"
+crt_leg "$D/noledger.forest" crt_generated "generated"
 
 # --- leg 8: -c refuses (the runtime merges at the final link) -------------
 run "$MADC" -static-libmadc -c -o "$D/tc.o" "$D/trycatch.mad" \
@@ -421,7 +548,7 @@ else
 	lst_rc=$?
 	lst_needed=$(readelf -d "$D/lstatic" 2>/dev/null | grep -ao 'libmadc[^]]*')
 	lst_und=$(readelf --dyn-syms -W "$D/lstatic" 2>/dev/null \
-		  | awk '$7=="UND"{print $8}' | grep -a '^__madc_' | sort -u)
+		  | awk '$7=="UND" && $5!="WEAK"{print $8}' | grep -a '^__madc_' | sort -u)
 	if [ $lst_rc -ne 0 ]; then
 		fail ".o link lane -static-libmadc emit (rc=$lst_rc)"
 		sed -n '1,15p' "$D/lstatic.log"
@@ -480,6 +607,134 @@ else
 		fail "-static-libmadc -r still refuses at the CLI"
 		sed -n '1,4p' "$D/lr.log"
 	fi
+fi
+
+# --- leg 10: an image names only the libraries its imports reach -----------
+# gcc's --as-needed link is the oracle: a C program's image names libc.so.6
+# alone and a sqrt call adds libm.so.6 — madc's implicit C++ runtime and libm
+# stay only where an import reaches them (a C++ program keeps its libstdc++).
+# MIR's own call helpers ride the image, so a program passing a struct over
+# 16 bytes by value (mir.arg_memcpy) or reading va_arg (mir.va_arg,
+# mir.va_block_arg) needs no madc library either (issue #8: a 6k-line C
+# parser loaded all of libmadc for one block copy).
+cat > "$D/c_plain.c" <<'EOF'
+#include <stdio.h>
+int main(void) { puts("plain"); return 0; }
+EOF
+cat > "$D/c_math.c" <<'EOF'
+#include <math.h>
+#include <stdio.h>
+int main(void) { volatile double x = 2.0; printf("%.3f\n", sqrt(x)); return 0; }
+EOF
+cat > "$D/c_blkarg.c" <<'EOF'
+#include <stdio.h>
+struct big { long a, b, c, d; };
+__attribute__((noinline)) long sum(struct big s) { return s.a + s.b + s.c + s.d; }
+int main(void) { struct big s = { 1, 2, 3, 4 }; printf("sum %ld\n", sum(s)); return 0; }
+EOF
+cat > "$D/c_vararg.c" <<'EOF'
+#include <stdarg.h>
+#include <stdio.h>
+struct trio { long a, b, c; };
+__attribute__((noinline)) static long total(int n, ...)
+{
+	va_list ap;
+	long t = 0;
+	va_start(ap, n);
+	for (int i = 0; i < n; i++)
+		t += va_arg(ap, int);
+	t += (long)va_arg(ap, double);
+	struct trio p = va_arg(ap, struct trio);
+	va_end(ap);
+	return t + p.a + p.b + p.c;
+}
+int main(void) { struct trio p = { 10, 20, 30 }; printf("total %ld\n", total(3, 1, 2, 3, 4.5, p)); return 0; }
+EOF
+needed_list() { readelf -dW "$1" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' '; }
+# $1 = source, $2 = madc flags (word-split), $3 = gcc's extra flags: madc's
+# image names exactly gcc's libraries, runs, and prints gcc's output.
+as_needed_leg()
+{
+	local src=$1 flags=$2 gflags=$3 n
+	n=$(basename "${src%.c}")
+	# shellcheck disable=SC2086
+	run "$MADC" $flags -o "$D/$n.madc" "$src" > "$D/$n.emit" 2>&1
+	local mrc=$?
+	# shellcheck disable=SC2086
+	gcc -o "$D/$n.gcc" "$src" $gflags > "$D/$n.gcc.log" 2>&1
+	local mneed gneed mout gout
+	mneed=$(needed_list "$D/$n.madc")
+	gneed=$(needed_list "$D/$n.gcc")
+	mout=$(env -u LD_LIBRARY_PATH -i LD_LIBRARY_PATH=/nonexistent timeout 60 "$PWD/$D/$n.madc" 2>&1)
+	gout=$(run "$D/$n.gcc" 2>&1)
+	if [ $mrc -ne 0 ]; then
+		fail "$n: madc -o $flags (rc=$mrc)"
+		sed -n '1,6p' "$D/$n.emit"
+	elif [ "$mneed" != "$gneed" ]; then
+		fail "$n: image names '$mneed', gcc's names '$gneed'"
+	elif [ -z "$gout" ] || [ "$mout" != "$gout" ]; then
+		fail "$n: output with an empty library path '$mout', gcc's '$gout'"
+	else
+		pass "$n: names gcc's libraries ($gneed) and runs with no madc library"
+	fi
+}
+as_needed_leg "$D/c_plain.c" "" ""
+as_needed_leg "$D/c_math.c" "-lm" "-lm"
+as_needed_leg "$D/c_blkarg.c" "" ""
+as_needed_leg "$D/c_vararg.c" "" ""
+# The .o link lane names the same set (the same rule, cir_elf_needed).
+run "$MADC" -fno-eval-shims -c -o "$D/c_plain.o" "$D/c_plain.c" > "$D/c_plain_o.log" 2>&1
+run "$MADC" -o "$D/c_plain_link" "$D/c_plain.o" > "$D/c_plain_link.log" 2>&1
+link_need=$(needed_list "$D/c_plain_link")
+plain_gcc_need=$(needed_list "$D/c_plain.gcc")
+if [ -n "$link_need" ] && [ "$link_need" = "$plain_gcc_need" ]; then
+	pass ".o link lane names gcc's libraries ($plain_gcc_need)"
+else
+	fail ".o link lane names '$link_need', gcc's names '$plain_gcc_need'"
+	sed -n '1,4p' "$D/c_plain_o.log" "$D/c_plain_link.log"
+fi
+# The other side: a C++ image that imports from the C++ runtime keeps it.
+run "$MADC" -o "$D/cpp_needed" "$D/cpp.mad" > "$D/cpp_needed.log" 2>&1
+cpp_need=$(needed_list "$D/cpp_needed")
+if grep -q 'libstdc++\.so\|libc++\.so' <<<"$cpp_need"; then
+	pass "a C++ image keeps its C++ runtime ($cpp_need)"
+else
+	fail "a C++ image keeps its C++ runtime (names '$cpp_need')"
+	sed -n '1,4p' "$D/cpp_needed.log"
+fi
+# win64: the PE carries MIR's call helpers too (COFF weak externals), so the
+# by-value struct and va_arg programs import no mir.* name from any DLL, and
+# print mingw gcc's output. Runs where the hosted win64 madc, wine and the
+# mingw tools are (the build container); says SKIP elsewhere.
+WMADC=bin/madc-hosted-x86-64-windows.exe
+if [ -x "$WMADC" ] && command -v wine > /dev/null 2>&1 \
+		&& command -v x86_64-w64-mingw32-objdump > /dev/null 2>&1 \
+		&& command -v x86_64-w64-mingw32-gcc > /dev/null 2>&1; then
+	export WINEDEBUG=-all
+	WINEPATH="Z:$(tr / '\\' <<<"$PWD/bin")"
+	export WINEPATH
+	wineserver -p < /dev/null > /dev/null 2>&1
+	for n in c_blkarg c_vararg; do
+		run wine "$WMADC" -o "$D/$n.exe" "$D/$n.c" > "$D/$n.win.log" 2>&1 < /dev/null
+		wrc=$?
+		mir_imports=$(x86_64-w64-mingw32-objdump -p "$D/$n.exe" 2>/dev/null \
+			| awk '/DLL Name:/ { dll = $3 } /^\t[0-9a-f]+\t/ && dll && $NF ~ /^mir\./ { print dll ": " $NF }')
+		x86_64-w64-mingw32-gcc -o "$D/$n.gcc.exe" "$D/$n.c" > "$D/$n.wgcc.log" 2>&1
+		wout=$(run wine "$D/$n.exe" < /dev/null 2>&1 | tr -d '\r')
+		wgout=$(run wine "$D/$n.gcc.exe" < /dev/null 2>&1 | tr -d '\r')
+		if [ $wrc -ne 0 ]; then
+			fail "win64 $n: madc -o (rc=$wrc)"
+			sed -n '1,6p' "$D/$n.win.log"
+		elif [ -n "$mir_imports" ]; then
+			fail "win64 $n: the PE imports MIR's helpers: $(tr '\n' ' ' <<<"$mir_imports")"
+		elif [ -z "$wgout" ] || [ "$wout" != "$wgout" ]; then
+			fail "win64 $n: output '$wout', mingw gcc's '$wgout'"
+		else
+			pass "win64 $n: imports no mir.* helper and prints mingw gcc's output"
+		fi
+	done
+else
+	echo "  SKIP win64 helpers (needs $WMADC, wine and the x86_64-w64-mingw32 tools)"
 fi
 
 if [ $rc -eq 0 ]; then

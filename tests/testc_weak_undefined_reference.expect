@@ -1,0 +1,2 @@
+absent: fn_null=1 var_null=1 called=0
+present: bound=1 len=4

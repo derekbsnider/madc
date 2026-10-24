@@ -15,7 +15,6 @@
 #include <sstream>
 #include <map>
 #include <vector>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "ns_common.h"
 #include "highlight_class.h"	// code_range: a shown text's code

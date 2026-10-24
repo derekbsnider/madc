@@ -1,0 +1,15 @@
+// The face of `ui_web`, the madc module (include/madc_module.h): what a
+// program that says `import ui_web;` may call. Importing the module also
+// registers its host as ui target "web" serving ui::WEB (ui_web.cpp), so the
+// program's `ui::open(ui::WEB)` gets the platform window (WebKitGTK /
+// WKWebView / WebView2). Declarations only: the module's C++ defines them,
+// and the build generates the module's declaration table from this file
+// (madc --emit-module-table). The platform webview's C API (webview.h) is the
+// module's own: its host calls it; a program reaches the window through ui::.
+//   ui_web::menu_activate(id): the test seam — choose a menu item by its
+//     command id as the user would; 0 = fired, 1 = no window, no menu, or no
+//     such item.
+// THREAD CONTRACT: the UI thread's.
+namespace ui_web {
+    int64_t menu_activate(const char *id);
+}

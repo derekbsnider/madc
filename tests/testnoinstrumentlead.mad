@@ -1,0 +1,36 @@
+/* __attribute__((no_instrument_function)) in every position under
+ * -finstrument-functions: among the leading declaration specifiers (the
+ * profiling hooks and leading), after another specifier in the reserved
+ * spelling (among), and after the declarator of a prior declaration (main).
+ * Only counted gets the enter hook. madc read the attribute only after a
+ * declarator, by string compare: the leading-position hooks were instrumented
+ * and __cyg_profile_func_enter entered itself until the stack overflowed
+ * (SIGSEGV).
+ * Oracle: gcc 13 and clang 18, -std=gnu17 -finstrument-functions: the lines
+ * below. x86_64-w64-mingw32 gcc 13: "entries 2" (the .win64_expect) --
+ * mingw's <stdio.h> defines printf as an inline wrapper, compiled and
+ * instrumented in this TU, and the first printf enters it. */
+#include <stdio.h>
+
+static int entries;
+__attribute__((no_instrument_function)) void __cyg_profile_func_enter(void *fn, void *site)
+{
+	(void) fn; (void) site;
+	entries++;
+}
+__attribute__((no_instrument_function)) void __cyg_profile_func_exit(void *fn, void *site)
+{
+	(void) fn; (void) site;
+}
+__attribute__((no_instrument_function)) static int leading(int x) { return x + 1; }
+static __attribute__((__no_instrument_function__)) int among(int x) { return x * 2; }
+static int counted(int x) { return x - 1; }
+
+int main(void) __attribute__((no_instrument_function));
+int main(void)
+{
+	int r = leading(1) + among(2) + counted(3);
+	printf("result %d\n", r);
+	printf("entries %d\n", entries);
+	return 0;
+}

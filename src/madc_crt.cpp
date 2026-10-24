@@ -24,6 +24,7 @@
 
 #include "datadef.h"	// MADC_TARGET_WINDOWS_P / MADC_TARGET_APPLE_P
 #include "madc_cir.h"
+#include "mir-target.h"	// MIR_TARGET_IS_X86_64 / MIR_TARGET_IS_AARCH64
 
 // The image handle. Its address identifies the image; its value is unused.
 // The image's fini finalizes the handlers registered with it while its code
@@ -141,9 +142,53 @@ static const char crt_pthread_atfork[] =
 	"}\n";
 #endif
 
+// The unwind personality (B205): every generated function with cleanup
+// regions names it, as a g++ function names __gxx_personality_v0. An image or
+// object carries its own copy, as gcc's carry libgcc's, so a program whose
+// only runtime need is its destructors' unwinding links no madc library and a
+// -c object links with plain g++. The text is rt_personality.c's, generated
+// at build time (scripts/gen_rt_text.sh); its references into the exception
+// runtime are weak, bound only in a program that throws. Image-only: the JIT
+// keeps libmadc's copy.
+static const char crt_personality[] =
+#include "rt_personality_text.inc"
+	;
+
+// The helpers MIR's generated code calls by their import names: va_arg and a
+// block va_arg ("mir.va_arg", "mir.va_block_arg") and the copy of a large
+// by-value block argument ("mir.arg_memcpy" on x86-64, "mir.blk_mov" on
+// aarch64). An image or object carries its own copy, as gcc's carry libgcc's
+// helpers, so a program reading va_arg or passing a big struct by value needs
+// no madc library (issue #8). The text is MIR's own
+// (third_party/mir/mir-<target>-calls.c, generated at build time by
+// scripts/gen_rt_text.sh); its functions are file-local, and the member
+// defines the import names as aliases of them. Image-only: the JIT binds
+// libmir's.
+#if MIR_TARGET_IS_X86_64
+static const char crt_mir_calls[] =
+#include "mir_x86_64_calls_text.inc"
+	;
+#define CRT_MIR_CALLS_DEFINES "mir.va_arg mir.va_block_arg mir.arg_memcpy"
+#define CRT_MIR_CALLS_ALIASES "mir.va_arg=va_arg_builtin" \
+	" mir.va_block_arg=va_block_arg_builtin mir.arg_memcpy=mir_arg_memcpy"
+#elif MIR_TARGET_IS_AARCH64
+static const char crt_mir_calls[] =
+#include "mir_aarch64_calls_text.inc"
+	;
+#define CRT_MIR_CALLS_DEFINES "mir.va_arg mir.va_block_arg mir.blk_mov"
+#define CRT_MIR_CALLS_ALIASES "mir.va_arg=va_arg_builtin" \
+	" mir.va_block_arg=va_block_arg_builtin mir.blk_mov=mir_blk_mov"
+#endif
+
 const madc_crt_member madc_crt_members[] = {
 	{ "crt:dso_handle", "__dso_handle __madc_dso_fini", NULL,
 	  "__madc_dso_fini", crt_dso_handle },
+	{ "crt:personality", MADC_UNWIND_PERSONALITY, NULL, NULL, crt_personality,
+	  true },
+#ifdef CRT_MIR_CALLS_DEFINES
+	{ "crt:mir_calls", CRT_MIR_CALLS_DEFINES, NULL, NULL, crt_mir_calls, true,
+	  CRT_MIR_CALLS_ALIASES },
+#endif
 	{ "crt:atexit", "atexit", NULL, NULL, crt_atexit },
 #if MADC_TARGET_WINDOWS_P
 	{ "crt:exit_list", "__cxa_atexit __cxa_finalize __madc_exit_run"

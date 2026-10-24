@@ -1,14 +1,14 @@
 #!/bin/bash
-# Stage the per-target static cmark-gfm the madcmark module links
-# (src/madcmark.mk; plan docs/plans/2026-10-03-chthonia-windows-macos.md §7d).
+# Stage the per-target static cmark-gfm the markdown module links
+# (src/markdown.mk; plan docs/plans/2026-10-03-chthonia-windows-macos.md §7d).
 #
 #   bash scripts/stage_cmark_gfm.sh <host|x86-64-windows|arm64-macos|x86-64-macos>
 #   bash scripts/stage_cmark_gfm.sh --path <target>   (print the target's stage dir)
 #
 # The scripts/stage_libgit2.sh shape: cmark-gfm is a BUILD-TIME REQUIREMENT,
 # never part of our distribution. Its object code is STATICALLY linked into
-# OUR libmadcmark.{so,dll,dylib}; nothing named cmark ships, and no package
-# depends on a system cmark-gfm. The pin is src/madcmark.mk's CMARK_GFM_TAG,
+# OUR markdown.{so,dll,dylib}; nothing named cmark ships, and no package
+# depends on a system cmark-gfm. The pin is src/markdown.mk's CMARK_GFM_TAG,
 # read through make, and every path below carries it — a bump stages afresh.
 # Linux links the stage too: the distributions' cmark-gfm lags the upstream
 # fixes (Ubuntu 24.04 carries 0.29.0.gfm.6).
@@ -39,11 +39,11 @@ target="${1:?$usage}"
 target=$(bash "$(dirname "$0")/stage_cmake_args.sh" --target "$target") || exit 2
 cd "$(dirname "$0")/.."
 
-# The pin and the stage directory: src/madcmark.mk's, never a second copy.
+# The pin and the stage directory: src/markdown.mk's, never a second copy.
 export CMARK_GFM_DIR="${CMARK_GFM_DIR:-/workspace/cmark-gfm}"
 CMARK_GFM_TAG=$(make -C src -s print-CMARK_GFM_TAG)
 STAGE=$(make -C src -s print-CMARK_GFM_STAGE)
-[ -n "$CMARK_GFM_TAG" ] && [ -n "$STAGE" ] || { echo "stage_cmark_gfm: could not read CMARK_GFM_TAG/CMARK_GFM_STAGE from src/madcmark.mk" >&2; exit 1; }
+[ -n "$CMARK_GFM_TAG" ] && [ -n "$STAGE" ] || { echo "stage_cmark_gfm: could not read CMARK_GFM_TAG/CMARK_GFM_STAGE from src/markdown.mk" >&2; exit 1; }
 SRC="$STAGE/src"
 BUILD="$STAGE/build-$target"
 OUT="$STAGE/$target"

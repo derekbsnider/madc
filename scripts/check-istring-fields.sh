@@ -42,7 +42,8 @@ src/cir_dump.cpp src/cir_emit_c.cpp src/cir_format.cpp
 src/madc_type_spelling.cpp src/madc_mangle.cpp src/madc_complete.cpp
 src/madc_keywords.cpp src/pch.cpp src/madc.cpp
 include/madc.h include/datadef.h include/tokens.h include/datatokens.h
-include/madc_mangle.h include/madc_type_spelling.h include/spelling_delim.h"
+include/madc_mangle.h include/madc_type_spelling.h include/spelling_delim.h
+src/cli_options.cpp include/libmadc/cli_options.h src/madc_cli.cpp include/madc_cli.h"
 
 # scan MODE FILE... — MODE count: "<file>\t<n>" per file; MODE hazards: one
 # line per hazard found.

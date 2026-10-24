@@ -1,0 +1,49 @@
+/* A statement expression is void when its last statement yields no value
+ * (GNU): an empty statement, or an expression of type void. glibc's GNU-C
+ * assert is `((void) sizeof ((e) ? 1 : 0), __extension__ ({ if (e) ; else
+ * __assert_fail (...); }))`. Once madc folds the dead branch, an assert of a
+ * true constant leaves `({ ; })` and an assert(0) leaves `({ __assert_fail
+ * (...); })` -- SQLite under SQLITE_DEBUG: `assert(sqlite3MemdebugHasType(p,
+ * MEMTYPE_HEAP))` (defined to 1 without SQLITE_MEMDEBUG) and NEVER(X) =
+ * `((X)?(assert(0),1):0)` in an if condition.
+ * Pins: an assert of a constant, a bare `({ ; })`, a block ending in an empty
+ * statement, void-call tails, and NEVER() in a condition, each as an operand.
+ * Before: madc crashed in c2mir -- reading the value of the absent expression
+ * (SIGSEGV), and generating a void call's tail in value context (an
+ * uninitialized result op; whether it crashed depended on the stack).
+ * Oracle: gcc 13 and clang 18 -O0 -std=gnu17 print "size=7 n=8 m=2 c=5". */
+#include <stdio.h>
+#include <assert.h>
+
+#define HAS_TYPE(p, t) 1
+#define NEVER(X) ((X)?(assert(0),1):0)
+
+struct file { const void *methods; };
+
+static void note(int *m) { *m += 1; }
+
+static int size_of(int *p, int *n)
+{
+	assert(HAS_TYPE(p, 1));
+	(void)({ ; });
+	(void)((void)0, ({ int t = *p; *n = t + 1; ; }));
+	return *p;
+}
+
+static int chars(struct file *id)
+{
+	if (NEVER(id->methods == 0))
+		return 0;
+	return 5;
+}
+
+int main(void)
+{
+	int v = 7, n = 0, m = 0;
+	struct file f = { &f };
+	int s = size_of(&v, &n);
+	(void)({ note(&m); });
+	(void)((void)0, ({ note(&m); }));
+	printf("size=%d n=%d m=%d c=%d\n", s, n, m, chars(&f));
+	return 0;
+}

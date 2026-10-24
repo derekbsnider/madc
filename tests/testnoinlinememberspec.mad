@@ -1,0 +1,19 @@
+// A GNU attribute group among a member's decl-specifiers ([dcl.spec] leaves
+// the order free): `static __attribute__((noinline))`, `constexpr
+// __attribute__((noinline))` — libc++'s <string> spells `_LIBCPP_CONSTEXPR_
+// SINCE_CXX20 _LIBCPP_NOINLINE void __init_copy_ctor_external(...)` once
+// __has_attribute(noinline) answers 1. madc refused the member ("Expecting
+// type in class definition"); the attribute reads like a leading one.
+// Oracles: g++ 13 and clang++ 18 (-std=gnu++17) print 3 8.
+#include <cstdio>
+struct S {
+	static __attribute__((__noinline__)) int twice(int n) { return n * 2; }
+	constexpr __attribute__((__noinline__)) int plus(int n) const { return n + v; }
+	int v;
+};
+int main()
+{
+	S s = { 1 };
+	std::printf("%d %d\n", s.plus(2), S::twice(4));
+	return 0;
+}

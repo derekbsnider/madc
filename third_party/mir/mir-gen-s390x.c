@@ -57,6 +57,23 @@ Originally SP(r15) and FP (r11) are the same but r15 can be changed by alloca */
 #define S390X_GP_REG_RSAVE_AREA_START 16
 #define S390X_FP_REG_ARG_SAVE_AREA_START 128
 
+/* DWARF CFI (mir-gen.c): at entry CFA = r15 + 160 and the return address is
+   in r14 (column 14, no rule: the register itself). */
+#define TARGET_CFI_RA_COLUMN 14
+#define TARGET_CFI_CIE_INSNS 0x0c, 15, 0xa0, 0x01 /* DW_CFA_def_cfa r15, 160 */
+#define TARGET_DWARF_SP 15
+#define TARGET_DWARF_FP 11
+
+static unsigned target_dwarf_reg (MIR_reg_t hard_reg) {
+  /* the ELF ABI numbers f0, f2, f4, f6, f1, f3, f5, f7, f8, f10, ... from 16 */
+  static const unsigned char fp[] = {16, 20, 17, 21, 18, 22, 19, 23,
+                                     24, 28, 25, 29, 26, 30, 27, 31};
+
+  if (hard_reg <= R15_HARD_REG) return hard_reg;
+  gen_assert (F0_HARD_REG <= hard_reg && hard_reg <= F15_HARD_REG);
+  return fp[hard_reg - F0_HARD_REG];
+}
+
 /* s390x has 3-ops insns */
 static const MIR_insn_code_t target_io_dup_op_insn_codes[]
   = {MIR_ADD,   MIR_ADDS,  MIR_FADD, MIR_DADD,  MIR_SUB,  MIR_SUBS, MIR_SUBO, MIR_SUBOS,
@@ -76,13 +93,6 @@ static MIR_insn_code_t get_ext_code (MIR_type_t type) {
   default: return MIR_INVALID_INSN;
   }
 }
-
-struct insn_pattern_info {
-  int start, num;
-};
-
-typedef struct insn_pattern_info insn_pattern_info_t;
-DEF_VARR (insn_pattern_info_t);
 
 struct const_ref {
   size_t insn_pc;      /* where rel32 address should be in code */
@@ -137,11 +147,6 @@ struct target_ctx {
 #define abs_address_locs gen_ctx->target_ctx->abs_address_locs
 #define relocs gen_ctx->target_ctx->relocs
 #define ld_addr_regs gen_ctx->target_ctx->ld_addr_regs
-
-static void gen_mov (gen_ctx_t gen_ctx, MIR_insn_t anchor, MIR_insn_code_t code, MIR_op_t dst_op,
-                     MIR_op_t src_op) {
-  gen_add_insn_before (gen_ctx, anchor, MIR_new_insn (gen_ctx->ctx, code, dst_op, src_op));
-}
 
 static void mir_blk_mov (uint64_t *to, uint64_t *from, uint64_t nwords) {
   for (; nwords > 0; nwords--) *to++ = *from++;
@@ -905,7 +910,7 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   MIR_insn_t anchor, new_insn;
   MIR_op_t r15_reg_op, r14_reg_op, r11_reg_op, r0_reg_op;
   int saved_regs_p = FALSE;
-  int64_t start_saved_fregs_offset;
+  int64_t start_saved_fregs_offset, alloca_bias;
   size_t i, n, frame_size, saved_fregs_num;
 
   gen_assert (curr_func_item->item_type == MIR_func_item);
@@ -922,7 +927,15 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       saved_regs_p = TRUE;
       if (i >= F0_HARD_REG) saved_fregs_num++;
     }
-  if (leaf_p && !stack_param_p && !alloca_p && saved_regs_p == 0 && stack_slots_num == 0) return;
+  /* For a stack walk (MIR_unwind_info_t): an ALLOCA's result is above the areas
+     it keeps at the new r15 (ALLOCA_END's Q). */
+  alloca_bias = S390X_STACK_HEADER_SIZE + param_save_area_size + blk_ld_value_save_area_size;
+  if (leaf_p && !stack_param_p && !alloca_p && saved_regs_p == 0 && stack_slots_num == 0) {
+    gen_unwind_frame (gen_ctx, -S390X_STACK_HEADER_SIZE, alloca_bias); /* no frame */
+    /* the frame address is r15 at entry, the return address still in r14 */
+    gen_lower_frame_queries (gen_ctx, R15_HARD_REG, 0, R14_HARD_REG, 0, TRUE);
+    return;
+  }
   r0_reg_op = _MIR_new_var_op (ctx, R0_HARD_REG);
   r11_reg_op = _MIR_new_var_op (ctx, R11_HARD_REG);
   r14_reg_op = _MIR_new_var_op (ctx, R14_HARD_REG);
@@ -949,13 +962,47 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   gen_mov (gen_ctx, anchor, MIR_MOV, r0_reg_op, r15_reg_op); /* r0 = r15 */
   new_insn = MIR_new_insn (ctx, MIR_ADD, r15_reg_op, r15_reg_op, MIR_new_int_op (ctx, -frame_size));
   gen_add_insn_before (gen_ctx, anchor, new_insn); /* r15 -= frame_size */
+  /* The frame (CFI): the CFA is the caller's r15 + 160, so after the
+     allocation CFA = r15 + frame_size + 160, and once r11 = r15 (the
+     prologue's last insn) CFA = r11 + frame_size + 160 with r14, r11 and the
+     other saved gp registers in the caller's register save area and the saved
+     fp registers in this frame. */
+  gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_SP,
+                 (int64_t) frame_size + S390X_STACK_HEADER_SIZE);
   gen_mov (gen_ctx, anchor, MIR_MOV,
            _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, R15_HARD_REG, MIR_NON_VAR, 1),
            r0_reg_op); /* mem[r15] = r0 */
   for (n = 0, i = F0_HARD_REG; i <= MAX_HARD_REG; i++)
     if (!target_call_used_hard_reg_p (i, MIR_T_UNDEF) && bitmap_bit_p (used_hard_regs, i))
       fsave (gen_ctx, anchor, start_saved_fregs_offset + (n++) * 8, i);
-  gen_mov (gen_ctx, anchor, MIR_MOV, r11_reg_op, r15_reg_op); /* r11 = r15 */
+  new_insn = gen_mov (gen_ctx, anchor, MIR_MOV, r11_reg_op, r15_reg_op); /* r11 = r15 */
+  {
+    int64_t caller_sp = -S390X_STACK_HEADER_SIZE, sp = caller_sp - (int64_t) frame_size;
+    size_t body_mark = gen_cfi_mark (gen_ctx, new_insn);
+
+    gen_cfi_frame (gen_ctx, body_mark, TARGET_DWARF_FP,
+                   (int64_t) frame_size + S390X_STACK_HEADER_SIZE);
+    if (!func->jret_p)
+      gen_cfi_save (gen_ctx, body_mark, TARGET_CFI_RA_COLUMN,
+                    caller_sp + S390X_GP_REG_RSAVE_AREA_START + (14 - 2) * 8);
+    gen_cfi_save (gen_ctx, body_mark, TARGET_DWARF_FP,
+                  caller_sp + S390X_GP_REG_RSAVE_AREA_START + (11 - 2) * 8);
+    for (i = R2_HARD_REG; i < R15_HARD_REG; i++)
+      if (!target_call_used_hard_reg_p (i, MIR_T_UNDEF) && bitmap_bit_p (used_hard_regs, i)
+          && i != R11_HARD_REG)
+        gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg (i),
+                      caller_sp + S390X_GP_REG_RSAVE_AREA_START + (i - R2_HARD_REG) * 8);
+    for (n = 0, i = F0_HARD_REG; i <= MAX_HARD_REG; i++)
+      if (!target_call_used_hard_reg_p (i, MIR_T_UNDEF) && bitmap_bit_p (used_hard_regs, i))
+        gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg (i),
+                      sp + start_saved_fregs_offset + (n++) * 8);
+    gen_unwind_frame (gen_ctx, sp, alloca_bias);
+  }
+  /* The frame address is r15 at entry, r11 + frame_size; the return address
+     the r14 saved in the caller's register save area: */
+  gen_lower_frame_queries (gen_ctx, R11_HARD_REG, (int64_t) frame_size, R11_HARD_REG,
+                           (int64_t) frame_size + S390X_GP_REG_RSAVE_AREA_START + (14 - 2) * 8,
+                           FALSE);
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))
@@ -1444,8 +1491,10 @@ static const struct pattern patterns[] = {
 /* sgr h15,r0; lg h0,(h15,r0); stg h0,0(h15); lay r0,160+param_area_size+blkparamsize(h15): */
 #define ALLOCA_END "; b909 h15 R0; e3:04 h0 hs15 x0; e3:24 h0 hs15; e3:71 r0 Q hs15"
 
-  /* la r0,7(r1);nill r0,0xfff8; ... : */
-  {MIR_ALLOCA, "r r", "e3:71 r0 s1 md7; a5:7 r0 i65528" ALLOCA_END},
+  /* la r0,15(r1);nill r0,0xfff0; ... -- rounded to 16 like an immediate size
+     (out_insn), so an entry ALLOCA's bytes do not depend on its operand's form
+     (gen_measure_unwind_top_alloca): */
+  {MIR_ALLOCA, "r r", "e3:71 r0 s1 md15; a5:7 r0 i65520" ALLOCA_END},
   /* lllill r0,ua; ...: */
   {MIR_ALLOCA, "r ua", "a5:f r0 ua" ALLOCA_END},
 
@@ -1476,36 +1525,8 @@ static void target_get_early_clobbered_hard_regs (MIR_insn_t insn, MIR_reg_t *hr
   }
 }
 
-static int pattern_index_cmp (const void *a1, const void *a2) {
-  int i1 = *(const int *) a1, i2 = *(const int *) a2;
-  int c1 = (int) patterns[i1].code, c2 = (int) patterns[i2].code;
-
-  return c1 != c2 ? c1 - c2 : (long) i1 - (long) i2;
-}
-
 static void patterns_init (gen_ctx_t gen_ctx) {
-  MIR_alloc_t alloc = gen_alloc (gen_ctx);
-  int i, ind, n = sizeof (patterns) / sizeof (struct pattern);
-  MIR_insn_code_t prev_code, code;
-  insn_pattern_info_t *info_addr;
-  insn_pattern_info_t pinfo = {0, 0};
-
-  VARR_CREATE (int, pattern_indexes, alloc, 0);
-  for (i = 0; i < n; i++) VARR_PUSH (int, pattern_indexes, i);
-  qsort (VARR_ADDR (int, pattern_indexes), n, sizeof (int), pattern_index_cmp);
-  VARR_CREATE (insn_pattern_info_t, insn_pattern_info, alloc, 0);
-  for (i = 0; i < MIR_INSN_BOUND; i++) VARR_PUSH (insn_pattern_info_t, insn_pattern_info, pinfo);
-  info_addr = VARR_ADDR (insn_pattern_info_t, insn_pattern_info);
-  for (prev_code = MIR_INSN_BOUND, i = 0; i < n; i++) {
-    ind = VARR_GET (int, pattern_indexes, i);
-    if ((code = patterns[ind].code) != prev_code) {
-      if (i != 0) info_addr[prev_code].num = i - info_addr[prev_code].start;
-      info_addr[code].start = i;
-      prev_code = code;
-    }
-  }
-  gen_assert (prev_code != MIR_INSN_BOUND);
-  info_addr[prev_code].num = n - info_addr[prev_code].start;
+  GEN_INDEX_PATTERNS (gen_ctx, patterns, MIR_INSN_BOUND, &pattern_indexes, &insn_pattern_info);
 }
 
 static int int20_p (int64_t i) { return -(1 << 19) <= i && i < (1 << 19); }
@@ -2208,12 +2229,12 @@ static void add_consts (gen_ctx_t gen_ctx) {
   }
 }
 
-static void target_split_insns (gen_ctx_t gen_ctx MIR_UNUSED) {}
+static void target_split_insns (gen_ctx_t gen_ctx) { gen_normalize_const_shifts (gen_ctx); }
 
 static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   MIR_context_t ctx = gen_ctx->ctx;
   size_t i;
-  MIR_insn_t insn, old_insn;
+  MIR_insn_t insn;
   const char *replacement;
 
   gen_assert (curr_func_item->item_type == MIR_func_item);
@@ -2222,39 +2243,10 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   VARR_TRUNC (const_ref_t, const_refs, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
+  gen_start_code_pass (gen_ctx);
   for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
-    MIR_insn_code_t code = insn->code;
-
-    /* ???split/change */
-    if ((code == MIR_RSH || code == MIR_LSH || code == MIR_URSH || code == MIR_RSHS
-         || code == MIR_LSHS || code == MIR_URSHS)
-        && (insn->ops[2].mode == MIR_OP_INT || insn->ops[2].mode == MIR_OP_UINT)) {
-      if (insn->ops[2].u.i == 0) {
-        gen_mov (gen_ctx, insn, MIR_MOV, insn->ops[0], insn->ops[1]);
-        old_insn = insn;
-        insn = DLIST_NEXT (MIR_insn_t, insn);
-        gen_delete_insn (gen_ctx, old_insn);
-      } else {
-        if (insn->ops[2].mode == MIR_OP_INT && insn->ops[2].u.i < 0) {
-          switch (code) {
-          case MIR_RSH: insn->code = MIR_LSH; break;
-          case MIR_URSH: insn->code = MIR_LSH; break;
-          case MIR_LSH: insn->code = MIR_RSH; break;
-          case MIR_RSHS: insn->code = MIR_LSHS; break;
-          case MIR_URSHS: insn->code = MIR_LSHS; break;
-          case MIR_LSHS: insn->code = MIR_RSHS; break;
-          default: gen_assert (FALSE); break;
-          }
-          insn->ops[2].u.i = -insn->ops[2].u.i;
-        }
-        if (code == MIR_RSH || code == MIR_LSH || code == MIR_URSH) {
-          if (insn->ops[2].u.i > 64) insn->ops[2].u.i = 64;
-        } else if (insn->ops[2].u.i > 32) {
-          insn->ops[2].u.i = 32;
-        }
-      }
-    }
+    gen_cfi_note_insn (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
     if (insn->code == MIR_LABEL) {
       set_label_disp (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code));
     } else if (insn->code != MIR_USE) {
@@ -2265,7 +2257,9 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         exit (1);
       } else {
         gen_assert (replacement != NULL);
+        size_t insn_start = VARR_LENGTH (uint8_t, result_code);
         out_insn (gen_ctx, insn, replacement, NULL);
+        gen_record_call (gen_ctx, insn_start, VARR_LENGTH (uint8_t, result_code), insn);
       }
     }
   }

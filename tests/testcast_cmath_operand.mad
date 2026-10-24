@@ -1,0 +1,16 @@
+// A cast of a <cmath> call is a complete operand of the operator after it
+// (B23): `(int)std::floor(4.5) + 3` and `std::signbit(-0.0) && ...` were
+// refused ("2 operands with no operator", `&&` read as unary) because the
+// first call of a template with a dependent return type left a stale
+// previous token behind it.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): "7 7 1".
+#include <cmath>
+#include <cstdio>
+int main()
+{
+	int a = (int)std::floor(4.5) + 3;
+	int b = (int)std::sqrt(16.0) + 3;
+	int k = std::signbit(-0.0) && (-0.0) == 0;
+	printf("%d %d %d\n", a, b, k);
+	return 0;
+}

@@ -18,7 +18,6 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -268,6 +267,46 @@ const char *ruby_sub_value(const madc::value *v, const char *pattern,
 // ruby::freeze / frozen check — mark string as frozen (read-only)
 // simplified: just returns the string, actual freeze enforcement would need compiler support
 
+
+// The ruby:: publics (cpp-first-api.md): <ns_ruby> declares them,
+// libmadc defines them here, resolved mangled-direct. The extern "C"
+// functions below are C-linkage wrappers over the same cores.
+namespace ruby {
+
+void chars(madc::value &out, const char *text) { ruby_chars(&out, text); }
+int64_t count(const char *text, const char *chars) { return ruby_count(text, chars); }
+int64_t include(const char *text, const char *substr) { return ruby_include(text, substr); }
+void rotate(madc::value &values, int64_t n) { ruby_rotate(&values, n); }
+void compact(madc::value &values) { ruby_compact(&values); }
+void flatten(madc::value &values, const char *text) { ruby_flatten(&values, text); }
+const char *squeeze(madc::value &s) { return ruby_squeeze_value(&s); }
+const char *squeeze(const char *s) { return ruby_squeeze_cstr(s); }
+const char *capitalize(madc::value &s) { return ruby_capitalize_value(&s); }
+const char *capitalize(const char *s) { return ruby_capitalize_cstr(s); }
+const char *tr(madc::value &s, const char *from, const char *to) { return ruby_tr_value(&s, from, to); }
+const char *tr(const char *s, const char *from, const char *to) { return ruby_tr_cstr(s, from, to); }
+const char *gsub(madc::value &s, const char *pattern, const char *replacement) { return ruby_gsub_value(&s, pattern, replacement); }
+const char *gsub(const char *s, const char *pattern, const char *replacement) { return ruby_gsub_cstr(s, pattern, replacement); }
+const char *sub(madc::value &s, const char *pattern, const char *replacement) { return ruby_sub_value(&s, pattern, replacement); }
+const char *sub(const char *s, const char *pattern, const char *replacement) { return ruby_sub_cstr(s, pattern, replacement); }
+std::string &squeeze(std::string &s) { return *ruby_squeeze(&s); }
+std::string &tr(std::string &s, const char *from, const char *to) { return *ruby_tr(&s, from, to); }
+std::string &capitalize(std::string &s) { return *ruby_capitalize(&s); }
+std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *ruby_gsub(&s, pattern, replacement); }
+std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *ruby_sub(&s, pattern, replacement); }
+
+}
+
+// ruby::delete — `delete` is a C++ keyword, so no C++ definition can carry the
+// public's name: libmadc defines its Itanium symbols as C-linkage names. One
+// spelling on every target madc builds for (Itanium everywhere; the platform's
+// C-name prefix maps a C name to exactly the C++ symbol). <ns_ruby> declares
+// the overloads; a call resolves mangled-direct like every ruby:: public (a
+// reference parameter is the pointer it passes).
+extern "C" {
+const char *_ZN4ruby6deleteERN4madc5valueEPKc(madc::value *s, const char *chars) { return ruby_delete_value(s, chars); }
+const char *_ZN4ruby6deleteEPKcS1_(const char *s, const char *chars) { return ruby_delete_cstr(s, chars); }
+}
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution

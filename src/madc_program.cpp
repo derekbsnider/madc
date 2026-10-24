@@ -41,7 +41,6 @@
 #endif
 
 extern thread_local bool madc_verbose;
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 
 #include "datadef.h"
@@ -2128,7 +2127,7 @@ runtime_eval_registration_policy_for_source_child(const Program::RegistrationPol
     child.enable_external_forest = parent.enable_external_forest;
     child.enable_forest_bind = parent.enable_forest_bind;
     child.forest_config_path = parent.forest_config_path;
-    child.system_headers_from_libmadc = parent.system_headers_from_libmadc;
+    child.system_header_source = parent.system_header_source;
 	child.enable_posix_compat = parent.enable_posix_compat;
     child.runtime_eval_source_policy = parent.runtime_eval_source_policy;
     return child;
@@ -2627,8 +2626,8 @@ struct program::impl
     struct verbose_scope
     {
 	bool saved;
-	verbose_scope(bool v) : saved(madc_verbose) { madc_verbose = v; }
-	~verbose_scope() { madc_verbose = saved; }
+	verbose_scope(bool v) : saved(madc_verbose) { madc_set_verbose(v); }
+	~verbose_scope() { madc_set_verbose(saved); }
     };
 
     MadcEngine owned_engine;
@@ -4999,8 +4998,9 @@ bool internal_program_build_native(::Program &self, const std::string &path,
 // Thread contract: the runtime-eval confinement — a code handle is used
 // only from the thread that opened it, and its code runs on the caller's
 // thread; closing it frees the code, so no address it gave may be called
-// after. Its file-scope objects are not destroyed at close: no namespace-
-// scope destructor runs yet, at exit or here (BUGS.md B102).
+// after. Closing destroys its file-scope objects first, as dlclose does: the
+// JIT session's teardown runs the image's exit handlers (__cxa_finalize on
+// its __dso_handle) while its code is still mapped.
 struct code_state
 {
     ::Program *child;

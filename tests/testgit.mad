@@ -1,8 +1,10 @@
-// Nexus L4a: the git substrate's dialect face (git::*, the madcgit MODULE) over the repository
-// the test runs in — every lane runs the suite from a checkout root, so the
-// repository is always there; the assertions are SHAPE (never a sha or a count
-// that history would move). Nothing here runs a guest program; stderr stays
-// empty (.expect_quiet).
+// Nexus L4a: the git substrate's face (git::*, the git MODULE: `import git;`)
+// over the repository the test runs in — every lane runs the suite from a
+// checkout root, so the repository is always there; the assertions are SHAPE
+// (never a sha or a count that history would move). Nothing here runs a guest
+// program; stderr stays empty (.expect_quiet).
+import git;
+
 int main()
 {
     long h = git::open(".");
@@ -58,6 +60,15 @@ int main()
     var rp3;
     git::relpath(rp3, h, "/");
     println("relpath-outside-error: {}", strlen(rp3["error"].c_str()) > 0 ? 1 : 0);
+    // A '\' in a POSIX file name is a name byte: git keeps `a\b.txt` one
+    // component (git ls-files), so relpath writes only the host's
+    // separators as '/' (madc::path_generic's rule), never every '\'.
+    var tdir;
+    madc::canonical_path(tdir, "tests");
+    var bsp = format("{}/a\\b.txt", tdir);
+    var rp4;
+    git::relpath(rp4, h, bsp.c_str());
+    println("relpath-backslash-name: {}", rp4["path"]);
 
     // §7e: git status's rows (a file this test writes is untracked; the
     // state is a git::file_state code) and a file at HEAD against a text.

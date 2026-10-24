@@ -1,0 +1,14 @@
+// The C++ twin of testprogmacrobind_c: <ctime> is included after <cstdio>
+// bound and after the program's `#define tm_sec my_sec`; its frozen units
+// spell tm_sec, so their root declines and lexes from text (BUGS.md B211).
+// Oracle: g++ 13 and clang++ 18 (-std=gnu++17) print 7.
+#include <cstdio>
+#define tm_sec my_sec
+#include <ctime>
+int main()
+{
+	std::tm t = {};
+	t.tm_sec = 7;
+	std::printf("%d\n", t.my_sec);
+	return 0;
+}
