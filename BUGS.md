@@ -1105,6 +1105,19 @@ int main(void)
 - A reducer of the same three-level shadowing compiles and runs as gcc
   (`n=10`): the trigger is not narrowed yet.
 
+### B251. Intermittent: madcide's forked plugin child segfaults on Intel macOS
+
+- madcide CI run 40093733774 (main at 7e7348f, madc 0.106.1 release tarball,
+  macos-15-intel): `tests/testmadcide_plugin_host.mad` timed out (rc=124).
+  All four exchanges completed (`host-open`, `host-greet`, `host-again`,
+  `host-event`). Then the plugin child, forked by `ForkChannelFactory::open` →
+  `Process::start` → JIT `plugin_child` → `plugin_host_run_invoke`, caught
+  SIGSEGV at address 0x0. The frame above it reads `0x7ff800000002`: a call
+  through a null or garbage pointer.
+- The v0.9.1 tag run (40093733777) passed on the same commit and runner
+  image. The madcide 0.9.0 main run (40047290850) passed it on Intel macOS. The arm64
+  and Linux jobs passed. The failure rate is not measured yet.
+
 ### B227. Throwing or catching an aggregate class (no user-declared constructor) is refused
 
 ```cpp
