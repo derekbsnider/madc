@@ -251,7 +251,7 @@ packaging.
 
 ## Releases
 
-The current release is **0.106.0**. What changed, release by release:
+The current release is **0.106.1**. What changed, release by release:
 [CHANGELOG.md](CHANGELOG.md) and [docs/release-notes/](docs/release-notes/).
 
 ## Documentation
