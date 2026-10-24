@@ -9,7 +9,8 @@
 #   Consolidated: <DupFamily name> — gate scripts/check-<name>.sh
 #
 # and the gate script it names exists. Every release section after EPOCH must
-# carry at least one such line. Between releases (the [Unreleased] section)
+# carry at least one such line — except a PATCH release (x.y.Z, Z > 0:
+# regression fixes on a release; owner 2026-10-24). Between releases (the [Unreleased] section)
 # nothing is required, so the per-commit static gate loop stays green; /release
 # runs it after the section is versioned, where a release without one fails.
 set -u
@@ -27,6 +28,8 @@ check_file()
 		# Only releases strictly after the epoch.
 		[ "$ver" = "$EPOCH" ] && continue
 		[ "$(printf '%s\n%s\n' "$EPOCH" "$ver" | sort -V | tail -1)" = "$ver" ] || continue
+		# A patch release consolidates nothing by design.
+		[ "${ver##*.}" != 0 ] && continue
 		local found=0
 		while IFS= read -r line; do
 			gate=$(printf '%s\n' "$line" | grep -oE 'scripts/check-[A-Za-z0-9_-]+\.sh' | head -1)
@@ -72,7 +75,15 @@ if ! check_file "$tmp" 2>/dev/null; then
 	     "valid Consolidated: line was refused)." >&2
 	exit 1
 fi
+printf '## [v99.0.1] — 2099-01-02\n\nA regression fix.\n\n## [v99.0.0] — 2099-01-01\n\nConsolidated: synthetic — gate scripts/check-release-consolidation.sh\n' \
+	> "$tmp"
+if ! check_file "$tmp" 2>/dev/null; then
+	rm -f "$tmp"
+	echo "check-release-consolidation: FAIL — patch control failed (a patch" \
+	     "release without a Consolidated: line was refused)." >&2
+	exit 1
+fi
 rm -f "$tmp"
 
-echo "check-release-consolidation: OK (every release after v$EPOCH names a consolidated family)"
+echo "check-release-consolidation: OK (every release after v$EPOCH names a consolidated family; a patch release is exempt)"
 exit 0

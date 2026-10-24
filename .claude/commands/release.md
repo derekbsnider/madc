@@ -37,6 +37,10 @@ Perform the full release workflow:
      each count that rose, then run `bash scripts/check-release-conformance.sh`;
      red means the release moved neither C23 nor C++20, or lowered one —
      STOP and tell the user, do not release.
+   - A `patch` release (x.y.Z, Z > 0: regression fixes on a release; owner
+     2026-10-24) needs no `Consolidated:` line and no `Conformance:` line —
+     but it is still measured (`--record`) and both gates still run: it may
+     lower no count.
 
 6. **Write `docs/release-notes/vX.Y.Z.md`**:
    - Title: `# Release vX.Y.Z — YYYY-MM-DD`
